@@ -1,7 +1,7 @@
 import { tick } from "svelte";
 
 // Rotas por hash: #/inbox, #/prs/review, #/repo/<id>, #/settings/github …
-export const NAV_ORDER = ["work", "ai", "inbox", "prs", "builds", "deploys", "issues", "repos", "repo", "automation", "analytics", "history", "settings"];
+export const NAV_ORDER = ["projects", "work", "board", "ai", "inbox", "prs", "builds", "deploys", "issues", "repos", "repo", "automation", "analytics", "history", "settings"];
 
 class Router {
   path = $state(normalize(location.hash));

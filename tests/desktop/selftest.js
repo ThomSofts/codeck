@@ -182,9 +182,13 @@
     return "tag criada por teclado real";
   });
 
-  await step("Repositório é projeto: clicar na lista abre o projeto na aba Git", async () => {
+  await step("Repositório: a linha abre o painel dele; o link do repositório abre o projeto na aba Git", async () => {
     await go("#/repos", 1200);
-    click(await waitFor(() => byText(".list-row.repo", "demo-api")));
+    click(await waitFor(() => byText(".list-row.repo .title", "demo-api")));
+    await waitFor(() => byText(".drawer h4", "Pasta local"), 6000);
+    await shot("04-painel-repositorio");
+    await press("Escape"); await sleep(500);
+    await go("#/repo/" + apiRepo.id, 600);
     await waitFor(() => location.hash.startsWith("#/work/"), 6000);
     await waitFor(() => byText(".modes button.on", "Git"), 6000);
     await waitFor(() => $(".repo.embedded") && byText(".repo.embedded *", "inicial"), 10000);
@@ -351,7 +355,7 @@
       await api("ws/file", { repoId: apiRepo.id, taskId: t.id, path: "frete.txt", text: s + "\n" });
     }
     await sleep(3000);
-    click(byText(".ptabs .btn", "Quadro")); await sleep(1200);
+    await go("#/board/agents", 1500);   // o quadro das tarefas dos agentes é uma aba da página Quadro
     const cards = $$(".tcard").length;
     click(byText(".tcard", "Frete (claude)")); await sleep(1500);
     click(await waitFor(".cmp")); await sleep(2500);
@@ -360,6 +364,49 @@
     await press("Escape");
     if (cards < 3 || cols !== 2) throw new Error(`quadro=${cards} colunas=${cols}`);
     return `${cards} cartões, ${cols} soluções`;
+  });
+  await step("Hub de projetos e grupo nas abas (recolher/expandir)", async () => {
+    await go("#/projects", 1500);
+    await waitFor(() => byText(".pc", "demo-api"), 8000);
+    const g = await api("ws/groups/save", { name: "Grupo autoteste", repoIds: [apiRepo.id] });
+    await go("#/work/" + apiRepo.id, 1500);
+    click(await waitFor(() => byText(".gchip", "Grupo autoteste"), 6000)); await sleep(900);
+    if (!$(".grp.collapsed")) throw new Error("o grupo não recolheu");
+    click(byText(".gchip", "Grupo autoteste")); await sleep(600);
+    await shot("10b-grupo");
+    await api("ws/groups/delete", { id: g.id });
+    return "hub lista o clone; grupo recolhe e expande";
+  });
+  await step("Quadro: cartão com o projeto vira contexto para a IA", async () => {
+    const c = await api("kanban/card", { title: "Cartão do autoteste", description: "- [ ] passo", projects: [apiRepo.id], primary: apiRepo.id });
+    await go("#/board", 1500);
+    await waitFor(() => byText(".kc", "Cartão do autoteste"), 6000);
+    await shot("10c-quadro");
+    const ctx = (await api("kanban/context?id=" + c.id)).text;
+    await api("kanban/card/delete", { id: c.id });
+    if (!ctx.includes("demo-api")) throw new Error("contexto sem o projeto: " + ctx);
+    return "cartão no quadro; contexto com o projeto";
+  });
+  await step("Markdown abre renderizado e a checkbox grava no arquivo", async () => {
+    await api("ws/file", { repoId: apiRepo.id, path: "roteiro.md", text: "# Roteiro\n\n- [ ] abrir o app\n- [ ] testar\n" });
+    await go("#/work/" + apiRepo.id, 1200);
+    click(await waitFor(() => byText(".sc", "checkout principal"))); await sleep(500);
+    click(await waitFor(() => byText(".lm button", "Arquivos")));
+    click(await waitFor(".ft .bar button[title='Recarregar']")); await sleep(1500);
+    click(await waitFor(() => byText(".ft .n", "roteiro.md"), 6000));
+    click(await waitFor(() => $(".doc input[type=checkbox]"), 10000)); await sleep(2500);
+    const f = await api("ws/file?repoId=" + apiRepo.id + "&path=roteiro.md");
+    await shot("10d-markdown");
+    if (!f.text.includes("- [x] abrir o app")) throw new Error("a checkbox não gravou: " + f.text);
+    return "pré-visualização; checkbox salva no arquivo";
+  });
+  await step("Acompanhar: desligar e voltar ao padrão da conta", async () => {
+    await api("tracking/repo", { key: "github:autoteste/demo", track: false, builds: false });
+    const t = await api("tracking");
+    if (t.repos["github:autoteste/demo"]?.track !== false) throw new Error(JSON.stringify(t));
+    await api("tracking/repo", { key: "github:autoteste/demo", reset: true });
+    if ((await api("tracking")).repos["github:autoteste/demo"]) throw new Error("não voltou ao padrão");
+    return "grava e volta ao padrão";
   });
   await step("Ajustes do projeto salvam", async () => {
     click(byText(".sc", "checkout principal")); await sleep(300);

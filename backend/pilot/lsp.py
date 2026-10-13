@@ -30,13 +30,8 @@ _found = {"at": 0, "map": {}}
 
 
 def _login_path():
-    if os.name == "nt":
-        return os.environ.get("PATH", "")
-    try:
-        return subprocess.run([terminals.default_shell(), "-l", "-c", "printf %s \"$PATH\""], capture_output=True, text=True,
-                              timeout=10).stdout or os.environ.get("PATH", "")
-    except Exception:  # noqa: BLE001
-        return os.environ.get("PATH", "")
+    from . import userpath
+    return userpath.get()
 
 
 def available():

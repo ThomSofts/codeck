@@ -9,7 +9,7 @@ import time
 import uuid
 from datetime import timedelta
 
-from . import azure, catalogs, git, github, secrets
+from . import azure, catalogs, git, github, secrets, tracking
 from .analytics import analytics_cache
 from .core import (ARCHIVE_FILE, CONFIG_FILE, NOTIFIED_FILE, ctx, load_json, lock, log_activity, log_deploy, notify,
                    is_network_error, now, now_iso, parse_dt, pr_summary, save_json, state, wake)
@@ -108,6 +108,7 @@ def watched_repos():
         info = git.parse_remote(r.get("remoteUrl"))
         if info.get("provider") == "github":
             out.append(info["slug"])
+    out += tracking.watched_github()   # marcados para acompanhar em Repositórios (mesmo sem clone)
     with lock:
         for p in state["prs"] + state["myPrs"]:
             if p.get("provider") == "github":
@@ -148,6 +149,7 @@ def poll_prs():
     for src_name, acc in _sources():
         try:
             prs, mine = acc.fetch_prs(watch) if isinstance(acc, github.GitHub) else acc.fetch_prs()
+            prs, mine = tracking.apply(prs, "prs"), tracking.apply(mine, "prs")   # só os repositórios acompanhados
             me[src_name] = acc.me
             _net["ok"] = True
         except Exception as e:  # noqa: BLE001 — uma conta fora não derruba as outras
@@ -166,7 +168,7 @@ def poll_prs():
                 nkey = f"mine:{pr['key']}:{b['code']}:{(pr['commit'] or '')[:8]}"
                 if nkey not in notified:
                     notified.add(nkey)
-                    if settings["notifyMyPrs"] and state["lastPoll"] is not None:  # 1º ciclo só marca
+                    if settings["notifyMyPrs"] and state["lastPoll"] is not None and not pr.get("quiet"):  # 1º ciclo só marca
                         notify(f"Sua PR: {b['label']}", f"{pr['org']}/{pr['repo']} #{pr['prId']} → {pr['target']}", pr["title"],
                                f"minhas/{pr['key']}")
         all_mine.extend(mine)
@@ -212,8 +214,8 @@ def poll_prs():
             if pr["myVote"] == 0 and nkey not in notified and (action == "notify" or settings["notifyPending"]) \
                     and (pr.get("provider") != "github" or pr.get("reviewRequested")):
                 notified.add(nkey)
-                if any(n.startswith(key + "@") for n in notified - {nkey}):
-                    continue  # já avisei esta PR; push novo não renotifica
+                if any(n.startswith(key + "@") for n in notified - {nkey}) or pr.get("quiet"):
+                    continue  # já avisei esta PR (push novo não renotifica) ou o repositório está sem notificações
                 notify("PR aguardando seu voto", f"{pr['org']}/{pr['repo']} #{pr['prId']} · {pr['creatorName']} → {pr['target']}",
                        pr["title"], f"fila/{key}")
         all_prs.extend(prs)
@@ -272,6 +274,7 @@ def poll_deploys():
                 items, rels = acc.fetch_pending_deploys([b for b in gh_runs if b.get("account") == acc.login]), []
             else:
                 items, rels = acc.fetch_deploys()
+            items = tracking.apply(items, "deploys")
             _net["ok"] = True
         except Exception as e:  # noqa: BLE001
             _fail(errors, src_name, e)
@@ -316,7 +319,7 @@ def poll_deploys():
                         deploy_failures[it["key"]] = time.time()
                         errors[src_name] = f"Falha ao liberar {it['pipeline']}: {e}"
             nkey = it["key"]
-            if nkey not in notified and settings["notifyDeploys"] and (it["mine"] or (rule and rule["action"] == "notify")):
+            if nkey not in notified and settings["notifyDeploys"] and not it.get("quiet") and (it["mine"] or (rule and rule["action"] == "notify")):
                 notified.add(nkey)
                 what = {"release": "Deploy aguardando aprovação", "approval": "Pipeline aguardando aprovação",
                         "permission": "Pipeline pedindo permissão"}[it["kind"]]
@@ -359,6 +362,7 @@ def poll_builds():
                     errors[f"{src_name} · {repo}"] = msg
             else:
                 builds = acc.fetch_builds()
+            builds = tracking.apply(builds, "builds")
             _net["ok"] = True
         except Exception as e:  # noqa: BLE001
             _fail(errors, src_name, e)
@@ -378,7 +382,7 @@ def poll_builds():
             nkey = f"build:{b['key']}"
             if nkey not in notified:
                 notified.add(nkey)
-                if settings["notifyBuildFailures"] and state["builds"]:  # 1º ciclo só marca: não despeja o passado
+                if settings["notifyBuildFailures"] and state["builds"] and not b.get("quiet"):  # 1º ciclo só marca: não despeja o passado
                     notify("Build falhou", f"{b['org']} · {b['pipeline']} · {b['branch']}", b["message"] or b["number"], f"builds/{b['key']}")
         all_b.extend(builds)
     # um run aparece uma vez mesmo que duas contas enxerguem o mesmo repositório
@@ -401,7 +405,10 @@ def poll_issues():
     out, errors = [], {}
     for src_name, acc in _sources():
         try:
-            out.extend(acc.fetch_issues() if isinstance(acc, github.GitHub) else acc.fetch_work_items())
+            got = acc.fetch_issues() if isinstance(acc, github.GitHub) else acc.fetch_work_items()
+            for i in got:
+                i.setdefault("account", acc.login if isinstance(acc, github.GitHub) else None)
+            out.extend(tracking.apply(got, "issues"))
             _net["ok"] = True
         except Exception as e:  # noqa: BLE001 — sem o escopo de work items/issues, só não aparece
             _fail(errors, src_name, e, str(e)[:240])
@@ -442,6 +449,8 @@ def start():
     ctx.orgs, ctx.gh, ctx.config = orgs, gh, cfg
     catalogs.cleanup_auto()
     catalogs.warm_async()
+    import threading
+    threading.Thread(target=catalogs.discover, kwargs={"force": True}, daemon=True).start()   # clones novos nas pastas base
     if os.environ.get("CODECK_NO_POLL") != "1":
         import threading
         threading.Thread(target=poll_loop, daemon=True).start()

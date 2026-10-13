@@ -1,7 +1,9 @@
 <script lang="ts">
   // Repositórios: os locais registrados, os favoritos (de qualquer conta, com tags) e os catálogos (repositórios de uma
   // org/projeto, clonados ou não — criados sozinhos ao conectar a conta).
-  import { Download, FolderPlus, FolderSearch, Link, Pencil, Plus, RefreshCw, Search, WifiOff, FolderCog } from "@lucide/svelte";
+  import { Download, Eye, EyeOff, FolderPlus, FolderSearch, Link, Pencil, Plus, RefreshCw, Search, WifiOff, FolderCog, Settings2 } from "@lucide/svelte";
+  import { store } from "../lib/store.svelte";
+  import Avatar from "../components/Avatar.svelte";
   import { untrack } from "svelte";
   import { get, post } from "../lib/api";
   import { pickFolder } from "../lib/native";
@@ -87,10 +89,11 @@
     untrack(() => { view = null; if (cid) loadCatalog(); else repos.load(); });
   });
 
+  const trk = (r: RemoteRepo) => repos.track(r.remoteKey || r.key, r.accountKey).on;
   const list = $derived.by(() => {
     const t = q.trim().toLowerCase();
     if (catalogId && view) {
-      return view.repos.filter(r => (filter === "all" || (filter === "cloned" ? r.cloned : !r.cloned))
+      return view.repos.filter(r => (filter === "all" || (filter === "tracked" ? trk(r) : filter === "untracked" ? !trk(r) : filter === "cloned" ? r.cloned : !r.cloned))
         && (!t || `${r.name} ${r.description} ${r.owner} ${r.language || ""}`.toLowerCase().includes(t)));
     }
     return [];
@@ -184,7 +187,34 @@
       ui.toast("Clonando…", "info");
     } catch (e) { ui.error(e); }
   }
-  const counts = $derived(view ? { all: view.repos.length, cloned: view.repos.filter(r => r.cloned).length, notCloned: view.repos.filter(r => !r.cloned).length } : null);
+  const counts = $derived(view ? { all: view.repos.length, cloned: view.repos.filter(r => r.cloned).length, notCloned: view.repos.filter(r => !r.cloned).length,
+    tracked: view.repos.filter(trk).length } : null);
+  // conta aberta: cabeçalho com os detalhes dela (o "⚙" abre os ajustes)
+  const accKey = $derived(isAccount ? catalogId!.slice(8) : null);
+  const accProv = $derived(accKey?.split(":")[0] as "azure" | "github" | undefined);
+  const accLogin = $derived(accKey ? accKey.slice((accProv || "").length + 1) : "");
+  const accAvatar = $derived(accProv === "github" ? store.s?.githubAccounts.find(a => a.login === accLogin)?.avatar : undefined);
+  const accMine = (x: any) => (accProv === "github" ? x.provider === "github" && x.account === accLogin : x.provider !== "github" && x.org === accLogin);
+  const accStats = $derived(accKey ? {
+    prs: [...(store.s?.prs || []).filter(p => !p.archived), ...(store.s?.myPrs || [])].filter(accMine).length,
+    builds: (store.s?.builds || []).filter(b => accMine(b) && b.status !== "completed").length,
+    failed: (store.s?.builds || []).filter(b => accMine(b) && b.result === "failed").length,
+    deploys: (store.s?.deploys || []).filter(accMine).length,
+  } : null);
+  const accMode = $derived(accKey ? repos.trackMode(accKey) : "all");
+  async function trackVisible(on: boolean) {
+    const keys = list.map(r => (r.remoteKey || r.key).toLowerCase());
+    if (!keys.length) return;
+    try { await repos.setTrackMany(keys, on); store.refreshSoon(2500); ui.toast(on ? `${keys.length} repositório(s) acompanhados` : `${keys.length} repositório(s) deixaram de ser acompanhados`); }
+    catch (e) { ui.error(e); }
+  }
+  let discovering = $state(false);
+  async function discoverNow() {
+    discovering = true;
+    try { const r = await post<{ new: number }>("repos/discover"); await repos.load(); ui.toast(r.new ? `${r.new} repositório(s) novo(s) encontrado(s) nas pastas base` : "Nenhum clone novo nas pastas base", r.new ? "ok" : "info"); }
+    catch (e) { ui.error(e); }
+    discovering = false;
+  }
 </script>
 
 <Page title={catalogId ? view?.name || (isAccount ? catalogId.split(":").pop() || "" : "Catálogo") : tagName ? tagName : favMode ? "Favoritos" : "Repositórios"}
@@ -198,10 +228,11 @@
     {:else if catalogId && view}
       <button class="btn sm ghost" onclick={() => loadCatalog(true)} title="Ler a lista de novo"><RefreshCw size={14} /></button>
       {#if counts?.notCloned}<button class="btn sm" onclick={cloneAll}><Download size={14} /> Clonar todos ({counts.notCloned})</button>{/if}
-      {#if isAccount}<button class="btn sm" onclick={() => (ui.editAccount = catalogId!.slice(8))}><FolderCog size={14} /> Pastas base</button>
+      {#if isAccount}<button class="btn sm" onclick={() => (ui.editAccount = catalogId!.slice(8))}><Settings2 size={14} /> Detalhes e ajustes</button>
       {:else}<button class="btn sm" onclick={() => (editing = "edit")}><Pencil size={14} /> Editar</button>{/if}
       <button class="btn sm" onclick={() => (editing = "new")}><Plus size={14} /> Novo catálogo</button>
     {:else}
+      <button class="btn sm ghost" onclick={discoverNow} disabled={discovering} title="Vasculha de novo as pastas base das contas"><FolderSearch size={14} class={discovering ? "spin" : ""} /> Procurar clones</button>
       <button class="btn sm" onclick={() => (adding = true)}><FolderPlus size={14} /> Adicionar local</button>
       <button class="btn sm primary" onclick={() => (editing = "new")}><Plus size={14} /> Novo catálogo</button>
     {/if}
@@ -215,8 +246,9 @@
             <Segmented bind:value={filter} options={[{ value: "all", label: "Todos", count: favCounts.all }, { value: "cloned", label: "Clonados", count: favCounts.cloned },
               { value: "not", label: "Não clonados", count: favCounts.notCloned }]} />
           {:else if catalogId}
-            <Segmented bind:value={filter} options={[{ value: "all", label: "Todos", count: counts?.all ?? "…" }, { value: "cloned", label: "Clonados", count: counts?.cloned ?? "…" },
-              { value: "not", label: "Não clonados", count: counts?.notCloned ?? "…" }]} onchange={() => soft(() => {})} />
+            <Segmented bind:value={filter} options={[{ value: "all", label: "Todos", count: counts?.all ?? "…" }, { value: "tracked", label: "Acompanhados", count: counts?.tracked ?? "…" },
+              { value: "untracked", label: "Não acompanhados", count: counts ? counts.all - counts.tracked : "…" },
+              { value: "cloned", label: "Clonados", count: counts?.cloned ?? "…" }, { value: "not", label: "Não clonados", count: counts?.notCloned ?? "…" }]} onchange={() => soft(() => {})} />
           {:else}
             <Segmented bind:value={filter} options={[{ value: "all", label: "Todos", count: repos.local.length },
               { value: "dirty", label: "Com alterações", count: repos.local.filter(r => (r.status?.changes || 0) > 0).length },
@@ -224,6 +256,32 @@
           {/if}
         {/snippet}
       </Toolbar>
+      {#if accKey && accStats}
+        <div class="acchead card">
+          {#if accAvatar}<Avatar name={accLogin} src={accAvatar} size={38} />{:else}<span class="aic"><ProviderIcon provider={accProv || null} size={20} /></span>{/if}
+          <button class="who" onclick={() => (ui.editAccount = accKey)} title="Detalhes e ajustes da conta">
+            <b>{accLogin}</b><span class="tiny muted">{accProv === "azure" ? "Azure DevOps" : "GitHub"} · {view?.dirs?.length ? view.dirs.map(d => d.replace(/^\/Users\/[^/]+/, "~")).join(", ") : "sem pasta base"}</span>
+          </button>
+          <div class="st"><b>{accStats.prs}</b><span>PRs</span></div>
+          <div class="st" class:hot={accStats.builds}><b>{accStats.builds}</b><span>rodando</span></div>
+          <div class="st" class:bad={accStats.failed}><b>{accStats.failed}</b><span>falhos</span></div>
+          <div class="st"><b>{accStats.deploys}</b><span>deploys</span></div>
+          <div class="mode">
+            <span class="tiny muted">Acompanhar</span>
+            <Segmented size="sm" value={accMode} onchange={async (m) => { await repos.setTrackMode(accKey!, m as any); store.refreshSoon(2500); }}
+              options={[{ value: "all", label: "Todos" }, { value: "selected", label: "Escolhidos" }]} />
+          </div>
+          <button class="btn sm" onclick={() => (ui.editAccount = accKey)}><Settings2 size={13} /> Ajustes</button>
+        </div>
+        {#if list.length}
+          <div class="bulk small muted">
+            <span>{counts?.tracked ?? 0} de {counts?.all ?? 0} acompanhados{accMode === "selected" ? " (só os escolhidos)" : ""}</span>
+            <span class="grow"></span>
+            <button class="btn sm ghost" onclick={() => trackVisible(true)}><Eye size={13} /> Acompanhar os {list.length} listados</button>
+            <button class="btn sm ghost" onclick={() => trackVisible(false)}><EyeOff size={13} /> Deixar de acompanhar os listados</button>
+          </div>
+        {/if}
+      {/if}
       <div class="card scroll">
         {#if favMode}
           {#if !repos.loaded}<Skeleton rows={6} />
@@ -297,6 +355,17 @@
 {/if}
 
 <style>
+  .acchead { display: flex; align-items: center; gap: 14px; padding: 12px 14px; margin-bottom: 10px; flex-wrap: wrap; }
+  .aic { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; background: var(--surface-2); border: 1px solid var(--line-2); }
+  .acchead .who { display: grid; text-align: left; border: 0; background: none; color: var(--text); font: 14px var(--font); cursor: pointer; min-width: 0; flex: 1; padding: 0; }
+  .acchead .who:hover b { color: var(--accent); }
+  .acchead .st { display: grid; justify-items: center; min-width: 54px; }
+  .acchead .st b { font-size: 17px; font-variant-numeric: tabular-nums; }
+  .acchead .st span { font-size: 11px; color: var(--muted); }
+  .acchead .st.hot b { color: var(--accent); } .acchead .st.bad b { color: var(--bad); }
+  .acchead .mode { display: grid; gap: 3px; }
+  .bulk { display: flex; align-items: center; gap: 6px; margin: -2px 2px 8px; flex-wrap: wrap; }
+  .bulk .grow { flex: 1; }
   .sbox { display: flex; align-items: center; gap: 9px; height: 38px; padding: 0 12px; margin-top: 12px; border-radius: 10px; border: 1px solid var(--line-2);
     background: var(--bg-2); color: var(--muted); }
   .sbox:focus-within { border-color: var(--accent); box-shadow: var(--ring); }

@@ -26,8 +26,10 @@ class UI {
   palette = $state(false);
   menu = $state<OpenMenu | null>(null);
   cloneAsk = $state<CloneAsk | null>(null);
-  /** conta cujas pastas base estão sendo editadas ("provider:conta") */
+  /** conta aberta no painel de detalhes e ajustes ("provider:conta") */
   editAccount = $state<string | null>(null);
+  /** repositório aberto no painel de gestão (acompanhamento, PRs/builds/deploys/issues, pasta local) */
+  repoHub = $state<{ localId?: string; remote?: any } | null>(null);
   /** quantos envios (POST) estão em andamento — alimenta a barra de progresso do topo */
   inflight = $state(0);
   private seq = 0;

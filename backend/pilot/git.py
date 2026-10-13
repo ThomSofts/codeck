@@ -138,24 +138,65 @@ def add_repo(path, catalog=None):
     return r
 
 
+SCAN_SKIP = {"node_modules", "bin", "obj", ".venv", "venv", "dist", "build", "Pods", ".git", "packages", "target", "vendor",
+             "__pycache__", "out", "coverage", "DerivedData", "Library", "Applications"}
+
+
 def scan(path, depth=3):
-    """Procura repositórios git dentro de uma pasta (sem entrar em node_modules, bin, obj…)."""
+    """Procura repositórios git dentro de uma pasta (sem entrar em node_modules, bin, obj…). Continua DENTRO dos
+    repositórios encontrados: um repositório "workspace" (ex.: cifal/apis) costuma ter os repositórios das APIs dentro
+    dele, ignorados pelo .gitignore — antes a busca parava no primeiro .git e não os via."""
     root = os.path.abspath(os.path.expanduser(path))
     if not os.path.isdir(root):
         raise ValueError("Pasta não encontrada")
-    found, skip = [], {"node_modules", "bin", "obj", ".venv", "venv", "dist", "build", "Pods", ".git", "packages"}
+    found = []
     base_depth = root.rstrip(os.sep).count(os.sep)
     for cur, dirs, _files in os.walk(root):
         if ".git" in dirs or os.path.isfile(os.path.join(cur, ".git")):
             found.append(cur)
-            dirs[:] = []
-            continue
         if cur.count(os.sep) - base_depth >= depth:
             dirs[:] = []
             continue
-        dirs[:] = [d for d in dirs if d not in skip and not d.startswith(".")]
-    added = [add_repo(p) for p in found]
-    return {"found": len(found), "repos": added}
+        dirs[:] = [d for d in dirs if d not in SCAN_SKIP and not d.startswith(".")]
+    known = {os.path.normcase(r["path"]) for r in _repos()}
+    added = []
+    for p in found:
+        try:
+            added.append(add_repo(p))
+        except Exception:  # noqa: BLE001 — pasta sem permissão, repositório corrompido: segue com os outros
+            continue
+    return {"found": len(found), "new": sum(1 for p in found if os.path.normcase(p) not in known), "repos": added}
+
+
+def move_repo(repo_id, dest_base):
+    """Move o clone para outra pasta (dest_base/<nome>), com os worktrees ligados de novo (git worktree repair).
+    Recusa se há operação em andamento (merge/rebase…) ou se o destino já existe."""
+    import shutil as _sh
+    r = get_repo(repo_id)
+    base = os.path.abspath(os.path.expanduser(dest_base or ""))
+    if not os.path.isdir(base):
+        raise ValueError("Escolha uma pasta de destino que exista")
+    dest = os.path.join(base, os.path.basename(r["path"].rstrip(os.sep)))
+    if os.path.normcase(dest) == os.path.normcase(r["path"]):
+        raise ValueError("O repositório já está nesta pasta")
+    if os.path.exists(dest):
+        raise ValueError(f"Já existe {dest}")
+    if os.path.normcase(base).startswith(os.path.normcase(r["path"].rstrip(os.sep) + os.sep)):
+        raise ValueError("Não dá para mover o repositório para dentro dele mesmo")
+    if current_operation(r["path"]):
+        raise ValueError(f"Há um {current_operation(r['path'])} em andamento — termine ou aborte antes de mover")
+    _sh.move(r["path"], dest)
+    try:
+        run(dest, "worktree", "repair", timeout=60)
+    except GitError:
+        pass
+    repos = _repos()
+    for x in repos:
+        if x["id"] == repo_id:
+            x["path"] = dest
+    _save(repos)
+    _status_cache.pop(repo_id, None)
+    return {"path": dest}
 
 
 def remove_repo(repo_id):

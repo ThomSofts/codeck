@@ -11,8 +11,10 @@
 
   let { project, tasks, onclose, onview }: { project: Project; tasks: Task[]; onclose: () => void; onview: (t: Task) => void } = $props();
   let diffs = $state<Record<string, any>>({});
+  const ids = $derived(tasks.map(t => t.id).join(","));   // a lista é recriada a cada leitura; só a troca de tarefas relê
   $effect(() => {
-    for (const t of tasks) get("ws/task/diff", { repoId: project.id, taskId: t.id }).then(d => (diffs = { ...diffs, [t.id]: d })).catch(() => {});
+    const repoId = project.id;
+    for (const id of ids.split(",").filter(Boolean)) get("ws/task/diff", { repoId, taskId: id }).then(d => (diffs = { ...diffs, [id]: d })).catch(() => {});
   });
   const stat = (d: any) => {
     if (!d) return null;

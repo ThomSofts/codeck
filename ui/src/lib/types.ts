@@ -10,7 +10,7 @@ export interface PR {
   source: string; target: string; isDraft: boolean; created: string; mergeStatus?: string; commit?: string;
   autoComplete: boolean; reviewers: Reviewer[]; url: string; myVote: number; approvals: number; policies: Policy[];
   build: "ok" | "failed" | "running" | "pending" | "none"; archived?: boolean; rule?: number | null; ruleId?: string | null;
-  waiting?: string | null; reviewRequested?: boolean; blockers?: { code: string; label: string }[];
+  waiting?: string | null; reviewRequested?: boolean; blockers?: { code: string; label: string }[]; repoKey?: string | null; quiet?: boolean;
 }
 
 export interface Build {
@@ -18,7 +18,7 @@ export interface Build {
   pipeline: string; pipelineId: number; folder: string; branch: string; sourceBranch: string; sourceVersion?: string;
   status: string; result: string | null; reason: string; requestedFor: string; requestedForId?: string; requestedForAvatar?: string;
   queued: string; started?: string; finished?: string; message: string; prNumber?: number | null; repo?: string; url: string;
-  waiting?: boolean; attempt?: number;
+  waiting?: boolean; attempt?: number; repoKey?: string | null; quiet?: boolean;
 }
 
 export interface Deploy {
@@ -26,7 +26,7 @@ export interface Deploy {
   title: string; pipeline: string; stage: string; branch?: string; version?: string; buildId?: number; message?: string;
   prNumber?: number | null; prUrl?: string | null; repo?: string; requestedFor?: string; approver?: string; mine: boolean;
   created: string; resources: { type: string; id: string; name: string }[]; url: string; ruleId?: string | null;
-  ruleName?: string | null; waiting?: string | null; otherApprovers?: string[]; releaseName?: string; approvalType?: string;
+  ruleName?: string | null; waiting?: string | null; otherApprovers?: string[]; releaseName?: string; approvalType?: string; repoKey?: string | null; quiet?: boolean;
 }
 
 export interface Release {
@@ -37,7 +37,7 @@ export interface Release {
 export interface Issue {
   key: string; provider: Provider; org: string; repo: string; number: number; title: string; state: string; type: string;
   updated: string; author: string; labels: { name: string; color: string | null }[]; assignees?: { login: string; avatar: string }[];
-  comments: number | null; reason: string; url: string;
+  comments: number | null; reason: string; url: string; repoKey?: string | null; account?: string | null;
 }
 
 export interface Activity {
@@ -64,7 +64,7 @@ export interface AppState {
   issueErrors: Record<string, string>; lastPoll: string | null; lastDeployPoll: string | null; lastBuildPoll: string | null;
   lastIssuePoll: string | null; pollMs: number | null; me: Record<string, { id: string; name: string; email?: string; avatar?: string } | null>;
   orgs: string[]; githubAccounts: { id: string; login: string; avatar?: string }[]; sources: string[]; pollSeconds: number;
-  editor: string; theme: "system" | "dark" | "light"; polling: string | null; offline: string | null; rules: RulesCfg; archive: Record<string, any>; activity: Activity[]; creators: string[]; repos: string[];
+  editor: string; theme: "system" | "dark" | "light"; ui?: Record<string, any>; polling: string | null; offline: string | null; rules: RulesCfg; archive: Record<string, any>; activity: Activity[]; creators: string[]; repos: string[];
   targets: string[]; ruleStats: Record<string, { count: number; last: string }>; configured: boolean;
   app: { version: string; build: number; platform: string; product: string };
   update: { available?: boolean; version?: string; build?: number; notes?: string; required?: boolean; disabled?: boolean; checkedAt?: string; error?: string };

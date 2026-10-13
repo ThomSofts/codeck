@@ -16,14 +16,17 @@ Telemetria:
 import glob
 import json
 import os
+import re
 import secrets as pysecrets
 import shlex
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
 
+from . import userpath
 from .core import DATA, DEFAULT_PORT, ctx, load_json, notify, now_iso, save_json
 
 ACCOUNTS_FILE = os.path.join(DATA, "ai-accounts.json")
@@ -40,27 +43,15 @@ PROVIDERS = {
     "opencode": {"label": "OpenCode", "bin": "opencode", "env": None, "home": ".config/opencode", "telemetry": None},
 }
 
-# ---------------------------------------------------------------- binários (PATH do shell de login, não o do app)
+# ---------------------------------------------------------------- binários (PATH real do usuário, não o do app)
 _which = {"at": 0, "map": {}}
 
 
-def which_all():
-    """O app aberto pelo Finder tem PATH mínimo; o shell de login sabe onde estão claude/codex (nvm, ~/.local/bin…)."""
-    if time.time() - _which["at"] < 300:
+def which_all(force=False):
+    """Onde está cada CLI. O app aberto pelo Finder tem PATH mínimo — userpath descobre o do usuário (.zshrc incluso)."""
+    if not force and time.time() - _which["at"] < 300:
         return _which["map"]
-    names = [p["bin"] for p in PROVIDERS.values()]
-    found = {}
-    if os.name == "nt":
-        found = {n: shutil.which(n) for n in names}
-    else:
-        sh = os.environ.get("SHELL") or "/bin/zsh"
-        try:
-            out = subprocess.run([sh, "-l", "-c", "; ".join(f"command -v {n} || echo" for n in names)],
-                                 capture_output=True, text=True, timeout=15).stdout.splitlines()
-            lines = [l.strip() for l in out if l.strip() == "" or l.strip().startswith("/")]
-            found = {n: (lines[i] if i < len(lines) and lines[i] else None) for i, n in enumerate(names)}
-        except Exception:  # noqa: BLE001
-            found = {n: shutil.which(n) for n in names}
+    found = {p["bin"]: userpath.which(p["bin"], force=force) for p in PROVIDERS.values()}
     _which.update(at=time.time(), map=found)
     return found
 
@@ -106,9 +97,9 @@ def accounts():
     out = []
     for a in d["accounts"]:
         spec = PROVIDERS.get(a["provider"], {})
-        out.append({**a, "label": spec.get("label"), "installed": bool(bins.get(spec.get("bin"))),
+        out.append({**a, "label": spec.get("label"), "installed": bool(bins.get(spec.get("bin"))), "bin": bins.get(spec.get("bin")),
                     "telemetry": spec.get("telemetry"), "usage": usage.get(a["id"])})
-    return {"accounts": out, "providers": {k: {"label": v["label"], "installed": bool(bins.get(v["bin"]))} for k, v in PROVIDERS.items()},
+    return {"accounts": out, "providers": {k: {"label": v["label"], "installed": bool(bins.get(v["bin"])), "bin": bins.get(v["bin"])} for k, v in PROVIDERS.items()},
             "defaults": d.get("defaults", {})}
 
 
@@ -170,7 +161,8 @@ def launch_spec(aid, prompt=None, mode=None, sid=None, extra_dirs=None, resume=N
     env = {}
     if spec["env"] and os.path.normpath(a["dir"]) != os.path.join(HOME, spec["home"]):
         env[spec["env"]] = a["dir"]   # a pasta padrão (~/.claude, ~/.codex) é a que a CLI já usa sem variável
-    args = [spec["bin"]]
+    exe = which_all().get(spec["bin"])
+    args = [exe if exe and os.name != "nt" else spec["bin"]]
     secret = pysecrets.token_urlsafe(18)
     if prov == "claude":
         post = _hook_cmd(sid, secret)
@@ -184,12 +176,12 @@ def launch_spec(aid, prompt=None, mode=None, sid=None, extra_dirs=None, resume=N
         for d in extra_dirs or []:
             if os.path.isdir(d):
                 args += ["--add-dir", d]
-    elif prov == "codex" and mode == "readonly":
+    elif prov == "codex" and mode in ("readonly", "plan"):
         args += ["--sandbox", "read-only"]
     if resume and prov == "claude":
         args += ["--resume", resume]
     elif resume and prov == "codex":
-        args = [spec["bin"], "resume", resume]
+        args = [args[0], "resume", resume]
     if prompt and not resume:
         args.append(prompt)
     command = " ".join(shlex.quote(x) for x in args) if os.name != "nt" else subprocess.list2cmdline(args)
@@ -244,9 +236,10 @@ def hook(sid, secret, payload):
     if s.get("claudeSession") and s.get("_remembered") != s["claudeSession"]:
         s["_remembered"] = s["claudeSession"]
         remember(sid, cliSession=s["claudeSession"])
-    if ev == "Notification":
+    ui = (ctx.config or {}).get("ui") or {}
+    if ev == "Notification" and ui.get("notify.agentNeedsYou", True):
         notify("Agente precisa de você", s.get("title") or "", (payload.get("message") or "")[:140], target=f"term/{sid}")
-    elif ev == "Stop":
+    elif ev == "Stop" and ui.get("notify.agentDone", True):
         notify("Agente terminou", s.get("title") or "", "Pronto para revisar", target=f"term/{sid}")
     return {"ok": True}
 
@@ -607,3 +600,239 @@ def last_message(sid):
     if not last:
         raise LookupError("Ainda não há resposta desta sessão")
     return last
+
+
+# ---------------------------------------------------------------- limite sem abrir sessão (sonda) e atividade das contas
+PROBE_DIR = os.path.join(DATA, "probe")   # pasta vazia: a sonda não lê CLAUDE.md de projeto nenhum
+_probing = {}   # conta -> início da sonda em andamento
+_probe_err = {}   # conta -> {"error", "at"} da última sonda que falhou
+
+
+def probe_limits(aid):
+    """Lê o limite (5 h / semanal) de uma conta do Claude sem o usuário abrir sessão: um prompt mínimo no Haiku em modo
+    -p com saída stream-json, que traz o evento rate_limit_event (o mesmo dado da linha de status). Custa uma fração de
+    centavo e quase nada do limite. Não grava sessão (--no-session-persistence), sem ferramentas nem MCP. O app continua
+    sem ler token nenhum: quem fala com a Anthropic é a própria CLI, com o login dela."""
+    a = get_account(aid)
+    if a["provider"] != "claude":
+        raise ValueError("Só as contas do Claude Code dão para ler sem abrir sessão (o Codex lê pelo log das sessões)")
+    exe = which_all().get("claude")
+    if not exe:
+        raise ValueError("Claude Code não encontrado nesta máquina")
+    if _probing.get(aid) and time.time() - _probing[aid] < 120:
+        raise ValueError("Já estou lendo o limite desta conta")
+    from . import terminals
+    env = terminals.clean_env()
+    if os.path.normpath(a["dir"]) != os.path.join(HOME, ".claude"):
+        env["CLAUDE_CONFIG_DIR"] = a["dir"]
+    os.makedirs(PROBE_DIR, exist_ok=True)
+    args = [exe, "-p", "Responda apenas: ok", "--model", "haiku", "--output-format", "stream-json", "--verbose",
+            "--no-session-persistence", "--tools", "", "--strict-mcp-config"]
+    _probing[aid] = time.time()
+    try:
+        r = subprocess.run(args, cwd=PROBE_DIR, env=env, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+                           creationflags=0x08000000 if os.name == "nt" else 0)
+    except subprocess.TimeoutExpired:
+        _probe_err[aid] = {"error": "a CLI não respondeu em 2 min", "at": now_iso()}
+        raise ValueError("A CLI do Claude não respondeu em 2 minutos") from None
+    finally:
+        _probing.pop(aid, None)
+    info, error, cost = None, None, None
+    for line in r.stdout.splitlines():
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if o.get("type") == "rate_limit_event":
+            info = o.get("rate_limit_info") or info
+        elif o.get("type") == "result":
+            cost = o.get("total_cost_usd")
+            if o.get("is_error"):
+                error = (o.get("result") or o.get("subtype") or "erro").strip()
+    if not info:
+        msg = error or (r.stderr or "").strip().splitlines()[-1:] or ["a CLI não informou o limite"]
+        msg = msg if isinstance(msg, str) else msg[0]
+        if re.search(r"expired|could not be refreshed", msg, re.I):
+            msg = "o login desta conta expirou — abra o Claude com ela (botão Entrar) e faça /login"
+        elif re.search(r"login|logged|auth|api key|401", msg, re.I):
+            msg = "conta sem login — abra o Claude com ela (botão Entrar) e faça /login"
+        _probe_err[aid] = {"error": msg[:200], "at": now_iso()}
+        raise ValueError(f"{a['name']}: {msg[:200]}")
+    wins = info.get("unifiedWindows") or {}
+    raw = {k: {"used_percentage": round(float(v.get("utilization") or 0) * 100, 1), "resets_at": v.get("resetsAt")}
+           for k, v in wins.items() if isinstance(v, dict)}
+    if not raw and info.get("rateLimitType"):   # versões sem unifiedWindows: só a janela que está valendo
+        raw = {info["rateLimitType"]: {"used_percentage": round(float(info.get("utilization") or 0) * 100, 1), "resets_at": info.get("resetsAt")}}
+    lim = _norm_claude_limits(raw)
+    with _lock:
+        _usage[aid] = {"rateLimits": lim, "updated": now_iso(), "source": "probe", "status": info.get("status"),
+                       "overage": info.get("isUsingOverage")}
+        save_json(USAGE_FILE, _usage)
+    _probe_err.pop(aid, None)
+    _check_alerts(aid, lim)
+    return {"rateLimits": lim, "cost": cost}
+
+
+def _usage_age(aid):
+    u = _usage.get(aid) or {}
+    try:
+        import calendar
+        return time.time() - calendar.timegm(time.strptime(u["updated"][:19], "%Y-%m-%dT%H:%M:%S"))
+    except (KeyError, TypeError, ValueError):
+        return float("inf")
+
+
+def auto_limits_loop():
+    """Liga/desliga em Configurações → IA e agentes. Lê o limite das contas do Claude sem leitura recente (nem sessão
+    aberta pelo app trazendo a linha de status), uma conta por vez."""
+    time.sleep(20)
+    while True:
+        try:
+            ui = (ctx.config or {}).get("ui") or {}
+            if ui.get("ai.autoLimits", True) and which_all().get("claude"):
+                every = max(15, int(ui.get("ai.autoLimitsMinutes") or 60)) * 60
+                live = {v["account"] for v in _sessions.values() if v.get("status") in ("working", "idle", "done", "needs-you")}
+                for a in [x for x in _load()["accounts"] if x["provider"] == "claude"]:
+                    err = _probe_err.get(a["id"])
+                    if a["id"] in live or _usage_age(a["id"]) < every:
+                        continue
+                    if err and _ts(err["at"][:19] + "Z") > time.time() - max(every, 3 * 3600):
+                        continue   # sem login/fora do ar: não insiste a cada volta
+                    try:
+                        probe_limits(a["id"])
+                    except Exception:  # noqa: BLE001 — registrado em _probe_err; segue para a próxima conta
+                        pass
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(300)
+
+
+def _tail_json(path, max_bytes=65536):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            lines = f.read().decode("utf-8", "replace").splitlines()[1 if size > max_bytes else 0:]
+    except OSError:
+        return []
+    out = []
+    for ln in lines[-40:]:
+        try:
+            out.append(json.loads(ln))
+        except ValueError:
+            continue
+    return out
+
+
+def _external_sessions(a, known, repos_by_path):
+    """Sessões desta conta abertas FORA do app (terminal, IDE): os transcripts modificados nos últimos 20 min."""
+    out, now_t = [], time.time()
+    if a["provider"] == "claude":
+        files = glob.glob(os.path.join(a["dir"], "projects", "*", "*.jsonl"))
+    elif a["provider"] == "codex":
+        day = time.strftime("%Y/%m/%d")
+        files = glob.glob(os.path.join(a["dir"], "sessions", *day.split("/"), "*.jsonl"))
+    else:
+        return out
+    for f in files:
+        try:
+            age = now_t - os.path.getmtime(f)
+        except OSError:
+            continue
+        sess = os.path.splitext(os.path.basename(f))[0]
+        if age > 1200 or sess in known:
+            continue
+        tail = _tail_json(f)
+        cwd, last, waiting = None, None, False
+        for o in tail:
+            cwd = o.get("cwd") or (o.get("payload") or {}).get("cwd") or cwd
+            if o.get("sessionId") in known:
+                cwd = None
+                break
+            t = o.get("type")
+            if t in ("assistant", "user", "response_item", "event_msg"):
+                last = o
+        if a["provider"] == "codex" and not cwd:
+            try:
+                with open(f, encoding="utf-8", errors="replace") as fh:
+                    first = json.loads(fh.readline() or "{}")
+                cwd = (first.get("payload") or {}).get("cwd")
+            except (OSError, ValueError):
+                pass
+        if not cwd or os.path.normpath(cwd) == os.path.normpath(PROBE_DIR):
+            continue
+        msg = (last or {}).get("message") or {}
+        stop = msg.get("stop_reason") if isinstance(msg, dict) else None
+        if last and last.get("type") == "assistant" and stop == "tool_use" and age > 25:
+            waiting = True   # pediu para usar uma ferramenta e nada aconteceu: provavelmente esperando permissão
+        status = "needs-you" if waiting else "working" if age < 25 else "done" if stop == "end_turn" else "idle"
+        repo = repos_by_path.get(os.path.normcase(os.path.normpath(cwd)))
+        out.append({"session": sess, "cwd": cwd, "project": repo["name"] if repo else os.path.basename(cwd.rstrip("/\\")),
+                    "repoId": repo["id"] if repo else None, "status": status, "updatedAgo": int(age), "external": True})
+    return sorted(out, key=lambda x: x["updatedAgo"])[:8]
+
+
+_activity = {"at": 0, "data": {}}
+
+
+def activity():
+    """Para cada conta: o que ela está fazendo agora — sessões abertas pelo app (projeto, tarefa, estado) e sessões
+    abertas fora dele —, o limite e a última sonda que falhou. Cache de 15 s."""
+    if time.time() - _activity["at"] < 15:
+        return _activity["data"]
+    from . import git
+    repos_by_path = {os.path.normcase(os.path.normpath(r["path"])): r for r in git._repos()}
+    known = {v.get("claudeSession") for v in _sessions.values() if v.get("claudeSession")}
+    known |= {r.get("cliSession") for r in _resume_db().values() if r.get("cliSession")}
+    out = {}
+    for a in _load()["accounts"]:
+        mine = []
+        for sid, v in list(_sessions.items()):
+            if v["account"] != a["id"]:
+                continue
+            mine.append({"sid": sid, "project": v.get("projectName"), "repoId": v.get("project"), "task": v.get("task"),
+                         "title": v.get("title"), "status": v.get("status"), "model": v.get("model"),
+                         "context": (v.get("context") or {}).get("used"), "since": v.get("statusAt") or v.get("started")})
+        try:
+            ext = _external_sessions(a, known, repos_by_path)
+        except Exception:  # noqa: BLE001
+            ext = []
+        states = [x["status"] for x in mine + ext]
+        state_ = "needs-you" if "needs-you" in states else "working" if any(x in ("working", "compacting", "starting") for x in states) \
+            else "done" if "done" in states else "idle" if states else "free"
+        out[a["id"]] = {"sessions": mine, "external": ext, "state": state_, "probing": a["id"] in _probing,
+                        "probeError": _probe_err.get(a["id"])}
+    _activity.update(at=time.time(), data=out)
+    return out
+
+
+def open_login(aid):
+    """Abre o terminal do sistema já na conta (CLAUDE_CONFIG_DIR/CODEX_HOME) com a CLI pronta para o login. O login é o
+    da própria CLI: o app não vê nem guarda credencial."""
+    a = get_account(aid)
+    spec = PROVIDERS[a["provider"]]
+    exe = which_all().get(spec["bin"]) or spec["bin"]
+    env_line = {} if not spec["env"] or os.path.normpath(a["dir"]) == os.path.join(HOME, spec["home"]) else {spec["env"]: a["dir"]}
+    args = [exe] + (["login"] if a["provider"] in ("codex", "cursor") else [])
+    if sys.platform == "darwin":
+        folder = os.path.join(DATA, "login")
+        os.makedirs(folder, exist_ok=True)
+        script = os.path.join(folder, f"{a['provider']}-{aid}.command")
+        lines = ["#!/bin/zsh -l", "clear", f"echo 'Codeck · {spec['label']} · {a['name']}'"]
+        lines += [f"export {k}={shlex.quote(v)}" for k, v in env_line.items()]
+        if a["provider"] == "claude":
+            lines.append("echo 'Digite /login, entre na conta e depois /exit.'")
+        lines.append(" ".join(shlex.quote(x) for x in args))
+        with open(script, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        os.chmod(script, 0o700)
+        subprocess.Popen(["open", "-a", "iTerm" if os.path.isdir("/Applications/iTerm.app") else "Terminal", script], start_new_session=True)
+    elif os.name == "nt":
+        sets = " && ".join(f'set "{k}={v}"' for k, v in env_line.items())
+        cmd = (sets + " && " if sets else "") + subprocess.list2cmdline(args)
+        subprocess.Popen(["cmd", "/c", "start", "cmd", "/K", cmd], creationflags=0x00000008 | 0x08000000)
+    else:
+        raise ValueError("Abra um terminal e rode: " + " ".join(f"{k}={v}" for k, v in env_line.items()) + " " + " ".join(args))
+    _probe_err.pop(aid, None)
+    return {"ok": True}

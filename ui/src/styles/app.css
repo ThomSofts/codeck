@@ -259,3 +259,14 @@ html[data-vt="soft"]::view-transition-new(page) { animation: fade 0.24s var(--ea
 html[data-vt="theme"] .page { view-transition-name: none; }
 html[data-vt="theme"]::view-transition-old(root) { animation: fade-out 0.34s var(--ease) both; }
 html[data-vt="theme"]::view-transition-new(root) { animation: fade 0.34s var(--ease) both; }
+
+/* densidade compacta (Configurações → Aparência): menos altura e respiro, mesma hierarquia */
+[data-density="compact"] { --sidebar-w: 220px; }
+[data-density="compact"] .btn { height: 28px; padding: 0 10px; font-size: 12.5px; }
+[data-density="compact"] .btn.sm { height: 24px; padding: 0 8px; font-size: 12px; }
+[data-density="compact"] .btn.icon { width: 28px; padding: 0; }
+[data-density="compact"] .btn.sm.icon { width: 24px; }
+[data-density="compact"] .input, [data-density="compact"] .select { height: 28px; font-size: 12.5px; }
+[data-density="compact"] .list-row { padding: 7px 14px; gap: 10px; }
+[data-density="compact"] .card-h { min-height: 42px; }
+[data-density="compact"] .card-b { padding: 10px 14px; }

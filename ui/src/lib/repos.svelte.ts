@@ -1,6 +1,12 @@
 import { get, post } from "./api";
 import type { AccountColl, Catalog, FavRepo, LocalRepo, RemoteRepo, Tag } from "./types";
 
+export type TrackCat = "prs" | "builds" | "deploys" | "issues";
+export interface TrackRepo { track?: boolean; prs?: boolean; builds?: boolean; deploys?: boolean; issues?: boolean; notify?: boolean; note?: string }
+export interface Tracking { accounts: Record<string, { mode: "all" | "selected" }>; repos: Record<string, TrackRepo> }
+/** Acompanhamento efetivo de um repositório (modo da conta + o que foi marcado nele). */
+export interface TrackState { on: boolean; explicit: boolean; mode: "all" | "selected"; prs: boolean; builds: boolean; deploys: boolean; issues: boolean; notify: boolean; note: string }
+
 // Repositórios locais, catálogos e favoritos: carregados à parte do /api/state (o status de cada repo custa um `git status`).
 class Repos {
   local = $state<LocalRepo[]>([]);
@@ -10,6 +16,7 @@ class Repos {
   favorites = $state<FavRepo[]>([]);
   tags = $state<Tag[]>([]);
   loaded = $state(false);
+  tracking = $state<Tracking>({ accounts: {}, repos: {} });
   /** pedido para abrir o "Criar PR" ao entrar na tela do repositório (vem da tarefa) */
   prIntent = $state<string | null>(null);
   private inflight: Promise<void> | null = null;
@@ -20,8 +27,8 @@ class Repos {
   load(withStatus = true): Promise<void> {
     if (this.inflight) return this.inflight;
     this.inflight = Promise.all([get<{ repos: LocalRepo[] }>("repos", { status: withStatus ? 1 : 0 }), get<{ catalogs: Catalog[]; accounts: AccountColl[] }>("catalogs"),
-      get<{ repos: FavRepo[]; tags: Tag[] }>("library")])
-      .then(([r, c, l]) => { this.local = r.repos; this.catalogs = c.catalogs; this.accounts = c.accounts; this.favorites = l.repos; this.tags = l.tags; this.loaded = true; })
+      get<{ repos: FavRepo[]; tags: Tag[] }>("library"), get<Tracking>("tracking").catch(() => this.tracking)])
+      .then(([r, c, l, t]) => { this.local = r.repos; this.catalogs = c.catalogs; this.accounts = c.accounts; this.favorites = l.repos; this.tags = l.tags; this.tracking = t; this.loaded = true; })
       .finally(() => (this.inflight = null));
     return this.inflight;
   }
@@ -29,6 +36,41 @@ class Repos {
     const l = await get<{ repos: FavRepo[]; tags: Tag[] }>("library");
     this.favorites = l.repos;
     this.tags = l.tags;
+  }
+
+  // ---------------------------------------------------------------- acompanhamento (PRs, builds, deploys, issues)
+  trackMode(accountKey?: string | null): "all" | "selected" { return (accountKey && this.tracking.accounts[accountKey]?.mode) || "all"; }
+  /** Conta dona de um repositório local pelo remoto: "github:<login conectado>" ou "azure:<org conectada>". */
+  accountOf(r: { provider?: string | null; slug?: string | null; accountKey?: string; owner?: string }): string | null {
+    if ((r as any).accountKey) return (r as any).accountKey;
+    if (!r.provider) return null;
+    const owner = (r.slug || r.owner || "").split("/")[0].toLowerCase();
+    const same = this.accounts.filter(a => a.provider === r.provider);
+    return (same.find(a => a.name.toLowerCase() === owner) || same[0])?.key || null;
+  }
+  track(key: string | null | undefined, accountKey?: string | null): TrackState {
+    const mode = this.trackMode(accountKey);
+    const r = (key && this.tracking.repos[key.toLowerCase()]) || {};
+    const on = r.track !== undefined ? r.track : mode === "all";
+    return { on, explicit: r.track !== undefined, mode, prs: r.prs !== false, builds: r.builds !== false, deploys: r.deploys !== false,
+      issues: r.issues !== false, notify: r.notify !== false, note: r.note || "" };
+  }
+  async setTrack(key: string, patch: Partial<TrackRepo> & { reset?: boolean }) {
+    const k = key.toLowerCase(), before = this.tracking;
+    const cur = { ...(this.tracking.repos[k] || {}), ...patch };
+    delete (cur as any).reset;
+    this.tracking = { ...this.tracking, repos: { ...this.tracking.repos, [k]: patch.reset ? {} : cur } };   // otimista
+    try { await post("tracking/repo", { key: k, ...patch }); this.tracking = await get<Tracking>("tracking"); }
+    catch (e) { this.tracking = before; throw e; }
+  }
+  async setTrackMany(keys: string[], track: boolean) {
+    await post("tracking/many", { keys, track });
+    this.tracking = await get<Tracking>("tracking");
+  }
+  async setTrackMode(accountKey: string, mode: "all" | "selected") {
+    this.tracking = { ...this.tracking, accounts: { ...this.tracking.accounts, [accountKey]: { mode } } };
+    await post("tracking/account", { key: accountKey, mode });
+    this.tracking = await get<Tracking>("tracking");
   }
 
   // ---------------------------------------------------------------- favoritos

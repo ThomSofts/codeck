@@ -13,7 +13,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import accounts, agents, analytics, azure, catalogs, engine, git, github, library, lsp, rules, terminals, update, workspace, ws
+from . import accounts, agents, analytics, azure, catalogs, engine, git, github, kanban, library, lsp, rules, terminals, tracking, update, workspace, ws
 from .core import (APP_BUILD, APP_PLATFORM, APP_VERSION, ARCHIVE_FILE, CONFIG_FILE, DATA, DEFAULT_PORT, PRODUCT, RULES_FILE, OfflineError,
                    STATIC_DIR, TOKEN, ctx, load_json, lock, log_activity, log_build, log_deploy, notifications, notify_seq,
                    now_iso, pr_summary, read_activity, save_json, state, wake)
@@ -53,6 +53,7 @@ def get_state(qs, body):
     payload["pollSeconds"] = ctx.config.get("pollSeconds", 60)
     payload["editor"] = ctx.config.get("editor") or "vscode"
     payload["theme"] = ctx.config.get("theme") or "system"
+    payload["ui"] = accounts.ui_prefs(ctx.config)
     payload["rules"] = rules.get_rules()
     payload["archive"] = load_json(ARCHIVE_FILE, {})
     payload["activity"] = read_activity(300)
@@ -290,7 +291,14 @@ def post_update_download(qs, body):
 # ---------------------------------------------------------------- repositórios locais
 @route("GET", "/api/repos")
 def get_repos(qs, body):
+    catalogs.discover()   # clones novos nas pastas base aparecem na lista (no máximo a cada 2 min)
     return {"repos": git.list_repos(with_status=q1(qs, "status", "1") == "1")}
+
+
+@route("POST", "/api/repos/discover")
+def post_repos_discover(qs, body):
+    """Procurar agora: vasculha de novo todas as pastas base das contas."""
+    return catalogs.discover(force=True)
 
 
 @route("POST", "/api/repos/add")
@@ -309,6 +317,16 @@ def post_repos_clone(qs, body):
     info = git.parse_remote(url)
     auth = engine.git_auth(info.get("provider"), info.get("owner")) if url.startswith("https://") else None
     return git.clone(url, body.get("dest") or "", auth=auth)
+
+
+@route("POST", "/api/repos/move")
+def post_repos_move(qs, body):
+    from . import terminals
+    rid = body.get("id")
+    live = [t for t in terminals.list_all(project=rid) if t.get("alive")]
+    if live:
+        raise ValueError(f"Feche os {len(live)} terminal(is)/agente(s) abertos neste projeto antes de mover a pasta")
+    return git.move_repo(rid, body.get("dest"))
 
 
 @route("POST", "/api/repos/remove")
@@ -469,6 +487,70 @@ def post_library_clone(qs, body):
     return library.clone(body.get("key"), body.get("dest"))
 
 
+# ---------------------------------------------------------------- quadro (kanban)
+@route("GET", "/api/kanban")
+def get_kanban(qs, body):
+    return kanban.view()
+
+
+@route("POST", "/api/kanban/card")
+def post_kanban_card(qs, body):
+    return kanban.save_card(body)
+
+
+@route("POST", "/api/kanban/card/delete")
+def post_kanban_card_delete(qs, body):
+    kanban.delete_card(body.get("id"))
+    return {"ok": True}
+
+
+@route("POST", "/api/kanban/move")
+def post_kanban_move(qs, body):
+    return kanban.move(body.get("id"), body.get("column"), body.get("index"))
+
+
+@route("POST", "/api/kanban/columns")
+def post_kanban_columns(qs, body):
+    return kanban.save_columns(body)
+
+
+@route("POST", "/api/kanban/link")
+def post_kanban_link(qs, body):
+    return kanban.link_task(body.get("id"), body.get("repoId"), body.get("taskId"), body.get("flow"))
+
+
+@route("GET", "/api/kanban/context")
+def get_kanban_context(qs, body):
+    return {"text": kanban.context(q1(qs, "id"))}
+
+
+# ---------------------------------------------------------------- quais repositórios acompanhar
+@route("GET", "/api/tracking")
+def get_tracking(qs, body):
+    return tracking.view()
+
+
+@route("POST", "/api/tracking/account")
+def post_tracking_account(qs, body):
+    out = tracking.set_account(body.get("key"), body.get("mode"))
+    wake.set()   # relê já com o filtro novo
+    return out
+
+
+@route("POST", "/api/tracking/repo")
+def post_tracking_repo(qs, body):
+    out = tracking.set_repo(body.get("key"), body)
+    wake.set()
+    return out
+
+
+@route("POST", "/api/tracking/many")
+def post_tracking_many(qs, body):
+    out = tracking.set_many(body.get("keys") or [], bool(body.get("track")))
+    wake.set()
+    return out
+
+
 @route("GET", "/api/catalogs")
 def get_catalogs(qs, body):
     return catalogs.summary()
@@ -483,7 +565,7 @@ def get_terms(qs, body):
 @route("POST", "/api/terms/new")
 def post_term_new(qs, body):
     t = terminals.create(body.get("cwd"), body.get("title"), body.get("command"), body.get("kind") or "shell",
-                         body.get("meta"), None, int(body.get("cols") or 120), int(body.get("rows") or 32))
+                         body.get("meta"), None, body.get("cols"), body.get("rows"))
     return t.info()
 
 
@@ -539,6 +621,39 @@ def post_ws_reorder(qs, body):
     return {"ok": True}
 
 
+@route("GET", "/api/ws/hub")
+def get_ws_hub(qs, body):
+    return workspace.hub()
+
+
+@route("POST", "/api/ws/groups/save")
+def post_ws_group_save(qs, body):
+    return workspace.save_group(body)
+
+
+@route("POST", "/api/ws/groups/delete")
+def post_ws_group_delete(qs, body):
+    workspace.delete_group(body.get("id"))
+    return {"ok": True}
+
+
+@route("POST", "/api/ws/groups/assign")
+def post_ws_group_assign(qs, body):
+    workspace.assign_group(body.get("repoId"), body.get("groupId") or None)
+    return {"ok": True}
+
+
+@route("POST", "/api/ws/groups/reorder")
+def post_ws_group_reorder(qs, body):
+    workspace.reorder_groups(body.get("ids") or [])
+    return {"ok": True}
+
+
+@route("POST", "/api/ws/groups/open")
+def post_ws_group_open(qs, body):
+    return workspace.open_group(body.get("id"))
+
+
 @route("POST", "/api/ws/settings")
 def post_ws_settings(qs, body):
     return workspace.save_settings(body.get("repoId"), body)
@@ -546,6 +661,7 @@ def post_ws_settings(qs, body):
 
 @route("POST", "/api/ws/task")
 def post_ws_task(qs, body):
+    terminals.hint_size(body.get("cols"), body.get("rows"))
     return workspace.create_task(body.get("repoId"), body)
 
 
@@ -577,11 +693,13 @@ def get_ws_task_base_file(qs, body):
 
 @route("POST", "/api/ws/shell")
 def post_ws_shell(qs, body):
+    terminals.hint_size(body.get("cols"), body.get("rows"))
     return workspace.start_shell(body.get("repoId"), body.get("taskId"), body.get("title"), body.get("command"))
 
 
 @route("POST", "/api/ws/agent")
 def post_ws_agent(qs, body):
+    terminals.hint_size(body.get("cols"), body.get("rows"))
     return workspace.start_agent(body.get("repoId"), body.get("taskId"), body.get("accountId"), body.get("prompt"),
                                  body.get("mode"), body.get("title"), body.get("resume"))
 
@@ -593,6 +711,7 @@ def get_ws_run_configs(qs, body):
 
 @route("POST", "/api/ws/run")
 def post_ws_run(qs, body):
+    terminals.hint_size(body.get("cols"), body.get("rows"))
     return workspace.run(body.get("repoId"), body.get("taskId"), body.get("configId"))
 
 
@@ -620,7 +739,39 @@ def get_ws_search(qs, body):
 @route("GET", "/api/ai")
 def get_ai(qs, body):
     agents.refresh_codex()
+    if q1(qs, "rescan") == "1":
+        from . import userpath
+        userpath.get(force=True)
+        agents.which_all(force=True)
     return agents.accounts()
+
+
+@route("GET", "/api/ai/activity")
+def get_ai_activity(qs, body):
+    return {"activity": agents.activity()}
+
+
+@route("POST", "/api/ai/login")
+def post_ai_login(qs, body):
+    return agents.open_login(body.get("id"))
+
+
+@route("POST", "/api/ai/probe")
+def post_ai_probe(qs, body):
+    """Ler o limite agora: uma conta (id) ou todas as do Claude (all=true)."""
+    if body.get("all"):
+        ok, errors = 0, {}
+        for a in [x for x in agents._load()["accounts"] if x["provider"] == "claude"]:
+            try:
+                agents.probe_limits(a["id"])
+                ok += 1
+            except Exception as e:  # noqa: BLE001
+                errors[a["id"]] = str(e)[:200]
+        agents._activity["at"] = 0
+        return {"ok": ok, "errors": errors}
+    r = agents.probe_limits(body.get("id"))
+    agents._activity["at"] = 0
+    return r
 
 
 @route("GET", "/api/lsp")
@@ -780,9 +931,11 @@ class Handler(BaseHTTPRequestHandler):
                 sock.send_text(json.dumps({"t": "exit", "code": term.exit}))
             else:
                 sock.send_bytes(data)
-        history = term.attach(out)
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        since = q1(qs, "from")
+        history, start, resumed = term.attach(out, int(since) if since and since.isdigit() else None)
         try:
-            sock.send_text(json.dumps({"t": "hello", **term.info()}))
+            sock.send_text(json.dumps({"t": "hello", "start": start, "resume": resumed, **term.info()}))
             if history:
                 sock.send_bytes(history)
             if not term.alive:
@@ -902,6 +1055,8 @@ def main():
     if os.environ.get("CODECK_PARENT_PID"):
         threading.Thread(target=_watch_parent, args=(os.environ["CODECK_PARENT_PID"],), daemon=True).start()
     engine.start()
+    threading.Thread(target=agents.which_all, daemon=True).start()   # acha as CLIs de IA (PATH do usuário) antes da 1ª tela
+    threading.Thread(target=agents.auto_limits_loop, daemon=True).start()   # limite das contas sem abrir sessão (opcional)
     threading.Thread(target=update.update_loop, daemon=True).start()
     print(f"{PRODUCT} {APP_VERSION} ({APP_BUILD}, {APP_PLATFORM}) em http://127.0.0.1:{port} — Azure: {', '.join(ctx.orgs) or '-'}"
           f" — GitHub: {', '.join(a.login for a in ctx.gh.values()) or '-'} — dados em {DATA}{' — token ativo' if TOKEN else ''}", flush=True)

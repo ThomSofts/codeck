@@ -34,8 +34,9 @@
   const slug = $derived(title.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "tarefa");
   const items = $derived((store.s?.issues || []).filter(i => !project.provider || i.provider === project.provider).slice(0, 60));
 
+  const pid = $derived(project.id);   // a prop troca de objeto a cada leitura: as branches só são relidas se o projeto mudar
   $effect(() => {
-    get<any>("repo/refs", { id: project.id }).then(r => {
+    get<any>("repo/refs", { id: pid }).then(r => {
       branches = [...new Set([...(r.remote || []).map((b: any) => b.name).filter((n: string) => !n.endsWith("/HEAD")), ...(r.local || []).map((b: any) => b.name)])];
       if (!base) base = branches.find(b => /origin\/(develop|main|master)$/.test(b)) || r.default || branches[0] || "";
     }).catch(() => {});

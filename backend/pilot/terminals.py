@@ -27,7 +27,12 @@ IS_WIN = os.name == "nt"
 
 
 def clean_env(extra=None):
+    from . import userpath
     env = {k: v for k, v in os.environ.items() if not k.startswith(_SECRET_ENV)}
+    env["PATH"] = userpath.get()   # o PATH do usuário (com o do .zshrc): o app aberto pelo Finder nasce com PATH mínimo
+    if os.name != "nt" and not env.get("USER"):
+        import pwd   # sem USER o Claude Code não acha o login dele no Keychain
+        env["USER"] = env["LOGNAME"] = pwd.getpwuid(os.getuid()).pw_name
     env.update(TERM="xterm-256color", COLORTERM="truecolor", TERM_PROGRAM="Codeck", LANG=env.get("LANG") or "pt_BR.UTF-8")
     env.update(extra or {})
     return env
@@ -63,8 +68,13 @@ class _PosixPty:
         self._fcntl, self._termios, self._struct = fcntl, termios, struct
         self.master, slave = pty.openpty()
         self.resize(cols, rows, fd=slave)
+        def controlling_tty():
+            # sessão nova (setsid) + o PTY como terminal de CONTROLE dela. Sem isto o processo não tinha terminal de
+            # controle: o sistema nunca entregava o SIGWINCH ao redimensionar, e programas de tela inteira (Claude
+            # Code, vim, htop…) continuavam desenhando no tamanho antigo — a tela embaralhava e cortava as linhas.
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
         self.proc = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, cwd=cwd, env=env,
-                                     start_new_session=True, close_fds=True)
+                                     start_new_session=True, close_fds=True, preexec_fn=controlling_tty)
         os.close(slave)
 
     def read(self):
@@ -262,9 +272,11 @@ class Terminal:
         self.created = time.time()
         self.last_output = self.created
         self.scroll = bytearray()
+        self.total = 0   # bytes produzidos desde o início: a tela retoma de onde parou ao reconectar
         self.subs = set()
         self.lock = threading.Lock()
         self.exit = None
+        self.cols, self.rows = cols, rows
         self.pty = (_WinPty if IS_WIN else _PosixPty)(argv, cwd, clean_env(env), cols, rows)
         threading.Thread(target=self._pump, daemon=True, name=f"pty-{self.id}").start()
 
@@ -279,8 +291,12 @@ class Terminal:
             with self.lock:
                 self.last_output = time.time()
                 self.scroll += data
+                self.total += len(data)
                 if len(self.scroll) > MAX_SCROLLBACK:
-                    del self.scroll[: len(self.scroll) - MAX_SCROLLBACK]
+                    # corta numa quebra de linha: começar no meio de uma sequência de escape bagunçava a tela ao redesenhar
+                    cut = len(self.scroll) - MAX_SCROLLBACK
+                    nl = self.scroll.find(b"\n", cut, cut + 65536)
+                    del self.scroll[: (nl + 1) if nl >= 0 else cut]
                 subs = list(self.subs)
             for fn in subs:
                 try:
@@ -298,11 +314,15 @@ class Terminal:
             except Exception:  # noqa: BLE001
                 pass
 
-    def attach(self, fn):
-        """Assina a saída; devolve o histórico atual (para a tela redesenhar ao reconectar)."""
+    def attach(self, fn, since=None):
+        """Assina a saída. Devolve (bytes, início, retomada): com `since` (quantos bytes a tela já tem) e ele ainda no
+        histórico, só o que faltou — a tela continua de onde parou; senão, o histórico inteiro para redesenhar do zero."""
         with self.lock:
             self.subs.add(fn)
-            return bytes(self.scroll)
+            base = self.total - len(self.scroll)
+            if since is not None and base <= since <= self.total:
+                return bytes(self.scroll[since - base:]), since, True
+            return bytes(self.scroll), base, False
 
     def detach(self, fn):
         self.subs.discard(fn)
@@ -312,7 +332,9 @@ class Terminal:
             self.pty.write(data)
 
     def resize(self, cols, rows):
-        self.pty.resize(int(cols), int(rows))
+        self.cols, self.rows = max(int(cols), 10), max(int(rows), 2)
+        _last_size[:] = [self.cols, self.rows]
+        self.pty.resize(self.cols, self.rows)
 
     def kill(self):
         self.pty.kill()
@@ -323,14 +345,29 @@ class Terminal:
 
     def info(self):
         return {"id": self.id, "title": self.title, "kind": self.kind, "cwd": self.cwd, "meta": self.meta,
-                "created": self.created, "lastOutput": self.last_output, "alive": self.alive, "exit": self.exit}
+                "created": self.created, "lastOutput": self.last_output, "alive": self.alive, "exit": self.exit,
+                "cols": self.cols, "rows": self.rows}
 
 
 _terms = {}
 _lock = threading.Lock()
+# último tamanho que a tela mandou: terminal novo já nasce do tamanho do painel. Antes nascia com 120×32 — o agente
+# desenhava a 1ª tela para 120 colunas num painel de ~90, o xterm quebrava as linhas e o redesenho deixava lixo.
+_last_size = [120, 32]
 
 
-def create(cwd, title=None, command=None, kind="shell", meta=None, env=None, cols=120, rows=32, shell=None):
+def hint_size(cols, rows):
+    """A tela diz o tamanho do painel antes de criar um terminal (agente, shell, tarefa, executar)."""
+    try:
+        c, r = int(cols), int(rows)
+    except (TypeError, ValueError):
+        return
+    if 20 <= c <= 1000 and 5 <= r <= 500:
+        _last_size[:] = [c, r]
+
+
+def create(cwd, title=None, command=None, kind="shell", meta=None, env=None, cols=None, rows=None, shell=None):
+    cols, rows = int(cols or _last_size[0]), int(rows or _last_size[1])
     cwd = os.path.abspath(os.path.expanduser(cwd or os.path.expanduser("~")))
     if not os.path.isdir(cwd):
         raise ValueError("Pasta não encontrada")

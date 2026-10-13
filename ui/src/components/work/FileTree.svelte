@@ -1,7 +1,8 @@
 <script lang="ts">
   // Arquivos do projeto/tarefa (git ls-files: versionados + novos não ignorados) em árvore, e a busca no conteúdo.
   // Pastas abrem sob demanda — projeto com dezenas de milhares de arquivos continua leve.
-  import { ChevronRight, File, FileCode2, FileJson, FileText, Folder, FolderOpen, RefreshCw, Search, X } from "@lucide/svelte";
+  import { ChevronRight, ChevronsDownUp, File, FileCode2, FileJson, FileText, Folder, FolderOpen, RefreshCw, Search, X } from "@lucide/svelte";
+  import { untrack } from "svelte";
   import { get } from "../../lib/api";
   import { ui } from "../../lib/ui.svelte";
 
@@ -16,13 +17,60 @@
   let searching = $state(false);
   let sTimer: ReturnType<typeof setTimeout> | undefined;
 
-  async function load() {
-    loading = true;
-    try { all = (await get<{ files: string[] }>("ws/files", { repoId, taskId })).files.sort((a, b) => a.localeCompare(b)); }
-    catch (e) { ui.error(e); }
+  // As props chegam como getters que releem o projeto a cada leitura do /api/ws (2,5 s). O efeito depende só desta
+  // chave: antes ele rodava a cada leitura e zerava as pastas abertas ("a árvore fechava sozinha").
+  const scope = $derived(`${repoId}|${taskId || ""}`);
+  const OPEN_KEY = "codeck.tree.open";
+  function readOpen(k: string): Record<string, boolean> {
+    try { return JSON.parse(localStorage.getItem(OPEN_KEY) || "{}")[k] || {}; } catch { return {}; }
+  }
+  function saveOpen() {
+    try {
+      const all = JSON.parse(localStorage.getItem(OPEN_KEY) || "{}");
+      all[scope] = Object.fromEntries(Object.entries(open).filter(([, v]) => v));
+      // guarda as últimas 40 árvores (projetos e tarefas)
+      const keys = Object.keys(all);
+      for (const k of keys.slice(0, Math.max(0, keys.length - 40))) delete all[k];
+      localStorage.setItem(OPEN_KEY, JSON.stringify(all));
+    } catch { /* sem armazenamento */ }
+  }
+  function toggleDir(path: string) {
+    open = { ...open, [path]: !open[path] };
+    saveOpen();
+  }
+
+  async function load(silent = false) {
+    if (!silent) loading = true;
+    const k = scope;
+    try {
+      const files = (await get<{ files: string[] }>("ws/files", { repoId, taskId })).files.sort((a, b) => a.localeCompare(b));
+      if (k === scope) all = files;
+    }
+    catch (e) { if (!silent) ui.error(e); }
     loading = false;
   }
-  $effect(() => { void repoId; void taskId; open = {}; load(); });
+  $effect(() => { const k = scope; untrack(() => { open = readOpen(k); load(); }); });
+  // o arquivo ativo (aberto por ⌘P, busca ou definição) fica visível: abre as pastas dele — uma vez por arquivo, para
+  // não reabrir a cada leitura a pasta que você recolheu
+  let revealed = "";
+  $effect(() => {
+    const f = active;
+    if (!f || f === revealed) return;
+    revealed = f;
+    untrack(() => {
+      const parts = f.split("/").slice(0, -1);
+      let acc = "", changed = false;
+      const next = { ...open };
+      for (const p of parts) { acc += p + "/"; if (!next[acc]) { next[acc] = true; changed = true; } }
+      if (changed) { open = next; saveOpen(); }
+    });
+  });
+  // arquivos novos (o agente cria, você cria no terminal) aparecem sem recarregar à mão
+  $effect(() => {
+    void scope;
+    const t = setInterval(() => { if (document.visibilityState === "visible" && mode === "files") untrack(() => load(true)); }, 15000);
+    return () => clearInterval(t);
+  });
 
   type Node = { name: string; path: string; dir: boolean };
   function children(prefix: string): Node[] {
@@ -62,7 +110,7 @@
 {#snippet tree(prefix: string, depth: number)}
   {#each children(prefix) as n (n.path)}
     {#if n.dir}
-      <button class="n" style="--d:{depth}" onclick={() => (open = { ...open, [n.path]: !open[n.path] })}>
+      <button class="n" style="--d:{depth}" onclick={() => toggleDir(n.path)}>
         <ChevronRight size={12} class="chev {open[n.path] ? 'rot' : ''}" />
         {#if open[n.path]}<FolderOpen size={14} class="fi" />{:else}<Folder size={14} class="fi" />{/if}<span class="ell">{n.name}</span>
       </button>
@@ -80,7 +128,8 @@
   {#if mode === "files"}
     <div class="bar">
       <label class="flt"><Search size={13} /><input bind:value={q} placeholder="Filtrar arquivos…" />{#if q}<button class="x" onclick={() => (q = "")}><X size={11} /></button>{/if}</label>
-      <button class="btn sm ghost icon" title="Recarregar" onclick={load}><RefreshCw size={13} class={loading ? "spin" : ""} /></button>
+      <button class="btn sm ghost icon" title="Recolher todas as pastas" onclick={() => { open = {}; saveOpen(); }}><ChevronsDownUp size={13} /></button>
+      <button class="btn sm ghost icon" title="Recarregar" onclick={() => load()}><RefreshCw size={13} class={loading ? "spin" : ""} /></button>
     </div>
     <div class="list">
       {#if q.trim()}

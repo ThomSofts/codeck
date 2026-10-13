@@ -31,6 +31,9 @@ def _load():
     d = load_json(FILE, {})
     d.setdefault("open", [])
     d.setdefault("projects", {})
+    d.setdefault("groups", [])
+    d.setdefault("lastOpened", {})
+    d.setdefault("opens", {})
     return d
 
 
@@ -65,7 +68,7 @@ def state():
                     "webUrl": r.get("webUrl"), "settings": p["settings"], "tasks": tasks,
                     "terms": [x for x in terminals.list_all(project=rid) if not x["meta"].get("task")],
                     "resumable": agents.resumable(rid, None, live)})
-    return {"projects": out, "active": d.get("active"), "sessions": agents.all_sessions()}
+    return {"projects": out, "active": d.get("active"), "sessions": agents.all_sessions(), "groups": d["groups"]}
 
 
 def open_project(repo_id=None, path=None):
@@ -74,9 +77,17 @@ def open_project(repo_id=None, path=None):
     if r["id"] not in d["open"]:
         d["open"].append(r["id"])
     d["active"] = r["id"]
+    _touch(d, r["id"], opened=True)
     _proj(d, r["id"])
     _save(d)
     return {"id": r["id"]}
+
+
+def _touch(d, rid, opened=False):
+    """Último acesso (e quantas vezes abriu) — o hub de projetos ordena por isso."""
+    d["lastOpened"][rid] = now_iso()
+    if opened:
+        d["opens"][rid] = int(d["opens"].get(rid) or 0) + 1
 
 
 def close_project(repo_id):
@@ -92,7 +103,111 @@ def close_project(repo_id):
 def activate(repo_id):
     d = _load()
     d["active"] = repo_id
+    _touch(d, repo_id)
     _save(d)
+
+
+# ---------------------------------------------------------------- grupos de projetos (como grupos de abas do navegador)
+# Um grupo tem nome, cor e projetos (repositórios). Nas abas de projeto, os abertos aparecem juntos sob o grupo, que
+# recolhe/expande; no hub, filtra e agrupa; no quadro, o cartão diz a qual grupo pertence e quais projetos referenciar.
+GROUP_COLORS = ["#6F8CFF", "#3CCF91", "#F5B84F", "#FF6B7D", "#B07CFF", "#4FC3F7", "#FF8A50", "#9AA4B2"]
+
+
+def save_group(body):
+    d = _load()
+    gid = body.get("id") or uuid.uuid4().hex[:8]
+    g = next((x for x in d["groups"] if x["id"] == gid), None)
+    if not g:
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise ValueError("Dê um nome ao grupo")
+        g = {"id": gid, "name": name[:40], "color": body.get("color") or GROUP_COLORS[len(d["groups"]) % len(GROUP_COLORS)],
+             "collapsed": False, "repoIds": []}
+        d["groups"].append(g)
+    if body.get("name"):
+        g["name"] = str(body["name"]).strip()[:40]
+    if body.get("color"):
+        g["color"] = str(body["color"])[:20]
+    if "collapsed" in body:
+        g["collapsed"] = bool(body["collapsed"])
+    if "description" in body:
+        g["description"] = str(body.get("description") or "")[:400]
+    if isinstance(body.get("repoIds"), list):
+        ids = [str(x) for x in body["repoIds"]]
+        for other in d["groups"]:   # um projeto fica em um grupo só (como uma aba)
+            if other is not g:
+                other["repoIds"] = [x for x in other["repoIds"] if x not in ids]
+        g["repoIds"] = list(dict.fromkeys(ids))
+    _save(d)
+    return g
+
+
+def delete_group(gid):
+    d = _load()
+    d["groups"] = [g for g in d["groups"] if g["id"] != gid]
+    _save(d)
+
+
+def assign_group(repo_id, gid):
+    """Põe o projeto no grupo (tira de qualquer outro). gid vazio = sem grupo."""
+    d = _load()
+    for g in d["groups"]:
+        g["repoIds"] = [x for x in g["repoIds"] if x != repo_id]
+        if g["id"] == gid:
+            g["repoIds"].append(repo_id)
+    _save(d)
+
+
+def reorder_groups(ids):
+    d = _load()
+    by = {g["id"]: g for g in d["groups"]}
+    d["groups"] = [by[i] for i in ids if i in by] + [g for g in d["groups"] if g["id"] not in ids]
+    _save(d)
+
+
+def open_group(gid):
+    d = _load()
+    g = next((x for x in d["groups"] if x["id"] == gid), None)
+    if not g:
+        raise LookupError("Grupo não encontrado")
+    known = {r["id"] for r in git.list_repos(with_status=False) if r.get("exists")}
+    for rid in g["repoIds"]:
+        if rid in known and rid not in d["open"]:
+            d["open"].append(rid)
+    g["collapsed"] = False
+    _save(d)
+    return {"opened": [x for x in g["repoIds"] if x in known]}
+
+
+def hub():
+    """Para o hub de projetos: uso de cada repositório local — último acesso, vezes aberto, seu tempo com ele na tela
+    (total e 30 dias), sessões de IA e custo nos últimos 30 dias e a última vez que um agente trabalhou nele."""
+    import time
+    d = _load()
+    focus = load_json(agents.FOCUS_FILE, {})
+    since = time.strftime("%Y-%m-%d", time.localtime(time.time() - 29 * 86400))
+    stats = {}
+    for day, per in focus.items():
+        for rid, e in per.items():
+            st = stats.setdefault(rid, {"focusS": 0, "focus30": 0, "sessions30": 0, "cost30": 0.0, "lastAgent": None})
+            st["focusS"] += e.get("s") or 0
+            if day >= since:
+                st["focus30"] += e.get("s") or 0
+    for r in agents._history().values():
+        rid = r.get("projectId")
+        if not rid:
+            continue
+        st = stats.setdefault(rid, {"focusS": 0, "focus30": 0, "sessions30": 0, "cost30": 0.0, "lastAgent": None})
+        if r.get("day", "") >= since:
+            st["sessions30"] += 1
+            st["cost30"] += r.get("cost") or 0
+        if not st["lastAgent"] or (r.get("updated") or "") > st["lastAgent"]:
+            st["lastAgent"] = r.get("updated")
+    for rid, ts in d["lastOpened"].items():
+        stats.setdefault(rid, {"focusS": 0, "focus30": 0, "sessions30": 0, "cost30": 0.0, "lastAgent": None})["lastOpened"] = ts
+    for rid, n in d["opens"].items():
+        stats.setdefault(rid, {"focusS": 0, "focus30": 0, "sessions30": 0, "cost30": 0.0, "lastAgent": None})["opens"] = n
+    return {"stats": stats, "groups": d["groups"], "open": d["open"]}
 
 
 def reorder(ids):
@@ -194,7 +309,7 @@ def create_task(repo_id, body):
     title = (body.get("title") or "").strip()
     if not title:
         raise ValueError("Diga o que é a tarefa")
-    kind = body.get("kind") or "feature"
+    kind = body.get("kind") if body.get("kind") in ("feature", "fix", "review", "plan", "chore") else "feature"
     slug = slugify(body.get("slug") or title)
     branch = body.get("branch") or f"{kind}/{slug}"
     git._check_branch(branch)
@@ -208,13 +323,24 @@ def create_task(repo_id, body):
         lrepo = git.get_repo(lid)
         lp, _lc, lwt = _make_worktree(lrepo, _proj(d, lid)["settings"], slug, branch, _default_base(lrepo))
         linked.append({"repoId": lid, "name": lrepo["name"], "path": lp, "wtRepoId": lwt["id"]})
+    # projetos só de consulta (o agente enxerga a pasta, mas a tarefa não mexe neles): o checkout principal de cada um
+    refs = []
+    for rid in body.get("refs") or []:
+        if rid == repo_id or any(x["repoId"] == rid for x in linked):
+            continue
+        try:
+            rr = git.get_repo(rid)
+            refs.append({"repoId": rid, "name": rr["name"], "path": rr["path"]})
+        except ValueError:
+            continue
     prompt = body.get("prompt") or ""
     if linked:
         prompt += "\n\nEsta tarefa atravessa repositórios — cada um tem um worktree na branch " + branch + ":\n" + \
             "\n".join([f"- {repo['name']}: {path} (este)"] + [f"- {x['name']}: {x['path']}" for x in linked])
     task = {"id": uuid.uuid4().hex[:10], "title": title, "slug": slug, "branch": branch, "base": base, "path": path,
             "repoId": wt["id"], "createdAt": now_iso(), "status": "open", "workItem": body.get("workItem"),
-            "prompt": prompt, "copied": copied, "group": body.get("group"), "linked": linked, "reviewOf": body.get("reviewOf")}
+            "prompt": prompt, "copied": copied, "group": body.get("group"), "linked": linked, "reviewOf": body.get("reviewOf"),
+            "card": body.get("card"), "refs": refs}
     p["tasks"].append(task)
     _save(d)
     if (p["settings"].get("setup") or "").strip():
@@ -361,7 +487,8 @@ def start_agent(repo_id, task_id, account_id, prompt=None, mode=None, title=None
     sid = uuid.uuid4().hex[:12]
     extra = list(_settings(repo_id).get("addDirs") or [])
     if task_id:
-        extra += [x["path"] for x in _task(_load(), repo_id, task_id).get("linked") or []]   # tarefa em vários repos
+        t_ = _task(_load(), repo_id, task_id)
+        extra += [x["path"] for x in (t_.get("linked") or []) + (t_.get("refs") or [])]   # tarefa em vários repos + consulta
     command, env = agents.launch_spec(account_id, prompt, mode, sid, extra_dirs=extra, resume=resume)
     meta = {"project": repo_id, "account": account_id, "provider": a["provider"], "sid": sid,
             **({"task": task_id} if task_id else {})}

@@ -32,6 +32,13 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
 
 **Projetos (v3) — programar com IA sem sair do app**
 - Projetos abertos em abas, quantos quiser. Em cada um: agentes de IA, terminais de verdade e arquivos lado a lado.
+- **Hub de projetos:** todos os clones da máquina, com busca, filtros (abertos, com agente, com alterações, parados) e
+  ordem por últimos acessados, mais/menos usados (seu tempo com o projeto e sessões de IA), último commit ou nome;
+  agrupa por grupo, conta ou pasta.
+- **Grupos de projetos** (como os grupos de abas do navegador): nome, cor, recolher/expandir nas abas, abrir/fechar
+  todos. Arraste uma aba para o grupo ou use o clique direito.
+- **Pedir à IA** (⌘⇧I / Ctrl+Shift+I): descreva a tarefa ou escolha uma issue e escolha o fluxo — só planejar,
+  planejar → você aprova → implementar, ou implementar direto. Vira uma tarefa em worktree ou roda no checkout.
 - **Tarefas em worktree:** "Nova tarefa" cria a branch, o worktree, copia os arquivos locais que o Git não leva
   (`workspace.local.json`, `nuget.config`, `.env`… — e garante que eles nunca entrem num commit), roda a preparação e
   abre o(s) agente(s) com o prompt. Vários agentes no mesmo pedido = cada um no seu worktree; **Comparar** mostra o que
@@ -39,10 +46,21 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
 - **Contas de IA:** Claude Code (cada `~/.claude-*` é uma conta), Codex (`CODEX_HOME`), Cursor Agent, Gemini CLI,
   OpenCode. O login é o da própria CLI; o app nunca lê token de IA.
 - **Contexto, limite e reset:** por sessão, o modelo, o contexto usado, o custo e o estado (trabalhando, terminou,
-  precisa de você — com notificação). Por conta, os limites de 5 h e semanal com a contagem para o reset.
+  precisa de você — com notificação). Por conta, os limites de 5 h e semanal com a contagem para o reset, em qual
+  projeto/tarefa ela está atuando e as sessões abertas fora do app. O limite do Claude Code também é lido sem abrir
+  sessão ("Ler agora" ou automático, em Configurações): a própria CLI responde a um "ok" no Haiku em modo `-p` e
+  devolve o limite — custa frações de centavo e o app continua sem ler token nenhum.
+- A CLI é procurada no PATH do seu terminal (lendo o `.zprofile` e o `.zshrc`) e nas pastas de instalação comuns
+  (`~/.local/bin`, npm, Homebrew, nvm…); no Windows, no PATH do usuário gravado no registro.
 - **Editor** (Monaco, o do VS Code) que acompanha ao vivo o que o agente edita, ⌘P, busca no projeto, terminais (⌘T).
-- **Quadro** de todas as tarefas por estado. Atalhos: "Revisar com IA" na PR, "Corrigir com IA" no build quebrado (com
-  o log), "Começar tarefa" na issue/work item.
+  Markdown abre renderizado (ou código, ou lado a lado): as checkboxes de um roteiro de testes marcam direto e salvam,
+  com o progresso "N de M concluídos".
+- **Quadro** (kanban) editável: colunas e cartões seus, com grupo, projetos (os que **mudam** — um worktree em cada,
+  na mesma branch —, os de **consulta** e o **principal**, onde a IA roda), etiquetas, prioridade, prazo e item
+  ligado. "Planejar"/"Implementar" no cartão abre a tarefa com o contexto do cartão, do grupo e das pastas; o cartão
+  anda sozinho para "Em andamento" e "Revisão". A aba "Tarefas dos agentes" mostra as tarefas pelo estado do agente.
+- Atalhos: "Revisar com IA" na PR, "Corrigir com IA" no build quebrado (com o log), "Pedir à IA"/"Começar tarefa"/
+  "Adicionar ao quadro" na issue/work item.
 - Os terminais não herdam a chave do app nem segredos: um agente não consegue chamar a API local nem ler os PATs.
 - **Revisão** de cada tarefa: diff editável por arquivo (a seta da margem desfaz um trecho) e comentários em linhas
   que viram um prompt para o agente. Tarefas de revisão de PR publicam o resultado como comentário na PR.
@@ -84,6 +102,11 @@ fixo, tenta reconectar a cada 10 s e atualiza tudo assim que a rede volta.
   todos os repositórios dela, com a quantidade e o logo do provedor, e guarda as **pastas base** dos clones — podem ser
   várias (…/apis, …/mobile). O app reconhece sozinho os clones dentro delas e as oferece primeiro na hora de clonar.
   **Catálogos** são só filtros/agrupamentos manuais. Filtre por clonado/não clonado e clone um ou todos de uma vez.
+  A busca entra em repositórios dentro de outros (um workspace com as APIs dentro dele).
+- **O que acompanhar:** por conta, todos os repositórios ou só os escolhidos; por repositório (o olho na lista), liga
+  e desliga PRs, builds, deploys, issues e notificações. O painel do repositório mostra o que está acontecendo nele
+  (PRs, builds, deploys, issues), a pasta local (abrir, **mover para…**, clonar, limpar), o grupo e as tags; o painel
+  da conta, a conexão, os números, as pastas base e a conta de IA padrão.
 - **Favoritos e tags**: favorite repositórios de qualquer conta (GitHub e Azure misturados) — pela estrela ou buscando
   em todas as contas — e organize com tags livres ("Open-Source", "Sustentação"…). Cada tag vira uma coleção; tag nova
   é criada digitando no próprio seletor.
@@ -96,7 +119,9 @@ fixo, tenta reconectar a cada 10 s e atualiza tudo assim que a rede volta.
   alterações com diff, stage/unstage/descartar, commit/amend, pull/push/fetch, branches locais e remotas, merge,
   cherry-pick, revert, reset, stash, tags e **Criar PR** direto para o GitHub ou o Azure.
 - Abrir no **VS Code/Cursor/Rider**, no **Finder/Explorer**, no terminal ou no navegador.
-- **⌘K / Ctrl+K**: paleta de comandos para ir a qualquer tela, repositório ou ação.
+- **⌘K / Ctrl+K**: paleta de comandos para ir a qualquer tela, repositório ou ação. Os atalhos aparecem no formato do
+  sistema (⌘ no macOS, Ctrl no Windows); a lista completa fica em Configurações → Atalhos.
+- **Barra lateral recolhível** (⌘\ / Ctrl+\): só ícones, com os submenus em popover.
 
 **No sistema**
 - **Notificações nativas** (Central de Notificações no Mac, bandeja no Windows): clicar abre o item.

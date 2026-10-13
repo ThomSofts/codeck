@@ -31,7 +31,15 @@ def public_config():
                     "rate": (ctx.gh[a["id"]].rate if a["id"] in ctx.gh else None)} for a in cfg.get("github", [])],
         "githubLogin": bool(github.client_id()),
         "ghCli": bool(github.gh_cli_path()),
+        "ui": ui_prefs(cfg),
     }
+
+
+UI_MAX = 120   # chaves de preferência da tela (editor, terminal, barra lateral…): só tipos simples, sem segredo
+
+
+def ui_prefs(cfg=None):
+    return dict((cfg if cfg is not None else load_json(CONFIG_FILE, {})).get("ui") or {})
 
 
 def save_azure(body):
@@ -127,5 +135,16 @@ def save_prefs(body):
         ctx.config = cfg
         import threading
         threading.Thread(target=catalogs.discover, kwargs={"force": True}, daemon=True).start()   # já procura clones nelas
+    if isinstance(body.get("ui"), dict):
+        ui = dict(cfg.get("ui") or {})
+        for k, v in body["ui"].items():
+            k = str(k)[:60]
+            if v is None:
+                ui.pop(k, None)
+            elif isinstance(v, (bool, int, float)) or (isinstance(v, str) and len(v) <= 2000):
+                ui[k] = v
+            elif isinstance(v, list) and len(v) <= 200 and all(isinstance(x, (str, int, float, bool)) for x in v):
+                ui[k] = v
+        cfg["ui"] = dict(list(ui.items())[-UI_MAX:])
     save_json(CONFIG_FILE, cfg, private=True)
     ctx.config = cfg

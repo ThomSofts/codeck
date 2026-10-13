@@ -1,11 +1,16 @@
 <script lang="ts">
-  // Configurações: organizações do Azure DevOps, contas do GitHub, preferências e sobre/atualização.
+  // Configurações: contas (Azure DevOps, GitHub, IA) e as preferências do app — aparência, editor, terminal, projetos,
+  // agentes, notificações, leitura, atalhos e dados. A busca do menu filtra os ajustes de todas as seções.
   // Segredos (PAT/token) só vão para o servidor local, que os guarda no cofre do sistema — nunca voltam para a tela.
-  import { Bot } from "@lucide/svelte";
-  import { Check, ExternalLink, KeyRound, LogIn, Monitor, Moon, Plus, RefreshCw, Shield, SlidersHorizontal, Sun, Terminal, Trash2, Info } from "@lucide/svelte";
+  // Preferências da tela (lib/prefs) gravam na hora; as do backend (tema, editor, intervalo, avisos) também.
+  import { Bell, Bot, Check, ClipboardCopy, Code2, Database, ExternalLink, FolderGit2, FolderOpen, Info, Keyboard, KeyRound, LogIn, Monitor,
+    Moon, Palette, Plus, RefreshCw, Search, Shield, Sparkles, SquareTerminal, Sun, Terminal, Trash2, Wifi, X } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { get, post } from "../lib/api";
+  import { applyDensity, type Density } from "../lib/density";
   import { dateTime } from "../lib/format";
+  import { isMac, kbd, SHORTCUTS } from "../lib/keys";
+  import { PREF_DEFAULTS, prefs, type PrefKey } from "../lib/prefs.svelte";
   import { go, router } from "../lib/router.svelte";
   import { store } from "../lib/store.svelte";
   import { ui } from "../lib/ui.svelte";
@@ -16,19 +21,142 @@
   import Switch from "../components/Switch.svelte";
   import Segmented from "../components/Segmented.svelte";
   import AiAccounts from "../components/settings/AiAccounts.svelte";
+  import { repos } from "../lib/repos.svelte";
   import TestResult from "../components/TestResult.svelte";
   import { chooseTheme, type ThemePref } from "../lib/theme";
 
   type OrgForm = { name: string; url: string; pat: string; enabled: boolean; originalName?: string; hasPat?: boolean; patStore?: string; me?: any; test?: any };
-  const TABS = [
-    { id: "accounts", label: "Azure DevOps", provider: "azure" },
-    { id: "github", label: "GitHub", provider: "github" },
-    { id: "ai", label: "IA", icon: Bot },
-    { id: "prefs", label: "Preferências", icon: SlidersHorizontal },
-    { id: "about", label: "Sobre", icon: Info },
-  ];
-  const tab = $derived(TABS.some(t => t.id === router.param) ? router.param : "accounts");
+  type SecId = "accounts" | "github" | "ai" | "appearance" | "editor" | "terminal" | "projects" | "agents" | "notifications" | "network" | "shortcuts" | "data" | "about";
+  type Sec = { id: SecId; label: string; icon?: any; provider?: "azure" | "github"; title: string; desc: string };
 
+  const OS = isMac() ? "macOS" : "Windows";
+  const GROUPS: { label: string; items: Sec[] }[] = [
+    { label: "Contas", items: [
+      { id: "accounts", label: "Azure DevOps", provider: "azure", title: "Organizações do Azure DevOps", desc: "PRs, builds, releases, aprovações de deploy e work items." },
+      { id: "github", label: "GitHub", provider: "github", title: "Contas do GitHub", desc: "Pessoais, organizações e repositórios de terceiros a que o perfil tem acesso — PRs, Actions, issues e deploys." },
+      { id: "ai", label: "IA", icon: Bot, title: "Contas de IA", desc: "" },
+    ] },
+    { label: "Aplicativo", items: [
+      { id: "appearance", label: "Aparência", icon: Palette, title: "Aparência", desc: "Tema, densidade e barra lateral." },
+      { id: "editor", label: "Editor", icon: Code2, title: "Editor", desc: "O editor de código dos projetos (o mesmo do VS Code) e o editor externo." },
+      { id: "terminal", label: "Terminal", icon: SquareTerminal, title: "Terminal", desc: "Terminais e agentes dos projetos. Vale também para os que já estão abertos." },
+      { id: "projects", label: "Projetos", icon: FolderGit2, title: "Projetos", desc: "Como os projetos abrem." },
+      { id: "agents", label: "IA e agentes", icon: Sparkles, title: "IA e agentes", desc: "Limites das contas e o que a IA faz quando você pede uma tarefa." },
+    ] },
+    { label: "Sistema", items: [
+      { id: "notifications", label: "Notificações", icon: Bell, title: "Notificações", desc: `Avisos na Central de Notificações do ${OS}. Clicar no aviso abre o item.` },
+      { id: "network", label: "Leitura e automação", icon: Wifi, title: "Leitura e automação", desc: "Com que frequência o app consulta Azure e GitHub e se as regras agem sozinhas." },
+      { id: "shortcuts", label: "Atalhos", icon: Keyboard, title: "Atalhos de teclado", desc: `Mostrados no formato do ${OS} — ${isMac() ? "⌘ ⇧ ⌥" : "Ctrl, Shift, Alt"}. No ${isMac() ? "Windows" : "macOS"} o app mostra ${isMac() ? "Ctrl" : "⌘"} automaticamente.` },
+      { id: "data", label: "Dados e privacidade", icon: Database, title: "Dados e privacidade", desc: "Onde o app guarda tudo e como protege suas credenciais." },
+      { id: "about", label: "Sobre", icon: Info, title: store.s?.app.product || "Codeck", desc: "" },
+    ] },
+  ];
+  const SECS = GROUPS.flatMap(g => g.items);
+  const ALIAS: Record<string, SecId> = { prefs: "appearance" };   // links antigos (#/settings/prefs)
+  const tab = $derived<SecId>(ALIAS[router.param] || (SECS.some(s => s.id === router.param) ? router.param as SecId : "accounts"));
+  const sec = $derived(SECS.find(s => s.id === tab)!);
+
+  // ------------------------------------------------------------ linhas de ajuste (também o índice da busca)
+  type Opt = { value: string; label: string; icon?: any };
+  type Row = { sec: SecId; id: string; label: string; desc?: string; kw?: string;
+    kind: "pref-switch" | "pref-select" | "pref-seg" | "rule-switch" | "auto" | "theme" | "ext-editor" | "poll" | "note" | "data-dir" | "diag" | "security" | "link";
+    key?: string; options?: Opt[]; when?: () => boolean };
+  const sizes = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => ({ value: String(a + i), label: `${a + i} px` }));
+  const ROWS: Row[] = [
+    // aparência
+    { sec: "appearance", id: "theme", kind: "theme", label: "Tema", desc: `“Sistema” acompanha o claro/escuro do ${OS} e troca sozinho.`, kw: "escuro claro dark light cor" },
+    { sec: "appearance", id: "density", kind: "pref-seg", key: "ui.density", label: "Densidade", desc: "Compacta diminui alturas e espaçamentos — cabe mais na tela.",
+      options: [{ value: "comfortable", label: "Confortável" }, { value: "compact", label: "Compacta" }], kw: "tamanho espaço compacto" },
+    { sec: "appearance", id: "sidebar", kind: "pref-switch", key: "sidebar.collapsed", label: "Barra lateral recolhida", desc: `Só os ícones; os menus abrem por cima. Atalho: ${kbd("mod+\\")}.`, kw: "menu aside retrair" },
+    { sec: "appearance", id: "openProjects", kind: "pref-switch", key: "sidebar.openProjects", label: "Projetos abertos na barra lateral", desc: "Lista os projetos abertos abaixo de “Projetos”, para trocar rápido.", kw: "abas menu" },
+    // editor
+    { sec: "editor", id: "edFont", kind: "pref-select", key: "editor.fontSize", label: "Tamanho da fonte", options: sizes(11, 20), kw: "letra zoom" },
+    { sec: "editor", id: "minimap", kind: "pref-switch", key: "editor.minimap", label: "Minimapa", desc: "A miniatura do arquivo à direita do editor." },
+    { sec: "editor", id: "wrap", kind: "pref-switch", key: "editor.wordWrap", label: "Quebra de linha", desc: "Linhas longas continuam na linha de baixo em vez de rolar para o lado.", kw: "word wrap" },
+    { sec: "editor", id: "lineNumbers", kind: "pref-switch", key: "editor.lineNumbers", label: "Números de linha" },
+    { sec: "editor", id: "sticky", kind: "pref-switch", key: "editor.stickyScroll", label: "Cabeçalho fixo ao rolar", desc: "Mostra a classe/função em que você está no topo do editor (sticky scroll).", kw: "sticky scroll" },
+    { sec: "editor", id: "md", kind: "pref-seg", key: "md.mode", label: "Markdown abre em", desc: `Arquivos .md (roteiros de teste, README…). Na pré-visualização dá para marcar os checkboxes. Alterne com ${kbd("mod+shift+v")}.`,
+      options: [{ value: "preview", label: "Visualização" }, { value: "code", label: "Código" }, { value: "split", label: "Lado a lado" }], kw: "md markdown renderizado preview checkbox" },
+    { sec: "editor", id: "extEditor", kind: "ext-editor", label: "Editor externo", desc: "Usado em “Abrir no editor” nos repositórios.", kw: "vscode cursor rider" },
+    // terminal
+    { sec: "terminal", id: "termFont", kind: "pref-select", key: "terminal.fontSize", label: "Tamanho da fonte", options: sizes(10, 20), kw: "letra zoom" },
+    { sec: "terminal", id: "scrollback", kind: "pref-select", key: "terminal.scrollback", label: "Linhas de histórico", desc: "Quanto dá para rolar para cima em cada terminal.",
+      options: [1000, 5000, 10000, 50000].map(n => ({ value: String(n), label: `${n.toLocaleString("pt-BR")} linhas` })), kw: "scrollback buffer" },
+    { sec: "terminal", id: "blink", kind: "pref-switch", key: "terminal.cursorBlink", label: "Cursor piscando" },
+    // projetos
+    { sec: "projects", id: "reopen", kind: "pref-switch", key: "work.reopenLast", label: "Reabrir o último projeto ao iniciar", desc: "Ao abrir o app, já entra no projeto em que você estava." },
+    { sec: "projects", id: "projNote", kind: "note", label: "Ajustes de cada projeto",
+      desc: "Arquivos copiados para os worktrees (workspace.local.json, .env…), script de preparação, pasta dos worktrees, pastas extras e shell ficam na engrenagem do projeto (aba do projeto → clique direito → Ajustes do projeto).", kw: "worktree copiar preparação shell" },
+    { sec: "projects", id: "dirsNote", kind: "note", label: "Pastas dos clones", desc: "Ficam em cada conta: Repositórios → Contas → “⋯” → Pastas base.", kw: "clonar pasta base" },
+    // agentes
+    { sec: "agents", id: "autoLimits", kind: "pref-switch", key: "ai.autoLimits", label: "Ler os limites das contas automaticamente",
+      desc: "Para contas do Claude sem leitura recente, o app manda um pedido mínimo ao Haiku (cerca de US$ 0,002, um tiquinho do limite) e lê o uso de 5 h e semanal da resposta. Nunca lê token: quem fala com a Anthropic é a própria CLI.", kw: "limite uso 5h semanal claude" },
+    { sec: "agents", id: "autoLimitsMin", kind: "pref-select", key: "ai.autoLimitsMinutes", label: "A cada", when: () => !!prefs.get("ai.autoLimits"),
+      options: [30, 60, 120, 240].map(n => ({ value: String(n), label: n < 60 ? `${n} min` : `${n / 60} h` })), kw: "intervalo limite" },
+    { sec: "agents", id: "flow", kind: "pref-select", key: "ai.defaultFlow", label: "Ao pedir uma tarefa para a IA",
+      desc: "O padrão de “Pedir à IA” no projeto, nas issues e no quadro — dá para trocar em cada pedido.",
+      options: [{ value: "plan", label: "Só planejar" }, { value: "plan-implement", label: "Planejar → você aprova → implementa" }, { value: "implement", label: "Implementar direto" }],
+      kw: "planejar implementar plano modo" },
+    { sec: "agents", id: "aiAccounts", kind: "link", label: "Contas de IA", desc: "Claude Code, Codex, Cursor… e a conta padrão de cada organização.", key: "ai", kw: "claude codex cursor gemini conta" },
+    // notificações
+    { sec: "notifications", id: "nPending", kind: "rule-switch", key: "notifyPending", label: "PR esperando o seu voto", desc: "Quando chega uma PR nova para você revisar.", kw: "pull request revisão" },
+    { sec: "notifications", id: "nMine", kind: "rule-switch", key: "notifyMyPrs", label: "Problema nas minhas PRs", desc: "Conflito, build vermelho, voto de recusa ou espera nas PRs que você abriu.", kw: "pull request conflito" },
+    { sec: "notifications", id: "nBuild", kind: "rule-switch", key: "notifyBuildFailures", label: "Build falhou", desc: "Em branch protegida ou disparado por você.", kw: "actions pipeline" },
+    { sec: "notifications", id: "nDeploy", kind: "rule-switch", key: "notifyDeploys", label: "Deploy esperando você", desc: "Release, environment ou permissão de pipeline aguardando aprovação.", kw: "release aprovação" },
+    { sec: "notifications", id: "nAuto", kind: "rule-switch", key: "notifyAuto", label: "O piloto agiu sozinho", desc: "Quando uma regra aprova uma PR ou libera um deploy.", kw: "automação regra" },
+    { sec: "notifications", id: "nDone", kind: "pref-switch", key: "notify.agentDone", label: "Agente terminou", desc: "A tarefa ficou pronta para revisar.", kw: "ia claude" },
+    { sec: "notifications", id: "nNeeds", kind: "pref-switch", key: "notify.agentNeedsYou", label: "Agente precisa de você", desc: "Pediu permissão ou fez uma pergunta.", kw: "ia claude permissão" },
+    // leitura e automação
+    { sec: "network", id: "poll", kind: "poll", label: "Intervalo de leitura", desc: "De quanto em quanto tempo o piloto consulta Azure e GitHub (15 s a 1 h). Sem internet, tenta a cada 10 s.", kw: "polling atualizar" },
+    { sec: "network", id: "auto", kind: "auto", label: "Automação ativa", desc: "Desligada, nenhuma regra aprova ou arquiva nada sozinha — a tela continua igual.", kw: "pausar regras piloto" },
+    { sec: "network", id: "resurface", kind: "rule-switch", key: "resurfaceOnPush", label: "PR arquivada volta com push novo", desc: "Se a PR que você arquivou receber commits, ela volta para a fila.", kw: "arquivar" },
+    // dados
+    { sec: "data", id: "dataDir", kind: "data-dir", label: "Pasta de dados", kw: "config json pasta" },
+    { sec: "data", id: "security", kind: "security", label: "Segurança",
+      desc: `O servidor local só escuta em 127.0.0.1 e exige um token por execução. PATs e tokens ficam no ${isMac() ? "Keychain do macOS" : "cofre do Windows (DPAPI)"}; a tela nunca os recebe de volta. Terminais e agentes não herdam a chave do app.`, kw: "pat token cofre keychain" },
+    { sec: "data", id: "diag", kind: "diag", label: "Diagnóstico", desc: "Versão, plataforma e contagens — sem nomes, tokens ou conteúdo. Útil para relatar um problema.", kw: "suporte bug versão" },
+    // atalhos para as seções de contas (a busca leva até elas)
+    { sec: "accounts", id: "azLink", kind: "link", key: "accounts", label: "Organizações do Azure DevOps", desc: "PAT por organização, com teste de cada permissão.", kw: "azure pat organização" },
+    { sec: "github", id: "ghLink", kind: "link", key: "github", label: "Contas do GitHub", desc: "Entrar com GitHub, gh CLI ou token.", kw: "github token gh login" },
+    { sec: "shortcuts", id: "keysLink", kind: "link", key: "shortcuts", label: "Atalhos de teclado", desc: "Todos os atalhos do app.", kw: "teclado atalho kbd" },
+    { sec: "about", id: "updLink", kind: "link", key: "about", label: "Versão e atualizações", desc: "Procurar atualização agora.", kw: "atualizar versão update sobre" },
+  ];
+
+  let query = $state("");
+  const norm = (s: string) => s.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  const results = $derived.by(() => {
+    const words = norm(query).split(/\s+/).filter(Boolean);
+    if (!words.length) return null;
+    const hits = ROWS.filter(r => {
+      const hay = norm(`${r.label} ${r.desc || ""} ${r.kw || ""} ${SECS.find(s => s.id === r.sec)?.label}`);
+      return words.every(w => hay.includes(w));
+    });
+    return SECS.map(s => ({ sec: s, rows: hits.filter(r => r.sec === s.id) })).filter(g => g.rows.length);
+  });
+  const secRows = $derived(ROWS.filter(r => r.sec === tab && r.kind !== "link" || (r.sec === tab && r.kind === "link" && r.key !== tab)));
+
+  // ------------------------------------------------------------ "Salvo" discreto (sem toast a cada clique)
+  let saved = $state(false);
+  let savedT: ReturnType<typeof setTimeout> | undefined;
+  function flashSaved() { saved = true; clearTimeout(savedT); savedT = setTimeout(() => (saved = false), 1600); }
+
+  function setPref(key: string, raw: string | boolean) {
+    const k = key as PrefKey;
+    const def = PREF_DEFAULTS[k];
+    const v = typeof def === "number" ? Number(raw) : raw;
+    prefs.set(k, v as any);
+    if (k === "ui.density") applyDensity(v as Density);
+    flashSaved();
+  }
+  async function setRule(key: string, v: boolean) {
+    const r = store.s?.rules;
+    if (!r) return;
+    const settings = { ...r.settings, [key]: v };
+    r.settings = settings;   // otimista: o switch não volta enquanto grava
+    try { await post("rules", { ...r, settings }); flashSaved(); store.load(); } catch (e) { ui.error(e); store.load(); }
+  }
+
+  // ------------------------------------------------------------ contas (Azure, GitHub)
   let cfg = $state<any>(null);
   let orgs = $state<OrgForm[]>([]);
   let saving = $state(false);
@@ -99,24 +227,122 @@
   }
 
   async function savePrefs(patch: Record<string, unknown>) {
-    try { await post("prefs", patch); cfg = { ...cfg, ...patch }; ui.toast("Preferência salva"); } catch (e) { ui.error(e); }
+    try { await post("prefs", patch); cfg = { ...cfg, ...patch }; flashSaved(); } catch (e) { ui.error(e); }
   }
-  async function copy(t: string) { await navigator.clipboard.writeText(t); ui.toast("Código copiado"); }
+  async function copy(t: string, msg = "Código copiado") { await navigator.clipboard.writeText(t); ui.toast(msg); }
+
+  async function openData() {
+    try { await post("open", { path: cfg.dataDir, target: "files" }); } catch (e) { ui.error(e); }
+  }
+  function diagnostic() {
+    const s = store.s, a = s?.app;
+    const lines = [
+      `${a?.product || "Codeck"} ${a?.version || "?"} (build ${a?.build ?? "?"}, ${a?.platform || "?"})`,
+      `Sistema: ${navigator.userAgent}`,
+      `Contas: Azure ${s?.orgs.length ?? 0} · GitHub ${s?.githubAccounts.length ?? 0}`,
+      `Itens: PRs ${(s?.prs.length ?? 0) + (s?.myPrs.length ?? 0)} · builds ${s?.builds.length ?? 0} · deploys ${s?.deploys.length ?? 0} · issues ${s?.issues.length ?? 0}`,
+      `Leitura: a cada ${s?.pollSeconds ?? "?"} s · última ${s?.lastPoll || "nunca"} · ${s?.pollMs ?? "?"} ms${s?.offline ? ` · offline desde ${s.offline}` : ""}`,
+      `Erros de leitura: ${Object.keys({ ...(s?.errors || {}), ...(s?.buildErrors || {}), ...(s?.deployErrors || {}), ...(s?.issueErrors || {}) }).length}`,
+      `Automação: ${s?.rules.settings.paused ? "pausada" : "ativa"} · ${s?.rules.rules.length ?? 0} regra(s) de PR · ${s?.rules.deployRules.length ?? 0} de deploy`,
+      `Tela: ${window.innerWidth}×${window.innerHeight} · densidade ${prefs.get("ui.density")} · tema ${s?.theme || "?"}`,
+    ];
+    copy(lines.join("\n"), "Diagnóstico copiado");
+  }
 </script>
 
+{#snippet control(r: Row)}
+  {#if r.kind === "pref-switch"}
+    <Switch checked={!!prefs.get(r.key as PrefKey)} onchange={(v) => setPref(r.key!, v)} />
+  {:else if r.kind === "pref-select"}
+    <select class="input" value={String(prefs.get(r.key as PrefKey))} onchange={(e) => setPref(r.key!, (e.target as HTMLSelectElement).value)}>
+      {#each r.options || [] as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
+    </select>
+  {:else if r.kind === "pref-seg"}
+    <Segmented size="sm" value={String(prefs.get(r.key as PrefKey))} options={r.options || []} onchange={(v) => setPref(r.key!, v)} />
+  {:else if r.kind === "rule-switch"}
+    <Switch checked={!!(store.s?.rules.settings as any)?.[r.key!]} disabled={!store.s} onchange={(v) => setRule(r.key!, v)} />
+  {:else if r.kind === "auto"}
+    <Switch checked={!store.s?.rules.settings.paused} disabled={!store.s} onchange={(v) => setRule("paused", !v)} />
+  {:else if r.kind === "theme"}
+    <Segmented size="sm" value={cfg?.theme || "system"} onchange={(v) => { chooseTheme(v as ThemePref); savePrefs({ theme: v }); }}
+      options={[{ value: "system", label: "Sistema", icon: Monitor }, { value: "dark", label: "Escuro", icon: Moon }, { value: "light", label: "Claro", icon: Sun }]} />
+  {:else if r.kind === "ext-editor"}
+    <select class="input" value={cfg?.editor} onchange={(e) => savePrefs({ editor: (e.target as HTMLSelectElement).value })}>
+      {#each cfg?.editors || [] as ed (ed.id)}<option value={ed.id}>{ed.name}</option>{:else}<option value="">nenhum editor encontrado</option>{/each}
+    </select>
+  {:else if r.kind === "poll"}
+    <select class="input" value={String(cfg?.pollSeconds)} onchange={(e) => savePrefs({ pollSeconds: Number((e.target as HTMLSelectElement).value) })}>
+      {#each [15, 30, 60, 120, 300, 600, 1800, 3600] as s (s)}<option value={String(s)}>{s < 60 ? `${s} s` : s < 3600 ? `${s / 60} min` : "1 h"}</option>{/each}
+    </select>
+  {:else if r.kind === "data-dir"}
+    <button class="btn sm" onclick={openData} disabled={!cfg?.dataDir}><FolderOpen size={14} /> Abrir pasta</button>
+  {:else if r.kind === "diag"}
+    <button class="btn sm" onclick={diagnostic}><ClipboardCopy size={14} /> Copiar diagnóstico</button>
+  {:else if r.kind === "security"}
+    <Shield size={18} class="shield" />
+  {:else if r.kind === "link"}
+    <button class="btn sm ghost" onclick={() => { query = ""; go(`/settings/${r.key}`, "soft"); }}>Abrir →</button>
+  {/if}
+{/snippet}
+
+{#snippet row(r: Row)}
+  <div class="pref" class:off={r.when && !r.when()} class:note={r.kind === "note"}>
+    <div class="pt">
+      <b>{r.label}</b>
+      {#if r.kind === "data-dir"}<div class="small muted mono sel">{cfg?.dataDir || "…"}</div>{/if}
+      {#if r.desc}<div class="small muted">{r.desc}</div>{/if}
+    </div>
+    {#if r.kind !== "note"}<div class="pc">{@render control(r)}</div>{/if}
+  </div>
+{/snippet}
+
+{#snippet trackRow(key: string, name: string)}
+  {@const mode = repos.trackMode(key)}
+  <div class="trackrow">
+    <Switch checked={mode === "all"} onchange={async (v) => { try { await repos.setTrackMode(key, v ? "all" : "selected"); store.refreshSoon(2500); } catch (e) { ui.error(e); } }}
+      label="Acompanhar todos os repositórios desta conta"
+      hint={mode === "all" ? "PRs, builds, deploys e issues de todos os repositórios — em Repositórios dá para desligar um a um" : "Só os repositórios que você marcar (o olho em Repositórios)"} />
+    <button class="btn sm ghost" onclick={() => (ui.editAccount = key)}>Detalhes da conta →</button>
+  </div>
+{/snippet}
+
 <Page title="Configurações" sub="Contas, preferências e segurança">
+  {#snippet actions()}
+    <span class="saved" class:on={saved} aria-live="polite"><Check size={13} /> Salvo</span>
+  {/snippet}
   <div class="layout">
     <nav class="tabs">
-      {#each TABS as t (t.id)}
-        <button class:on={tab === t.id} onclick={() => go(`/settings/${t.id}`, "soft")}>{#if t.provider}<ProviderIcon provider={t.provider} size={15} />{:else if t.icon}<t.icon size={15} />{/if} {t.label}</button>
+      <label class="find">
+        <Search size={14} />
+        <input bind:value={query} placeholder="Buscar ajuste…" aria-label="Buscar ajuste" onkeydown={(e) => e.key === "Escape" && (query = "")} />
+        {#if query}<button class="clr" title="Limpar" aria-label="Limpar busca" onclick={() => (query = "")}><X size={11} /></button>{/if}
+      </label>
+      {#each GROUPS as g (g.label)}
+        <div class="ng">{g.label}</div>
+        {#each g.items as t (t.id)}
+          <button class:on={tab === t.id && !results} onclick={() => { query = ""; go(`/settings/${t.id}`, "soft"); }}>
+            {#if t.provider}<ProviderIcon provider={t.provider} size={15} />{:else if t.icon}<t.icon size={15} />{/if} {t.label}
+          </button>
+        {/each}
       {/each}
       <div class="sec-note"><Shield size={14} /><span>Credenciais ficam criptografadas no {cfg?.orgs?.[0]?.patStore || cfg?.github?.[0]?.store || "cofre do sistema"}; a tela nunca as recebe de volta.</span></div>
     </nav>
 
     <div class="body">
       {#if !cfg}<Skeleton rows={4} />
+      {:else if results}
+        <div class="head"><div><h2>Resultados para “{query}”</h2><p class="muted small">{results.reduce((n, g) => n + g.rows.length, 0)} ajuste(s)</p></div></div>
+        {#each results as g (g.sec.id)}
+          <button class="rh" onclick={() => { query = ""; go(`/settings/${g.sec.id}`, "soft"); }}>
+            {#if g.sec.provider}<ProviderIcon provider={g.sec.provider} size={13} />{:else if g.sec.icon}<g.sec.icon size={13} />{/if} {g.sec.label} <span class="muted">→</span>
+          </button>
+          <div class="card org">{#each g.rows as r (r.id)}{@render row(r)}{/each}</div>
+        {:else}
+          <div class="none card"><Search size={18} /><b>Nenhum ajuste com “{query}”</b><span class="small muted">Tente outra palavra — por exemplo “tema”, “fonte”, “limite” ou “notificação”.</span></div>
+        {/each}
+
       {:else if tab === "accounts"}
-        <div class="head"><div><h2>Organizações do Azure DevOps</h2><p class="muted small">PRs, builds, releases, aprovações de deploy e work items.</p></div>
+        <div class="head"><div><h2>{sec.title}</h2><p class="muted small">{sec.desc}</p></div>
           <span class="spacer"></span><button class="btn sm ghost" onclick={() => (orgs = [...orgs, blankOrg()])}><Plus size={14} /> Organização</button></div>
         {#each orgs as o, i (i)}
           <div class="card org">
@@ -138,12 +364,13 @@
               <span class="tiny muted">Escopos: Code (Read & Write), Build (Read & Execute), Release (Read, Write & Execute), Work Items (Read), Project (Read).</span>
             </div>
             {#if o.test}<div class="test"><TestResult test={o.test} /></div>{/if}
+            {#if o.originalName}{@render trackRow("azure:" + o.originalName, o.originalName)}{/if}
           </div>
         {/each}
         <div class="foot"><button class="btn primary" onclick={saveOrgs} disabled={saving}>{saving ? "Salvando…" : "Salvar organizações"}</button></div>
 
       {:else if tab === "github"}
-        <div class="head"><div><h2>Contas do GitHub</h2><p class="muted small">Pessoais, organizações e repositórios de terceiros a que o perfil tem acesso — PRs, Actions, issues e deploys.</p></div></div>
+        <div class="head"><div><h2>{sec.title}</h2><p class="muted small">{sec.desc}</p></div></div>
         {#each cfg.github as a (a.id)}
           <div class="card org">
             <div class="row" style="gap:10px">
@@ -156,6 +383,7 @@
             </div>
             {#if a.scopes?.length}<div class="scopes">{#each a.scopes as s (s)}<span class="pill neutral">{s}</span>{/each}</div>{/if}
             {#if ghTests[a.id]}<div class="test"><TestResult test={ghTests[a.id]} /></div>{/if}
+            {@render trackRow("github:" + a.login, a.login)}
           </div>
         {/each}
 
@@ -188,44 +416,50 @@
 
       {:else if tab === "ai"}
         <AiAccounts />
-      {:else if tab === "prefs"}
-        <div class="head"><div><h2>Preferências</h2></div></div>
-        <div class="card org">
-          <div class="pref"><div><b>Tema</b><div class="small muted">“Sistema” acompanha o claro/escuro do {navigator.platform.includes("Mac") ? "macOS" : "Windows"} e troca sozinho.</div></div>
-            <Segmented size="sm" value={cfg.theme || "system"} onchange={(v) => { chooseTheme(v as ThemePref); savePrefs({ theme: v }); }}
-              options={[{ value: "system", label: "Sistema", icon: Monitor }, { value: "dark", label: "Escuro", icon: Moon }, { value: "light", label: "Claro", icon: Sun }]} /></div>
-          <div class="pref"><div><b>Editor</b><div class="small muted">Usado em “Abrir no editor” nos repositórios.</div></div>
-            <select class="input" value={cfg.editor} onchange={(e) => savePrefs({ editor: (e.target as HTMLSelectElement).value })}>
-              {#each cfg.editors as ed (ed.id)}<option value={ed.id}>{ed.name}</option>{:else}<option value="">nenhum editor encontrado</option>{/each}
-            </select></div>
-          <div class="pref"><div><b>Intervalo de leitura</b><div class="small muted">De quanto em quanto tempo o piloto consulta Azure e GitHub (15 s a 1 h).</div></div>
-            <select class="input" value={String(cfg.pollSeconds)} onchange={(e) => savePrefs({ pollSeconds: Number((e.target as HTMLSelectElement).value) })}>
-              {#each [15, 30, 60, 120, 300, 600] as s (s)}<option value={String(s)}>{s < 60 ? `${s} s` : `${s / 60} min`}</option>{/each}
-            </select></div>
-          <div class="pref"><div><b>Pastas dos clones</b><div class="small muted">Ficam em cada conta: Repositórios → Contas → “⋯” → Pastas base.</div></div></div>
-          <div class="pref"><div><b>Pasta de dados</b><div class="small muted mono">{cfg.dataDir}</div></div></div>
-        </div>
 
-      {:else}
+      {:else if tab === "shortcuts"}
+        <div class="head"><div><h2>{sec.title}</h2><p class="muted small">{sec.desc}</p></div></div>
+        {#each SHORTCUTS as g (g.group)}
+          <div class="card org keys">
+            <h4>{g.group}</h4>
+            {#each g.items as k (k.combo)}
+              <div class="key"><span>{k.label}</span><span class="kbd">{kbd(k.combo)}</span></div>
+            {/each}
+          </div>
+        {/each}
+
+      {:else if tab === "about"}
         <div class="head"><div><h2>{store.s?.app.product || "Codeck"}</h2><p class="muted small">Versão {store.s?.app.version} · build {store.s?.app.build} · {store.s?.app.platform}</p></div></div>
         <div class="card org">
           <div class="pref"><div><b>Atualizações</b><div class="small muted">
             {#if store.s?.update.available}Versão {store.s.update.version} disponível{:else if store.s?.update.checkedAt}Em dia — verificado {dateTime(store.s.update.checkedAt)}{:else}Ainda não verificado{/if}</div></div>
             <button class="btn sm" onclick={() => (window as any).checkUpdate?.(true)}><RefreshCw size={14} /> Procurar agora</button></div>
           <div class="pref"><div><b>Segurança</b><div class="small muted">O servidor local só escuta em 127.0.0.1 e exige um token por execução. PATs e tokens ficam no Keychain (macOS) ou DPAPI (Windows).</div></div></div>
+          <div class="pref"><div><b>Diagnóstico</b><div class="small muted">Versão, plataforma e contagens, para relatar um problema.</div></div>
+            <button class="btn sm" onclick={diagnostic}><ClipboardCopy size={14} /> Copiar</button></div>
         </div>
+
+      {:else}
+        <div class="head"><div><h2>{sec.title}</h2>{#if sec.desc}<p class="muted small">{sec.desc}</p>{/if}</div></div>
+        <div class="card org">{#each secRows as r (r.id)}{@render row(r)}{/each}</div>
       {/if}
     </div>
   </div>
 </Page>
 
 <style>
-  .layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 22px; flex: 1; min-height: 0; }
-  .tabs { display: flex; flex-direction: column; gap: 2px; }
-  .tabs button { display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 11px; border: 0; border-radius: 9px; background: none; color: var(--text-2);
-    font: 550 13px var(--font); cursor: pointer; text-align: left; transition: background var(--t-fast), color var(--t-fast); }
+  .layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 22px; flex: 1; min-height: 0; }
+  .tabs { display: flex; flex-direction: column; gap: 2px; overflow: auto; min-height: 0; padding-bottom: 12px; }
+  .tabs button { display: flex; align-items: center; gap: 9px; height: 32px; padding: 0 11px; border: 0; border-radius: 9px; background: none; color: var(--text-2);
+    font: 550 13px var(--font); cursor: pointer; text-align: left; transition: background var(--t-fast), color var(--t-fast); flex: none; }
   .tabs button:hover { background: var(--surface-2); color: var(--text); }
   .tabs button.on { background: var(--accent-soft); color: var(--text); }
+  .ng { font: 650 10.5px/1 var(--font); text-transform: uppercase; letter-spacing: 0.08em; color: var(--faint); padding: 14px 11px 6px; }
+  .find { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 9px; margin-bottom: 2px; border-radius: 9px; border: 1px solid var(--line-2);
+    background: var(--bg-2); color: var(--muted); flex: none; }
+  .find:focus-within { border-color: var(--accent); box-shadow: var(--ring); }
+  .find input { flex: 1; min-width: 0; border: 0; outline: none; background: none; color: var(--text); font: 13px var(--font); }
+  .tabs .clr { display: grid; place-items: center; width: 18px; height: 18px; flex: none; padding: 0; border-radius: 50%; background: var(--surface-3); color: var(--text-2); }
   .sec-note { margin-top: 14px; display: flex; gap: 8px; font-size: 11.5px; color: var(--muted); line-height: 1.45; padding: 0 6px; }
   .sec-note :global(svg) { flex: none; color: var(--good); margin-top: 1px; }
   .body { overflow: auto; min-height: 0; overscroll-behavior: contain; padding-right: 4px; max-width: 920px; }
@@ -241,6 +475,7 @@
   .danger:hover { color: var(--bad); }
   .foot { display: flex; justify-content: flex-end; padding-bottom: 20px; }
   .scopes { display: flex; flex-wrap: wrap; gap: 5px; }
+  .trackrow { display: flex; align-items: center; gap: 10px; justify-content: space-between; border-top: 1px solid var(--line); padding-top: 10px; }
   .connect { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 6px; }
   .opt { padding: 16px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
   .opt h4 { margin: 2px 0 0; font-size: 14px; }
@@ -249,9 +484,29 @@
   .opt .input { width: 100%; }
   .code { display: grid; gap: 6px; }
   .code button { font-size: 22px; letter-spacing: 0.12em; border: 1px dashed var(--line-2); background: var(--surface-2); color: var(--text); border-radius: 9px; padding: 6px 12px; cursor: copy; }
-  .pref { display: flex; align-items: center; gap: 16px; justify-content: space-between; }
+  .pref { display: flex; align-items: center; gap: 16px; justify-content: space-between; transition: opacity var(--t); }
   .pref + .pref { border-top: 1px solid var(--line); padding-top: 12px; }
+  .pref.off { opacity: 0.45; pointer-events: none; }
+  .pt { display: grid; gap: 3px; min-width: 0; }
+  .pt .small { line-height: 1.45; max-width: 560px; }
+  .pc { flex: none; display: flex; align-items: center; }
+  .pc select { width: 220px; }
   .pref select { width: 220px; }
+  .sel { user-select: text; word-break: break-all; }
+  .pc :global(.shield) { color: var(--good); }
   .test { border-top: 1px solid var(--line); padding-top: 10px; }
-  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } .tabs { flex-direction: row; flex-wrap: wrap; } .sec-note { display: none; } .fields { grid-template-columns: 1fr; } }
+  .saved { display: inline-flex; align-items: center; gap: 5px; font: 600 12px var(--font); color: var(--good); opacity: 0; transform: translateY(2px);
+    transition: opacity var(--t), transform var(--t) var(--ease-out); }
+  .saved.on { opacity: 1; transform: none; }
+  .rh { display: inline-flex; align-items: center; gap: 7px; margin: 4px 0 8px; padding: 0; border: 0; background: none; color: var(--text-2);
+    font: 650 11px/1 var(--font); text-transform: uppercase; letter-spacing: 0.07em; cursor: pointer; }
+  .rh:hover { color: var(--accent); }
+  .none { display: grid; justify-items: center; gap: 6px; padding: 36px 16px; text-align: center; color: var(--text-2); }
+  .none :global(svg) { color: var(--muted); }
+  .keys { gap: 0; }
+  .keys h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .key { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; font-size: 13px; color: var(--text-2); }
+  .key + .key { border-top: 1px solid var(--line); }
+  .key .kbd { font-size: 11.5px; padding: 4px 7px; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } .tabs { flex-direction: row; flex-wrap: wrap; } .ng, .find, .sec-note { display: none; } .fields { grid-template-columns: 1fr; } }
 </style>

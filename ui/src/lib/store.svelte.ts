@@ -1,4 +1,5 @@
 import { get, post } from "./api";
+import { prefs } from "./prefs.svelte";
 import { syncTheme } from "./theme";
 import type { AppState, PR } from "./types";
 
@@ -39,6 +40,7 @@ class Store {
       this.s = s;
       this.error = null;
       syncTheme(s.theme);
+      prefs.sync(s.ui);
     } catch (e: any) {
       this.error = e.message || "backend fora do ar";
     }

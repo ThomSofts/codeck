@@ -1,7 +1,9 @@
 <script lang="ts">
   // ⌘K / Ctrl+K: ir para qualquer tela, repositório, catálogo ou PR, e disparar ações.
   import { untrack } from "svelte";
-  import { ArrowRight, FolderGit2, GitPullRequest, Hammer, Plus, RefreshCw, Search, Zap } from "@lucide/svelte";
+  import { ArrowRight, FolderGit2, GitPullRequest, Hammer, Layers, Plus, RefreshCw, Search, Sparkles, Zap, KanbanSquare, Code2 } from "@lucide/svelte";
+  import { matches } from "../lib/keys";
+  import { work } from "../lib/work.svelte";
   import { post } from "../lib/api";
   import { repos } from "../lib/repos.svelte";
   import { go } from "../lib/router.svelte";
@@ -17,15 +19,21 @@
   const items = $derived.by<Item[]>(() => {
     const s = store.s;
     const out: Item[] = [
-      ...[["inbox", "Fila"], ["prs", "Pull requests"], ["builds", "Builds e Actions"], ["deploys", "Deploys"], ["issues", "Issues e tarefas"],
+      ...[["projects", "Projetos (hub)"], ["board", "Quadro"], ["ai", "Uso de IA"], ["inbox", "Fila"], ["prs", "Pull requests"], ["builds", "Builds e Actions"], ["deploys", "Deploys"], ["issues", "Issues e tarefas"],
           ["repos", "Repositórios"], ["automation", "Automação"], ["analytics", "Análise"], ["history", "Histórico"], ["settings", "Contas e ajustes"]]
         .map(([id, label]) => ({ group: "Ir para", label, icon: ArrowRight, run: () => go("/" + id) })),
       { group: "Ações", label: "Ler GitHub e Azure agora", icon: RefreshCw, run: async () => { const ok = await store.refresh(); ui.toast(ok ? "Tudo atualizado" : "A leitura está demorando — os dados chegam assim que ela terminar", ok ? "ok" : "info"); } },
+      { group: "Ações", label: "Novo cartão no quadro", icon: KanbanSquare, run: () => go("/board/new") },
+      { group: "Ações", label: "Novo grupo de projetos", icon: Layers, run: () => work.newGroup([]) },
       { group: "Ações", label: "Nova regra de automação", icon: Zap, run: () => go("/automation/new") },
       { group: "Ações", label: "Adicionar repositório local", icon: Plus, run: () => go("/repos/add") },
       { group: "Ações", label: "Novo catálogo de repositórios", icon: Plus, run: () => go("/repos/new-catalog") },
       { group: "Ações", label: "Conectar conta do GitHub", icon: Plus, run: () => go("/settings/github") },
-      ...repos.local.map(r => ({ group: "Repositórios", label: r.name, sub: r.status?.branch || r.path, icon: FolderGit2, provider: r.provider || undefined,
+      ...work.projects.map(p => ({ group: "Projetos abertos", label: p.name, sub: work.groupOf(p.id)?.name || p.path, icon: Code2, provider: p.provider || undefined,
+                                    run: () => go("/work/" + p.id) })),
+      ...work.projects.map(p => ({ group: "Pedir à IA", label: `Pedir à IA em ${p.name}`, sub: "planejar e/ou implementar", icon: Sparkles, run: () => work.focus(p.id, null) })),
+      ...work.groups.map(g => ({ group: "Grupos", label: g.name, sub: `${g.repoIds.length} projeto(s) — abrir todos`, icon: Layers, run: async () => { await work.openGroup(g.id); const id = g.repoIds[0]; if (id) go("/work/" + id); } })),
+      ...repos.local.filter(r => !/[\\/]\.worktrees[\\/]/.test(r.path)).map(r => ({ group: "Repositórios", label: r.name, sub: r.status?.branch || r.path, icon: FolderGit2, provider: r.provider || undefined,
                                   run: () => go("/repo/" + r.id) })),
       ...repos.catalogs.map(c => ({ group: "Catálogos", label: c.name, sub: `${c.sources.length} origem(ns)`, icon: FolderGit2, run: () => go("/repos/catalog/" + c.id) })),
       ...(s ? [...s.myPrs, ...s.prs] : []).slice(0, 200).map(p => ({ group: "Pull requests", label: `#${p.prId} ${p.title}`, sub: `${p.org}/${p.repo} · ${p.creatorName}`,
@@ -34,7 +42,7 @@
         provider: b.provider, run: () => go("/builds/" + encodeURIComponent(b.key)) })),
     ];
     const t = q.trim().toLowerCase();
-    if (!t) return out.filter(i => i.group !== "Pull requests" && i.group !== "Builds").slice(0, 40);
+    if (!t) return out.filter(i => !["Pull requests", "Builds", "Pedir à IA"].includes(i.group)).slice(0, 40);
     const words = t.split(/\s+/);
     return out.map(i => {
       const hay = `${i.label} ${i.sub || ""} ${i.group}`.toLowerCase();
@@ -52,7 +60,7 @@
   });
 
   function onkey(e: KeyboardEvent) {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); ui.palette = !ui.palette; return; }
+    if (matches(e, "mod+k")) { e.preventDefault(); ui.palette = !ui.palette; return; }
     if (!ui.palette) return;
     if (e.key === "Escape") ui.palette = false;
     else if (e.key === "ArrowDown") { e.preventDefault(); idx = Math.min(idx + 1, items.length - 1); scroll(); }

@@ -1,12 +1,14 @@
 <script lang="ts">
   // Revisão da tarefa: o que mudou desde a base, arquivo por arquivo, num diff do Monaco (antes × agora).
-  //   · o lado "agora" é editável; a seta na margem desfaz um trecho; ⌘S salva;
+  //   · o lado "agora" é editável; a seta na margem desfaz um trecho; ⌘S/Ctrl+S salva;
   //   · selecione linhas e "Comentar" — os comentários viram UM prompt para o agente da tarefa (arquivo:linha + pedido).
   import { MessageSquarePlus, RefreshCw, Send, Trash2 } from "@lucide/svelte";
   import type * as Monaco from "monaco-editor";
+  import { untrack } from "svelte";
   import { get, post } from "../../lib/api";
   import { loadMonaco, monacoTheme } from "../../lib/monaco";
   import { ui } from "../../lib/ui.svelte";
+  import { kbd } from "../../lib/keys";
   import type { Project, Task } from "../../lib/work.svelte";
   import { work } from "../../lib/work.svelte";
   import { typeInto } from "./Terminal.svelte";
@@ -35,7 +37,8 @@
     } catch (e) { ui.error(e); }
     loading = false;
   }
-  $effect(() => { void task.id; loadFiles(); });
+  const taskId = $derived(task.id);   // a prop troca de objeto a cada leitura (2,5 s): só a troca de tarefa recarrega
+  $effect(() => { void taskId; untrack(loadFiles); });
 
   $effect(() => {
     if (!host) return;
@@ -148,8 +151,8 @@
       <span class="mono small ell">{sel || ""}</span>
       <span class="grow"></span>
       {#if changed}<span class="pill warn">não salvo</span>{/if}
-      <button class="btn sm" disabled={!sel} onclick={comment} title="Selecione linhas no lado direito (⌘⇧C)"><MessageSquarePlus size={13} /> Comentar</button>
-      <button class="btn sm" disabled={!changed} onclick={save}>Salvar ⌘S</button>
+      <button class="btn sm" disabled={!sel} onclick={comment} title={`Selecione linhas no lado direito (${kbd("mod+shift+c")})`}><MessageSquarePlus size={13} /> Comentar</button>
+      <button class="btn sm" disabled={!changed} onclick={save}>Salvar <span class="kbd">{kbd("mod+s")}</span></button>
     </div>
     <div class="host" bind:this={host}></div>
   </div>

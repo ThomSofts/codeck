@@ -1,6 +1,7 @@
 <script lang="ts">
   // Linha de repositório (catálogo ou local): status do clone, sincronização e ações rápidas.
-  import { ArrowDown, ArrowUp, Code2, Download, ExternalLink, FolderOpen, GitBranch, Lock, Pin, PinOff, Terminal, Trash2 } from "@lucide/svelte";
+  import { ArrowDown, ArrowUp, Code2, Download, ExternalLink, Eye, EyeOff, FolderOpen, GitBranch, Lock, Pin, PinOff, Settings2, Terminal, Trash2, Play } from "@lucide/svelte";
+  import { work } from "../../lib/work.svelte";
   import { get, post } from "../../lib/api";
   import { ago } from "../../lib/format";
   import { fileManagerName } from "../../lib/native";
@@ -24,6 +25,17 @@
   const provider = $derived(remote?.provider || loc?.provider || null);
   const web = $derived(remote?.webUrl || loc?.webUrl || null);
   const dirty = $derived(!!st && (st.changes > 0 || st.stashes > 0));
+  // acompanhamento (PRs, builds, deploys, issues): o olho liga/desliga este repositório
+  const tkey = $derived(((remote as any)?.remoteKey || (remote as any)?.key || loc?.remoteKey || "").toLowerCase());
+  const trackable = $derived(/^(github|azure):/.test(tkey));
+  const acct = $derived((remote as any)?.accountKey || (loc ? repos.accountOf(loc as any) : null));
+  const tr = $derived(repos.track(tkey, acct));
+  async function toggleTrack() {
+    try { await repos.setTrack(tkey, { track: !tr.on }); ui.toast(tr.on ? `Acompanhando ${name}` : `${name} deixou de ser acompanhado`); }
+    catch (e) { ui.error(e); }
+  }
+  const manage = () => (ui.repoHub = { remote: remote || undefined, localId: loc?.id });
+  async function openProject() { try { const id = await work.open(loc!.id); go("/work/" + id, "soft"); } catch (e) { ui.error(e); } }
 
   async function open(target: "editor" | "files" | "terminal") {
     try { await post("open", { id: loc!.id, target }); } catch (e) { ui.error(e); }
@@ -56,6 +68,10 @@
     onchanged();
   }
   const items = $derived(loc ? [
+    { label: "Abrir projeto", icon: Play, onclick: openProject },
+    { label: "Gerenciar repositório…", icon: Settings2, onclick: manage },
+    ...(trackable ? [{ label: tr.on ? "Deixar de acompanhar" : "Acompanhar (PRs, builds, deploys, issues)", icon: tr.on ? EyeOff : Eye, onclick: toggleTrack }] : []),
+    { separator: true },
     { label: `Abrir no ${fileManagerName()}`, icon: FolderOpen, onclick: () => open("files") },
     { label: "Abrir no terminal", icon: Terminal, onclick: () => open("terminal") },
     ...(web ? [{ label: "Abrir no navegador", icon: ExternalLink, href: web }] : []),
@@ -65,10 +81,14 @@
     { label: "Limpar local (Lixeira)", icon: Trash2, danger: true, onclick: clean, disabled: dirty,
       hint: dirty ? (st!.changes ? `${st!.changes} alteração(ões) sem commit` : `${st!.stashes} stash(es)`) : undefined },
     { label: "Tirar da lista (mantém a pasta)", onclick: forget },
-  ] : web ? [{ label: "Abrir no navegador", icon: ExternalLink, href: web }] : []);
+  ] : [
+    { label: "Gerenciar repositório…", icon: Settings2, onclick: manage },
+    ...(trackable ? [{ label: tr.on ? "Deixar de acompanhar" : "Acompanhar (PRs, builds, deploys, issues)", icon: tr.on ? EyeOff : Eye, onclick: toggleTrack }] : []),
+    ...(web ? [{ label: "Abrir no navegador", icon: ExternalLink, href: web }] : []),
+  ]);
 </script>
 
-<div class="list-row repo" class:cloned={!!loc} onclick={() => loc && go("/repo/" + loc.id)} role="button" tabindex="-1" onkeydown={(e) => e.key === "Enter" && e.target === e.currentTarget && loc && go("/repo/" + loc.id)}>
+<div class="list-row repo" class:cloned={!!loc} class:untracked={trackable && !tr.on} onclick={manage} role="button" tabindex="-1" onkeydown={(e) => e.key === "Enter" && e.target === e.currentTarget && manage()}>
   <span class="ic"><ProviderIcon {provider} size={16} /></span>
   <div class="grow">
     <div class="t">
@@ -93,13 +113,18 @@
     {/if}
   </div>
   <div class="acts" onclick={(e) => e.stopPropagation()} role="presentation">
+    {#if trackable}
+      <button class="btn sm ghost icon eye" class:on={tr.on} title={tr.on ? `Acompanhando${tr.explicit ? "" : " (padrão da conta)"} — clique para deixar de acompanhar` : "Não acompanhado — clique para acompanhar PRs, builds, deploys e issues"} onclick={toggleTrack}>
+        {#if tr.on}<Eye size={14} />{:else}<EyeOff size={14} />{/if}</button>
+    {/if}
     {#if loc && st}
       <span class="branch"><GitBranch size={11} /><b>{st.detached ? "detached" : st.branch}</b></span>
       {#if st.ahead}<span class="pill accent" title="commits para enviar"><ArrowUp size={10} />{st.ahead}</span>{/if}
       {#if st.behind}<span class="pill info" title="commits para receber"><ArrowDown size={10} />{st.behind}</span>{/if}
       {#if st.changes}<span class="pill warn" title="alterações não commitadas">{st.changes} alteração(ões)</span>{/if}
       {#if st.operation}<span class="pill bad">{st.operation} em andamento</span>{/if}
-      <button class="btn sm" onclick={() => open("editor")} title="Abrir no editor"><Code2 size={13} /> Editor</button>
+      <button class="btn sm" onclick={openProject} title="Abrir como projeto (agentes, terminais, arquivos)"><Play size={13} /> Abrir</button>
+      <button class="btn sm ghost" onclick={() => open("editor")} title="Abrir no editor externo"><Code2 size={13} /></button>
     {:else if loc && !loc.exists}
       <span class="pill bad">pasta não existe</span>
     {:else if remote && !loc}
@@ -112,6 +137,9 @@
 
 <style>
   .tagline { margin-top: 6px; animation: rise 0.25s var(--ease-out); }
+  .eye { color: var(--faint); }
+  .eye.on { color: var(--good); }
+  .untracked .title { color: var(--text-2); }
   .t :global(.star) { width: 22px; height: 22px; margin-left: -2px; }
   .ic { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: var(--surface-2); border: 1px solid var(--line); }
   .cloned .ic { background: var(--surface-3); }

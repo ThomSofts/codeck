@@ -1,7 +1,9 @@
 <script lang="ts">
   // Uso de IA: quanto cada projeto consome — tempo do agente trabalhando, seu tempo com o projeto na tela, custo informado
   // pela CLI, linhas alteradas e quanto de cada limite (5 h / semanal) cada projeto gastou.
-  import { RefreshCw } from "@lucide/svelte";
+  import { Gauge, RefreshCw } from "@lucide/svelte";
+  import { work } from "../lib/work.svelte";
+  import AiAccountCard from "../components/settings/AiAccountCard.svelte";
   import { untrack } from "svelte";
   import { get } from "../lib/api";
   import { go, soft } from "../lib/router.svelte";
@@ -59,15 +61,28 @@
   const series = $derived(R ? R.days.map(d => ({ day: d.day, v: metric === "work" ? d.workMs / 6e4 : metric === "focus" ? d.focusS / 60 : d.cost, d })) : []);
   const maxV = $derived(Math.max(1e-6, ...series.map(s => s.v)));
   const fmtV = (v: number) => (metric === "cost" ? money(v) : dur(v * 6e4));
+  // quem precisa de você e quem está trabalhando primeiro
+  const rank = (id: string) => ({ "needs-you": 0, working: 1, done: 2, idle: 3 } as Record<string, number>)[work.activity[id]?.state || ""] ?? 4;
   const dayTip = (d: G & { day: string }) => `${fmtD(d.day)}\nAgente trabalhando: ${dur(d.workMs)}\nSeu tempo: ${dur(d.focusS * 1000)}\nCusto: ${money(d.cost)}\nSessões: ${d.sessions}`;
 </script>
 
 <Page title="Uso de IA" sub="Tempo, custo e limites gastos por projeto">
-  {#snippet actions()}<button class="btn sm ghost" onclick={load}><RefreshCw size={14} /> Recarregar</button>{/snippet}
+  {#snippet actions()}
+    {#if work.ai.some(a => a.provider === "claude" && a.installed)}<button class="btn sm" disabled={Object.keys(work.probing).length > 0} onclick={() => work.probe()}><Gauge size={14} /> Ler limites</button>{/if}
+    <button class="btn sm ghost" onclick={load}><RefreshCw size={14} /> Recarregar</button>
+  {/snippet}
   <div class="toolbar">
     <Segmented bind:value={days} options={[{ value: "1", label: "Hoje" }, { value: "7", label: "7 dias" }, { value: "30", label: "30 dias" }, { value: "90", label: "90 dias" }]} />
   </div>
   <div class="scroll">
+    {#if work.ai.length}
+      <h3 class="acch">Contas agora <span class="tiny muted">limite, onde estão atuando e se esperam você</span></h3>
+      <div class="accgrid">
+        {#each [...work.ai].sort((x, y) => rank(x.id) - rank(y.id)) as a (a.id)}
+          <AiAccountCard {a} compact />
+        {/each}
+      </div>
+    {/if}
     {#if !A}<Skeleton kpis={6} rows={4} avatar={false} />
     {:else if "error" in A}<div class="err">{A.error}</div>
     {:else if R}
@@ -147,6 +162,8 @@
 {#if tip}<div class="tip" style="left:{tip.x + 12}px;top:{tip.y + 14}px">{tip.text}</div>{/if}
 
 <style>
+  .acch { display: flex; align-items: baseline; gap: 10px; margin: 4px 2px 10px; font-size: 14px; }
+  .accgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; margin-bottom: 18px; }
   .toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex: none; }
   .scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding-right: 2px; display: grid; gap: 14px; align-content: start; }
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }

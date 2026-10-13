@@ -177,16 +177,24 @@ def clone_targets(account=None):
     return out
 
 
+_discover_lock = threading.Lock()
+
+
 def discover(force=False):
-    """Registra os repositórios encontrados nas pastas de trabalho (no máximo a cada 2 min)."""
+    """Registra os repositórios encontrados nas pastas de trabalho (no máximo a cada 2 min). Pastas base configuradas
+    são vasculhadas 3 níveis abaixo (…/cifal/apis/<api>); as pastas onde já há clones, 1 nível."""
     if not force and time.time() - _discover["at"] < 120:
-        return
-    _discover["at"] = time.time()
-    for t in clone_targets():
-        try:
-            git.scan(t["path"], depth=2 if t["configured"] else 1)
-        except Exception:  # noqa: BLE001 — pasta removida ou sem permissão
-            continue
+        return {"found": 0, "new": 0}
+    with _discover_lock:
+        _discover["at"] = time.time()
+        found = new = 0
+        for t in clone_targets():
+            try:
+                r = git.scan(t["path"], depth=3 if t["configured"] else 1)
+                found, new = found + r["found"], new + r["new"]
+            except Exception:  # noqa: BLE001 — pasta removida ou sem permissão
+                continue
+        return {"found": found, "new": new}
 
 
 def local_index():

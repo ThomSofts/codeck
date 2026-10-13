@@ -7,6 +7,11 @@
   import MenuHost from "./components/MenuHost.svelte";
   import CloneDialog from "./components/repo/CloneDialog.svelte";
   import AccountEditor from "./components/repo/AccountEditor.svelte";
+  import RepoHub from "./components/repo/RepoHub.svelte";
+  import { applyDensity } from "./lib/density";
+  import { prefs } from "./lib/prefs.svelte";
+  import Projects from "./views/Projects.svelte";
+  import Kanban from "./views/Kanban.svelte";
   import { ui } from "./lib/ui.svelte";
   import { work } from "./lib/work.svelte";
   import OfflineBanner from "./components/OfflineBanner.svelte";
@@ -31,6 +36,7 @@
   const views: Record<string, any> = {
     inbox: Inbox, prs: PullRequests, builds: Builds, deploys: Deploys, issues: Issues, repos: Repositories,
     automation: Automation, analytics: Analytics, ai: AiUsage, history: History, settings: Settings, work: Work, solo: Work, repo: Work,
+    projects: Projects, board: Kanban,
   };
   const View = $derived(views[router.view] || Inbox);
 
@@ -45,6 +51,19 @@
     const map: Record<string, string> = { fila: "/inbox/", minhas: "/prs/mine/", todas: "/prs/all/", builds: "/builds/", historico: "/history", deploys: "/deploys/" };
     go((map[t] ?? `/${t}/`) + (map[t] === "/history" ? "" : key));
   };
+
+  // densidade da interface (Configurações → Aparência)
+  $effect(() => { void prefs.get("ui.density"); applyDensity(); });
+  // /work/board (o quadro antigo) agora é a página do Quadro
+  $effect(() => { if (router.view === "work" && router.parts[1] === "board") untrack(() => go("/board/agents", "soft")); });
+  // abrir o app: volta para o último projeto, se a preferência mandar (Configurações → Projetos)
+  let reopened = false;
+  $effect(() => {
+    if (reopened || !work.loaded || !store.s) return;
+    reopened = true;
+    if (router.view === "inbox" && !location.hash.replace(/^#\/?/, "") && prefs.get("work.reopenLast") && work.active && work.projects.some(p => p.id === work.active))
+      untrack(() => go("/work/" + work.active));
+  });
 
   onMount(() => {
     const stopWork = work.watch();   // projetos abertos e agentes: a barra lateral mostra o estado em qualquer tela
@@ -62,7 +81,7 @@
   $effect(() => {
     if (!store.s || routedOnce) return;
     routedOnce = true;
-    if (!store.s.configured && !["settings", "work", "solo"].includes(router.view) && !work.projects.length) go("/settings/accounts");
+    if (!store.s.configured && !["settings", "work", "solo", "projects", "board"].includes(router.view) && !work.projects.length) go("/settings/accounts");
   });
 </script>
 
@@ -85,6 +104,7 @@
 <MenuHost />
 {#if ui.cloneAsk}<CloneDialog />{/if}
 {#if ui.editAccount}<AccountEditor />{/if}
+{#if ui.repoHub}<RepoHub />{/if}
 <Toaster />
 
 <style>

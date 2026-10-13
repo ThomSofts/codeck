@@ -8,6 +8,7 @@
   import type { AiAccount, Project, Task, TermInfo } from "../../lib/work.svelte";
   import { STATUS, work } from "../../lib/work.svelte";
   import { ui } from "../../lib/ui.svelte";
+  import { kbd } from "../../lib/keys";
   import AgentIcon from "./AgentIcon.svelte";
   import { typeInto } from "./Terminal.svelte";
 
@@ -23,11 +24,14 @@
   $effect(() => { const t = setInterval(() => (now = Date.now()), 30000); return () => clearInterval(t); });
   // agente terminou: os limites da conta acabaram de chegar pela linha de status — relê sem esperar o ciclo de 30 s
   $effect(() => { if (s?.status === "done" || s?.status === "needs-you") setTimeout(() => work.loadAi(), 1500); });
+  // a prop `task` troca de objeto a cada leitura (2,5 s): o efeito depende só do id (antes o diff sumia e era relido sem parar)
+  const taskKey = $derived(task?.exists ? `${project.id}|${task.id}` : null);
   $effect(() => {
-    const t = task;
+    const k = taskKey;
     diff = null;
-    if (!t?.exists) return;
-    const load = () => get("ws/task/diff", { repoId: project.id, taskId: t.id }).then(d => { if (task?.id === t.id) diff = d; }).catch(() => {});
+    if (!k) return;
+    const [repoId, taskId] = k.split("|");
+    const load = () => get("ws/task/diff", { repoId, taskId }).then(d => { if (taskKey === k) diff = d; }).catch(() => {});
     load();
     const i = setInterval(load, 8000);
     return () => clearInterval(i);
@@ -101,7 +105,7 @@
       {/if}
       <div class="send">
         <textarea class="input" rows="3" bind:value={prompt} placeholder="Mandar um prompt para este agente…" onkeydown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }}></textarea>
-        <button class="btn sm primary" disabled={!prompt.trim()} onclick={send}><Send size={13} /> Enviar <span class="kbd">⌘↵</span></button>
+        <button class="btn sm primary" disabled={!prompt.trim()} onclick={send}><Send size={13} /> Enviar <span class="kbd">{kbd("mod+enter")}</span></button>
       </div>
     </section>
   {/if}
@@ -147,7 +151,9 @@
           {/each}
           <div class="tiny muted reset">lido {new Date(a.usage.updated).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</div>
         {:else}
-          <div class="tiny muted">{a.telemetry ? "aparece depois da 1ª resposta do agente" : "esta CLI não informa limites"}</div>
+          {#if a.provider === "claude"}
+            <button class="tiny readlim" disabled={!!work.probing[a.id]} onclick={() => work.probe(a.id)}>{work.probing[a.id] ? "lendo o limite…" : work.activity[a.id]?.probeError ? work.activity[a.id]!.probeError!.error : "limite não lido — ler agora"}</button>
+          {:else}<div class="tiny muted">{a.telemetry ? "aparece depois da 1ª resposta do agente" : "esta CLI não informa limites"}</div>{/if}
         {/if}
       </div>
     {:else}<div class="small muted">Nenhuma conta de IA. Configure em Contas e ajustes → IA.</div>{/each}
@@ -156,6 +162,8 @@
 </div>
 
 <style>
+  .readlim { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; text-align: left; font-family: var(--font); }
+  .readlim:disabled { color: var(--muted); cursor: default; }
   .panel { display: flex; flex-direction: column; gap: 14px; padding: 12px; overflow-y: auto; overflow-x: hidden; height: 100%; }
   section { min-width: 0; }
   section { display: grid; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid var(--line); animation: rise 0.25s var(--ease-out); }

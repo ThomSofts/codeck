@@ -108,6 +108,8 @@ export function attach(monaco: typeof Monaco, model: Monaco.editor.ITextModel, c
 
 /** Para onde vai o "ir para a definição" em outro arquivo do projeto (a tela abre a aba). */
 export function setOpener(fn: (rel: string, line: number) => void) { opener = fn; }
+/** Abre outro arquivo do projeto numa aba (links relativos do Markdown usam o mesmo caminho). */
+export function openInApp(rel: string, line = 1) { opener?.(rel, line); }
 
 function register(monaco: typeof Monaco, lang: string) {
   if (registered.has(lang)) return;

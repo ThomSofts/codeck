@@ -68,7 +68,7 @@
           </button>
           <span class="more"><Menu items={[
             { label: "Ver todos os repositórios", icon: FolderOpen, onclick: () => go("/repos/account/" + enc(a.key), "soft") },
-            { label: a.dirs.length ? `Pastas base (${a.dirs.length})…` : "Definir pastas base…", icon: FolderCog, onclick: () => (ui.editAccount = a.key) },
+            { label: "Detalhes e ajustes da conta…", icon: FolderCog, onclick: () => (ui.editAccount = a.key) },
           ]} /></span>
         </div>
       {/each}

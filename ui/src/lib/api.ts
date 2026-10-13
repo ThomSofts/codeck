@@ -26,8 +26,17 @@ export function get<T = any>(path: string, params?: Record<string, string | numb
   return fetch(`/api/${path}${qs}`, { headers: headers() }).then(r => handle<T>(r));
 }
 
+// Rotas que criam terminal levam o tamanho do painel: o programa já nasce do tamanho certo (lib: Terminal.svelte)
+const TERM_ROUTES = /^ws\/(agent|shell|task|run)$/;
+let sizeHint: (() => { cols: number; rows: number } | null) | null = null;
+export function setTermSizeHint(fn: typeof sizeHint) { sizeHint = fn; }
+
 /** Envio de ação. Conta como "em andamento" até responder, o que acende a barra de progresso do topo. */
 export function post<T = any>(path: string, body: unknown = {}): Promise<T> {
+  if (sizeHint && TERM_ROUTES.test(path) && body && typeof body === "object" && !("cols" in body)) {
+    const sz = sizeHint();
+    if (sz) body = { ...body, ...sz };
+  }
   ui.inflight++;
   return fetch(`/api/${path}`, {
     method: "POST", headers: { ...headers(), "Content-Type": "application/json", "X-Codeck": "1" }, body: JSON.stringify(body),

@@ -1,5 +1,9 @@
 <script lang="ts">
-  import { Bot, ExternalLink, MessageSquare } from "@lucide/svelte";
+  import { Bot, ExternalLink, KanbanSquare, MessageSquare, Sparkles } from "@lucide/svelte";
+  import { kanban } from "../lib/kanban.svelte";
+  import { go } from "../lib/router.svelte";
+  import { ui } from "../lib/ui.svelte";
+  import Menu from "../components/Menu.svelte";
   import { work } from "../lib/work.svelte";
   import { ago } from "../lib/format";
   import { store } from "../lib/store.svelte";
@@ -25,6 +29,15 @@
       title: i.title, kind: /bug|defeito/i.test(i.type || "") || i.labels.some((l: any) => /bug/i.test(l.name)) ? "fix" : "feature",
       workItem: i, prompt: `Implemente ${i.provider === "github" ? "a issue" : "o work item"} #${i.number}: ${i.title}\n${i.url}\n\nLeia a descrição completa no link antes de começar.`,
     });
+  }
+  const targetOf = (i: any) => (i.provider === "github" ? { provider: "github", org: i.repo.split("/")[0], repo: i.repo } : null);
+  const textOf = (i: any) => `${i.provider === "github" ? "Issue" : i.type || "Work item"} #${i.number}: ${i.title}\n${i.url}\n\nLeia a descrição completa no link antes de começar.`;
+  function ask(i: any, flow?: string) { work.askFrom(targetOf(i), { title: i.title, text: textOf(i), workItem: i, flow }); }
+  async function toBoard(i: any) {
+    const local = i.provider === "github" ? work.findLocal("github", i.repo.split("/")[0], i.repo) : null;
+    const c = await kanban.saveCard({ title: i.title, description: textOf(i), labels: i.labels.map((l: any) => l.name).slice(0, 6),
+      projects: local ? [local.id] : [], workItem: { number: i.number, title: i.title, url: i.url, provider: i.provider, key: i.key } });
+    if (c) ui.toast("Cartão criado no quadro", "ok", { label: "Abrir", run: () => go("/board/c/" + c.id) });
   }
 </script>
 
@@ -53,7 +66,17 @@
               {#if i.comments}<span class="row" style="gap:4px"><MessageSquare size={11} />{i.comments}</span>{/if}
             </div>
           </div>
-          <button class="btn sm start" title="Branch + worktree + agente com este item" onclick={(e) => { e.preventDefault(); e.stopPropagation(); startTask(i); }}><Bot size={13} /> Começar tarefa</button>
+          <span class="start" role="presentation" onclickcapture={(e) => e.preventDefault()} onclick={(e) => e.stopPropagation()}>
+            <button class="btn sm ai" title="Pedir à IA: planejar e/ou implementar esta issue" onclick={() => ask(i)}><Sparkles size={13} /> Pedir à IA</button>
+            <Menu items={[
+              { label: "Planejar com IA", icon: Sparkles, onclick: () => ask(i, "plan") },
+              { label: "Planejar e implementar com IA", icon: Sparkles, onclick: () => ask(i, "plan-implement") },
+              { label: "Implementar direto com IA", icon: Sparkles, onclick: () => ask(i, "implement") },
+              { separator: true },
+              { label: "Começar tarefa (formulário completo)", icon: Bot, onclick: () => startTask(i) },
+              { label: "Adicionar ao quadro", icon: KanbanSquare, onclick: () => toBoard(i) },
+            ]} />
+          </span>
           <ExternalLink size={14} class="muted" />
         </a>
       {:else}
@@ -67,7 +90,8 @@
 </Page>
 
 <style>
-  .start { opacity: 0; transition: opacity var(--t-fast); }
+  .start { display: inline-flex; align-items: center; gap: 2px; opacity: 0; transition: opacity var(--t-fast); }
+  .ai { color: var(--accent); }
   .list-row:hover .start { opacity: 1; }
   .scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
   .ic { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; background: var(--surface-2); border: 1px solid var(--line); }
