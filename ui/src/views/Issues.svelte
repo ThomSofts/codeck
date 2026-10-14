@@ -41,7 +41,7 @@
   }
 </script>
 
-<Page title="Issues e tarefas" sub="Issues do GitHub e itens de trabalho do Azure Boards atribuídos a você">
+<Page live={["issues"]} title="Issues e tarefas" sub="Issues do GitHub e itens de trabalho do Azure Boards atribuídos a você">
   {#if !s?.lastIssuePoll}
     <Skeleton rows={9} />
   {:else}

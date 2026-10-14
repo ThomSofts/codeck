@@ -1,9 +1,11 @@
 import { get, post } from "./api";
 import { prefs } from "./prefs.svelte";
 import { syncTheme } from "./theme";
-import type { AppState, PR } from "./types";
+import type { AppState, PR, Source } from "./types";
 
-// Estado global: o /api/state inteiro, relido a cada 15 s (mais rápido até chegar o 1º dado do Azure/GitHub).
+// Estado global: o /api/state inteiro, relido a cada poucos segundos (mais rápido enquanto alguma fonte está lendo).
+// Cada fonte (PRs, builds, deploys, issues) tem o próprio ciclo no backend; a tela mostra o "lendo/atualizado há"
+// de cada uma no lugar dela, e "↻" relê só aquela.
 class Store {
   s = $state<AppState | null>(null);
   error = $state<string | null>(null);
@@ -22,6 +24,25 @@ class Store {
   get ready() { return !!this.s; }
   /** o backend está lendo Azure/GitHub agora (ou o usuário acabou de pedir) */
   get fetching() { return this.refreshing || !!this.s?.polling; }
+  /** fontes pedidas à mão (↻ de uma tela) ainda sem resposta */
+  pending = $state<Partial<Record<Source, boolean>>>({});
+  loadingOf(src: Source) { return !!this.s?.loading?.[src] || !!this.pending[src]; }
+  updatedOf(src: Source) { return this.s?.updated?.[src] || null; }
+  get anyLoading() { return (["prs", "builds", "deploys", "issues"] as Source[]).some(k => this.loadingOf(k)); }
+  /** Relê uma fonte só (as outras seguem o próprio ciclo) e acompanha até terminar. */
+  async refreshSource(src: Source) {
+    if (this.pending[src]) return;
+    const before = this.updatedOf(src);
+    this.pending = { ...this.pending, [src]: true };
+    try {
+      await post("refresh", { source: src }, { quiet: true });
+      for (let i = 0; i < 90; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        await this.load();
+        if (!this.s?.loading?.[src] && this.updatedOf(src) !== before) break;
+      }
+    } finally { const p = { ...this.pending }; delete p[src]; this.pending = p; }
+  }
   get prsReady() { return !!this.s?.lastPoll; }
   get buildsReady() { return !!this.s?.lastBuildPoll; }
   get deploysReady() { return !!this.s?.lastDeployPoll; }
@@ -53,8 +74,9 @@ class Store {
     const tick = async () => {
       if (!this.hold) await this.load();
       // relê rápido até chegar o 1º dado e enquanto o backend estiver no meio de uma leitura (o indicador some na hora certa)
-      const fast = !this.s || !this.s.lastPoll || !this.s.lastBuildPoll || !this.s.lastDeployPoll || !!this.s.polling;
-      this.timer = setTimeout(tick, fast ? 1500 : 15000);
+      // lendo alguma fonte: relê rápido (os dados de cada uma aparecem assim que ela termina); parado: a cada 6 s
+      const fast = !this.s || !this.s.lastPoll || !this.s.lastBuildPoll || !this.s.lastDeployPoll || this.anyLoading;
+      this.timer = setTimeout(tick, fast ? 1500 : 6000);
     };
     tick();
   }
@@ -63,13 +85,14 @@ class Store {
   async refresh() {
     if (this.refreshing) return true;
     this.refreshing = true;
-    const since = this.s?.lastPoll;
+    const since = { ...(this.s?.updated || {}) };
     try {
       await post("refresh");
       for (let i = 0; i < 120; i++) {
         await new Promise(r => setTimeout(r, 1000));
         await this.load();
-        if (this.s && !this.s.polling && this.s.lastPoll !== since) return true;
+        const u = this.s?.updated || {};
+        if (this.s && !this.anyLoading && (["prs", "builds", "deploys"] as Source[]).every(k => u[k] !== since[k])) return true;
       }
       return false;
     } finally {

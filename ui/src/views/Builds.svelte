@@ -45,7 +45,7 @@
   });
 </script>
 
-<Page title="Builds e Actions" sub="Azure Pipelines e GitHub Actions dos repositórios que você acompanha">
+<Page live={["builds"]} title="Builds e Actions" sub="Azure Pipelines e GitHub Actions dos repositórios que você acompanha">
   {#if !store.buildsReady}
     <Skeleton kpis={5} rows={8} />
   {:else}

@@ -13,7 +13,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import accounts, agents, analytics, azure, catalogs, engine, git, github, kanban, library, lsp, rules, terminals, tracking, update, workspace, ws
+from . import accounts, agents, analytics, azure, catalogs, dotnet, editor, engine, extensions, git, github, kanban, library, lsp, rules, terminals, tracking, update, workspace, ws
 from .core import (APP_BUILD, APP_PLATFORM, APP_VERSION, ARCHIVE_FILE, CONFIG_FILE, DATA, DEFAULT_PORT, PRODUCT, RULES_FILE, OfflineError,
                    STATIC_DIR, TOKEN, ctx, load_json, lock, log_activity, log_build, log_deploy, notifications, notify_seq,
                    now_iso, pr_summary, read_activity, save_json, state, wake)
@@ -44,7 +44,7 @@ def get_state(qs, body):
     with lock:
         payload = {k: state[k] for k in ("prs", "myPrs", "builds", "buildErrors", "errors", "lastPoll", "me", "pollMs",
                                          "deploys", "releases", "deployErrors", "lastDeployPoll", "lastBuildPoll",
-                                         "issues", "issueErrors", "lastIssuePoll", "polling", "offline")}
+                                         "issues", "issueErrors", "lastIssuePoll", "polling", "offline", "loading", "updated")}
         payload = {k: (list(v) if isinstance(v, list) else dict(v) if isinstance(v, dict) else v) for k, v in payload.items()}
     payload["orgs"] = list(ctx.orgs.keys())
     payload["githubAccounts"] = [{"id": a.id, "login": a.login, "avatar": (a.me or {}).get("avatar") or a.cfg.get("avatar")}
@@ -104,7 +104,10 @@ def get_analytics(qs, body):
 
 @route("POST", "/api/refresh")
 def post_refresh(qs, body):
-    wake.set()
+    if body.get("source"):   # só uma fonte (prs, builds, deploys, issues): as outras seguem o próprio ciclo
+        engine.refresh(body["source"])
+    else:
+        wake.set()
     return {"ok": True}
 
 
@@ -255,7 +258,7 @@ def post_github_cli(qs, body):
 
 @route("POST", "/api/github/device/start")
 def post_github_device(qs, body):
-    return github.device_start(lambda tok: accounts.add_github_token(tok, source="device"))
+    return github.device_start(lambda tok, grant: accounts.add_github_token(tok, source="device", grant=grant))
 
 
 @route("GET", "/api/github/device")
@@ -281,6 +284,11 @@ def post_github_test(qs, body):
 @route("POST", "/api/update/check")
 def post_update_check(qs, body):
     return update.check_update()
+
+
+@route("GET", "/api/update/progress")
+def get_update_progress(qs, body):
+    return {"downloading": update.update_state.get("downloading", False), "progress": update.update_state.get("progress")}
 
 
 @route("POST", "/api/update/download")
@@ -735,6 +743,103 @@ def get_ws_search(qs, body):
     return workspace.search(q1(qs, "repoId"), q1(qs, "q", ""), q1(qs, "taskId"), q1(qs, "regex") == "1", q1(qs, "case") == "1")
 
 
+# ---------------------------------------------------------------- editor (estilo VS Code): base do diff e explorador
+@route("GET", "/api/ws/base")
+def get_ws_base(qs, body):
+    return editor.base_text(q1(qs, "repoId"), q1(qs, "path"), q1(qs, "taskId"), q1(qs, "ref", "HEAD"))
+
+
+@route("POST", "/api/ws/fs/create")
+def post_ws_fs_create(qs, body):
+    return editor.create(body.get("repoId"), body.get("path"), body.get("taskId"), bool(body.get("folder")))
+
+
+@route("POST", "/api/ws/fs/rename")
+def post_ws_fs_rename(qs, body):
+    return editor.rename(body.get("repoId"), body.get("from"), body.get("to"), body.get("taskId"))
+
+
+@route("POST", "/api/ws/fs/delete")
+def post_ws_fs_delete(qs, body):
+    return editor.delete(body.get("repoId"), body.get("path"), body.get("taskId"))
+
+
+# ---------------------------------------------------------------- .NET como no Visual Studio
+@route("GET", "/api/dotnet/solution")
+def get_dotnet_solution(qs, body):
+    if q1(qs, "refresh") == "1":
+        dotnet.toolchain(force=True)
+    return dotnet.solution(q1(qs, "repoId"), q1(qs, "taskId"))
+
+
+@route("POST", "/api/dotnet/build")
+def post_dotnet_build(qs, body):
+    terminals.hint_size(body.get("cols"), body.get("rows"))
+    return dotnet.build(body.get("repoId"), body.get("taskId"), body.get("target"), body.get("config"), body.get("action") or "Build")
+
+
+@route("POST", "/api/dotnet/start")
+def post_dotnet_start(qs, body):
+    terminals.hint_size(body.get("cols"), body.get("rows"))
+    return dotnet.start(body.get("repoId"), body.get("taskId"), body.get("projects") or [], body.get("config"), body.get("profile"))
+
+
+@route("GET", "/api/dotnet/problems")
+def get_dotnet_problems(qs, body):
+    return dotnet.problems(q1(qs, "termId"))
+
+
+@route("POST", "/api/dotnet/open-vs")
+def post_dotnet_open_vs(qs, body):
+    return dotnet.open_in_vs(body.get("repoId"), body.get("taskId"), body.get("target"))
+
+
+# ---------------------------------------------------------------- extensões do VS Code (temas, ícones, snippets)
+@route("GET", "/api/ext/list")
+def get_ext_list(qs, body):
+    return extensions.public_list(q1(qs, "refresh") == "1")
+
+
+@route("GET", "/api/ext/file")
+def get_ext_file(qs, body):
+    return extensions.file(q1(qs, "key"), q1(qs, "path"))
+
+
+@route("GET", "/api/ext/json")
+def get_ext_json(qs, body):
+    return extensions.json_file(q1(qs, "key"), q1(qs, "path"))
+
+
+@route("GET", "/api/ext/theme")
+def get_ext_theme(qs, body):
+    return extensions.theme(q1(qs, "key"), q1(qs, "path"))
+
+
+@route("GET", "/api/ext/snippets")
+def get_ext_snippets(qs, body):
+    return extensions.snippets(q1(qs, "key"))
+
+
+@route("GET", "/api/ext/languages")
+def get_ext_languages(qs, body):
+    return extensions.language_configs(q1(qs, "key"))
+
+
+@route("GET", "/api/ext/search")
+def get_ext_search(qs, body):
+    return extensions.search(q1(qs, "q", ""), q1(qs, "category"), q1(qs, "size", 30))
+
+
+@route("POST", "/api/ext/install")
+def post_ext_install(qs, body):
+    return extensions.install(body.get("namespace"), body.get("name"), body.get("version"))
+
+
+@route("POST", "/api/ext/uninstall")
+def post_ext_uninstall(qs, body):
+    return extensions.uninstall(body.get("key"))
+
+
 # ---------------------------------------------------------------- contas de IA
 @route("GET", "/api/ai")
 def get_ai(qs, body):
@@ -892,7 +997,10 @@ class Handler(BaseHTTPRequestHandler):
         if not fn:
             return self.send(404, {"error": "rota não encontrada"})
         try:
-            return self.send(200, fn(urllib.parse.parse_qs(url.query), body))
+            res = fn(urllib.parse.parse_qs(url.query), body)
+            if isinstance(res, extensions.RawFile):   # arquivo de extensão (ícone, fonte, tema): bytes com o tipo certo
+                return self.send(200, res.data, res.ctype)
+            return self.send(200, res)
         except LookupError as e:
             return self.send(404, {"error": str(e).strip("'")})
         except (ValueError, git.GitError) as e:

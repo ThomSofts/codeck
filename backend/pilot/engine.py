@@ -5,6 +5,7 @@ o mesmo formato, então regras, arquivo e notificações valem igual para Azure 
 derruba as outras: os itens dela ficam como estavam até a próxima leitura dar certo.
 """
 import os
+import threading
 import time
 import uuid
 from datetime import timedelta
@@ -16,7 +17,6 @@ from .core import (ARCHIVE_FILE, CONFIG_FILE, NOTIFIED_FILE, ctx, load_json, loc
 from .rules import get_rules, matching_deploy_rule, matching_rule, protected_set, rule_label
 
 deploy_failures = {}  # key -> ts da última falha automática (não insiste a cada ciclo)
-_cycle = {"n": 0}
 
 
 # ---------------------------------------------------------------- contas
@@ -126,8 +126,23 @@ def _sources():
     return [(name, org) for name, org in list(ctx.orgs.items())] + [(f"gh:{a.login}", a) for a in list(ctx.gh.values())]
 
 
-# rede: uma fonte que falha por falta de conexão não vira erro da conta; se TODAS falham assim, o app está offline
-_net = {"down": False, "ok": False}
+# rede: uma fonte que falha por falta de conexão não vira erro da conta; se TODAS falham assim, o app está offline.
+# Cada ciclo (PRs, builds, deploys, issues) roda na própria thread: o estado da rede é por thread.
+class _NetState(threading.local):
+    def __init__(self):
+        self.d = {"down": False, "ok": False}
+
+    def __getitem__(self, k):
+        return self.d[k]
+
+    def __setitem__(self, k, v):
+        self.d[k] = v
+
+    def update(self, **kw):
+        self.d.update(kw)
+
+
+_net = _NetState()
 
 
 def _fail(errors, key, e, text=None):
@@ -422,26 +437,57 @@ def poll_issues():
 POLL_STEP = {"poll_prs": "pull requests", "poll_builds": "builds", "poll_deploys": "deploys", "poll_issues": "issues e tarefas"}
 
 
-def poll_loop():
+# fonte → (função, múltiplo do intervalo de leitura, atraso inicial em s). Issues mudam menos: a cada 3 intervalos.
+SOURCES = {"prs": (poll_prs, 1, 0), "builds": (poll_builds, 1, 2), "deploys": (poll_deploys, 1, 4), "issues": (poll_issues, 3, 6)}
+_wakes = {k: threading.Event() for k in SOURCES}
+_offline = {}
+
+
+def refresh(source=None):
+    """Lê agora: uma fonte (prs, builds, deploys, issues) ou todas."""
+    for k in ([source] if source in _wakes else _wakes):
+        _wakes[k].set()
+
+
+def _source_loop(key):
+    fn, mult, delay = SOURCES[key]
+    time.sleep(delay)   # não sai tudo junto na abertura
     while True:
         _net.update(down=False, ok=False)
-        for fn in (poll_prs, poll_builds, poll_deploys) + ((poll_issues,) if _cycle["n"] % 3 == 0 else ()):
+        with lock:
+            state["loading"][key] = now_iso()
+            state["polling"] = POLL_STEP[fn.__name__]   # compatível: "lendo <etapa>…" na barra lateral
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001
             with lock:
-                state["polling"] = POLL_STEP[fn.__name__]  # a tela mostra "lendo <etapa>…" enquanto isto não volta a None
-            try:
-                fn()
-            except Exception as e:  # noqa: BLE001
-                with lock:
-                    state["errors"]["_geral"] = f"{fn.__name__}: {e}"
+                state["errors"]["_geral"] = f"{fn.__name__}: {e}"
         offline = _net["down"] and not _net["ok"]
         with lock:
-            state["polling"] = None
+            state["loading"][key] = None
+            state["updated"][key] = now_iso()
+            busy = [k for k, v in state["loading"].items() if v]
+            state["polling"] = POLL_STEP[SOURCES[busy[0]][0].__name__] if busy else None
+            _offline[key] = offline
             # "offline" guarda DESDE QUANDO está sem rede; volta a None na 1ª leitura que funcionar
-            state["offline"] = (state.get("offline") or now_iso()) if offline else None
-        _cycle["n"] += 1
+            state["offline"] = (state.get("offline") or now_iso()) if all(_offline.get(k) for k in SOURCES) else None
         # sem rede: tenta de novo a cada 10 s para reconectar logo; com rede, no intervalo escolhido
-        wake.wait(10 if offline else max(15, int(ctx.config.get("pollSeconds", 60))))
+        _wakes[key].wait(10 if offline else max(15, int(ctx.config.get("pollSeconds", 60))) * (1 if offline else mult))
+        _wakes[key].clear()
+
+
+def _wake_relay():
+    """O `wake` global (Atualizar, conta nova, regra mudou) acorda todas as fontes."""
+    while True:
+        wake.wait()
         wake.clear()
+        refresh()
+
+
+def poll_loop():
+    for k in SOURCES:
+        threading.Thread(target=_source_loop, args=(k,), daemon=True, name=f"poll-{k}").start()
+    _wake_relay()
 
 
 def start():

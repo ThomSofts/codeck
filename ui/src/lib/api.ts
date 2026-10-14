@@ -31,14 +31,15 @@ const TERM_ROUTES = /^ws\/(agent|shell|task|run)$/;
 let sizeHint: (() => { cols: number; rows: number } | null) | null = null;
 export function setTermSizeHint(fn: typeof sizeHint) { sizeHint = fn; }
 
-/** Envio de ação. Conta como "em andamento" até responder, o que acende a barra de progresso do topo. */
-export function post<T = any>(path: string, body: unknown = {}): Promise<T> {
+/** Envio de ação. Conta como "em andamento" até responder, o que acende a barra de progresso do topo — menos os envios
+ *  de fundo (quiet: pulso de tempo de uso, preferências), que não são ação sua e não devem piscar o topo. */
+export function post<T = any>(path: string, body: unknown = {}, opts: { quiet?: boolean } = {}): Promise<T> {
   if (sizeHint && TERM_ROUTES.test(path) && body && typeof body === "object" && !("cols" in body)) {
     const sz = sizeHint();
     if (sz) body = { ...body, ...sz };
   }
-  ui.inflight++;
+  if (!opts.quiet) ui.inflight++;
   return fetch(`/api/${path}`, {
     method: "POST", headers: { ...headers(), "Content-Type": "application/json", "X-Codeck": "1" }, body: JSON.stringify(body),
-  }).then(r => handle<T>(r)).finally(() => ui.inflight--);
+  }).then(r => handle<T>(r)).finally(() => { if (!opts.quiet) ui.inflight--; });
 }

@@ -3,7 +3,7 @@
   // esquerda com os arquivos; no centro, abas de agentes, terminais e arquivos; à direita, o agente e os limites.
   // ⌘/Ctrl+P abre arquivo · ⇧F busca no projeto · T novo terminal · W fecha a aba · 1…9 troca de projeto · ⇧I pede à IA.
   // As abas de projeto podem ficar em GRUPOS (como no navegador): nome, cor, recolher/expandir e quantos estão abertos.
-  import { Bot, GitPullRequest, PanelLeft, Layers, Play, RefreshCw, ChevronDown, Code2, FolderGit2, GitBranch, AppWindow, Columns2, GitCompareArrows, LayoutGrid, PanelRight, Settings2, Plus, Search, SquareTerminal, X, Sparkles, FolderPlus, FolderMinus, Palette, Pencil, FolderOpen, Trash2, ChevronRight } from "@lucide/svelte";
+  import { Bot, GitPullRequest, PanelLeft, Layers, Play, RefreshCw, ChevronDown, Code2, FolderGit2, GitBranch, AppWindow, Columns2, GitCompareArrows, LayoutGrid, PanelRight, Settings2, Plus, Search, SquareTerminal, X, Sparkles, FolderPlus, FolderMinus, Palette, Pencil, FolderOpen, Trash2, ChevronRight, Files, Blocks, Boxes, Copy, Pin, ListX, TriangleAlert, Minus, Minimize2 } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { get, post } from "../lib/api";
   import { send } from "../lib/native";
@@ -21,6 +21,19 @@
   import AgentPanel from "../components/work/AgentPanel.svelte";
   import Editor, { dirty, forget, keyOf } from "../components/work/Editor.svelte";
   import FileTree from "../components/work/FileTree.svelte";
+  import FileIcon from "../components/work/FileIcon.svelte";
+  import DiffEditor from "../components/work/DiffEditor.svelte";
+  import ScmView from "../components/work/ScmView.svelte";
+  import SolutionView from "../components/work/SolutionView.svelte";
+  import ExtensionsView from "../components/work/ExtensionsView.svelte";
+  import DotnetBar from "../components/work/DotnetBar.svelte";
+  import QuickOpen from "../components/work/QuickOpen.svelte";
+  import ProblemsPanel from "../components/work/ProblemsPanel.svelte";
+  import StatusBar from "../components/work/StatusBar.svelte";
+  import OpenSwitcher from "../components/hub/OpenSwitcher.svelte";
+  import { scm } from "../lib/scm.svelte";
+  import { dotnet } from "../lib/dotnet.svelte";
+  import { scopeKey } from "../lib/editorstate.svelte";
   import NewTask from "../components/work/NewTask.svelte";
   import Terminal, { drop } from "../components/work/Terminal.svelte";
   import Board from "../components/work/Board.svelte";
@@ -34,21 +47,25 @@
   import { kbd, matches } from "../lib/keys";
   import type { Group } from "../lib/work.svelte";
 
-  type FileTab = { k: "file"; key: string; path: string; scope: string | null; line?: number };
-  type View = { scope: string | null; files: FileTab[]; order: string[]; active: string | null; left: "files" | "search"; right: boolean; split?: string | null; lastRun?: string | null;
-    mode?: "code" | "git" | "prs"; leftOpen?: boolean };
+  // aba de arquivo (preview = aba de visualização, em itálico, reaproveitada pelo próximo clique — como no VS Code) ou de diff
+  type FileTab = { k: "file" | "diff"; key: string; path: string; scope: string | null; line?: number; preview?: boolean; staged?: boolean };
+  type LeftView = "files" | "search" | "scm" | "solution" | "ext";
+  type View = { scope: string | null; files: FileTab[]; order: string[]; active: string | null; left: LeftView; right: boolean; split?: string | null; lastRun?: string | null;
+    mode?: "code" | "git" | "prs"; leftOpen?: boolean; recent?: string[]; panel?: boolean;
+    /** terminais minimizados: continuam rodando, saem das abas e ficam no cantinho (doca) */
+    hidden?: string[] };
   const LS = "codeck.work.views";
   let views = $state<Record<string, View>>(readViews());
   // larguras/alturas ajustáveis arrastando as bordas (valem para todos os projetos)
   const SZ = "codeck.work.sizes";
-  let sizes = $state<{ left: number; right: number; scopes: number }>((() => { try { return { left: 260, right: 300, scopes: 240, ...JSON.parse(localStorage.getItem(SZ) || "{}") }; } catch { return { left: 260, right: 300, scopes: 240 }; } })());
+  let sizes = $state<{ left: number; right: number; scopes: number; panel: number }>((() => { try { return { left: 300, right: 300, scopes: 220, panel: 200, ...JSON.parse(localStorage.getItem(SZ) || "{}") }; } catch { return { left: 300, right: 300, scopes: 220, panel: 200 }; } })());
   const scopesH = $derived(sizes.scopes);
-  function drag(e: PointerEvent, which: "left" | "right" | "scopes") {
+  function drag(e: PointerEvent, which: "left" | "right" | "scopes" | "panel") {
     e.preventDefault();
     const x0 = e.clientX, y0 = e.clientY, start = sizes[which];
     const move = (ev: PointerEvent) => {
       const v = which === "left" ? start + (ev.clientX - x0) : which === "right" ? start - (ev.clientX - x0) : start - (ev.clientY - y0);
-      const [min, max] = which === "scopes" ? [90, 520] : which === "left" ? [180, 520] : [220, 560];
+      const [min, max] = which === "scopes" ? [90, 520] : which === "panel" ? [90, 640] : which === "left" ? [220, 620] : [220, 560];
       sizes = { ...sizes, [which]: Math.round(Math.min(max, Math.max(min, v))) };
     };
     const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); document.body.classList.remove("resizing");
@@ -78,7 +95,7 @@
     const id = p?.id;
     if (!id) return;
     const t = setInterval(() => {
-      if (document.visibilityState === "visible" && document.hasFocus()) post("ws/focus", { repoId: id, seconds: 30 }).catch(() => {});
+      if (document.visibilityState === "visible" && document.hasFocus()) post("ws/focus", { repoId: id, seconds: 30 }, { quiet: true }).catch(() => {});
     }, 30000);
     return () => clearInterval(t);
   });
@@ -90,20 +107,30 @@
   const task = $derived(p && v?.scope ? p.tasks.find(t => t.id === v.scope) || null : null);
   const scopeTerms = $derived<TermInfo[]>(p ? (task ? task.terms : p.terms) : []);
 
-  type Tab = { key: string; kind: "term" | "file" | "review" | "git" | "prs"; term?: TermInfo; file?: FileTab };
+  type Tab = { key: string; kind: "term" | "file" | "diff" | "review" | "git" | "prs"; term?: TermInfo; file?: FileTab };
   const tabs = $derived.by<Tab[]>(() => {
     if (!p || !v) return [];
     const list: Tab[] = [
       // tarefa: a aba "Revisão" fica sempre no começo (o que mudou desde a base, para revisar e comentar)
       ...(task ? [{ key: "r:" + task.id, kind: "review" as const }] : []),
-      ...scopeTerms.map(t => ({ key: "t:" + t.id, kind: "term" as const, term: t })),
-      ...v.files.filter(f => f.scope === (v.scope || null)).map(f => ({ key: f.key, kind: "file" as const, file: f })),
+      ...scopeTerms.filter(t => !v.hidden?.includes(t.id)).map(t => ({ key: "t:" + t.id, kind: "term" as const, term: t })),
+      ...v.files.filter(f => f.scope === (v.scope || null)).map(f => ({ key: f.key, kind: (f.k === "diff" ? "diff" : "file") as "file" | "diff", file: f })),
     ];
     const pos = (k: string) => { if (k.startsWith("g:")) return -3; if (k.startsWith("p:")) return -2; if (k.startsWith("r:")) return -1; const i = v.order.indexOf(k); return i < 0 ? 1e6 : i; };
     return list.sort((a, b) => pos(a.key) - pos(b.key));
   });
   // sem aba escolhida: o 1º terminal/arquivo; se não houver, a tela inicial (abrir agente, terminal, nova tarefa)
-  const activeTab = $derived(tabs.find(t => t.key === v?.active) || tabs.find(t => t.kind === "term" || t.kind === "file") || null);
+  const activeTab = $derived(tabs.find(t => t.key === v?.active) || tabs.find(t => t.kind === "term" || t.kind === "file" || t.kind === "diff") || null);
+  // repositório Git do escopo (o worktree da tarefa é um repositório próprio): status, diff, commit
+  const gitRepo = $derived(task?.repoId || p?.id || "");
+  $effect(() => { const g = gitRepo; if (!g) return; return scm.watch(g); });
+  const decor = $derived(scm.map(gitRepo));
+  const scmCount = $derived(scm.count(gitRepo));
+  // .NET: a solução do escopo (mostra o Gerenciador de Soluções e a barra do Visual Studio quando existe)
+  const dnKey = $derived(p ? dotnet.key(p.id, v?.scope || null) : "");
+  $effect(() => { const k = dnKey; if (!k || !p) return; untrack(() => { if (dotnet.data[k] === undefined) dotnet.load(p!.id, v?.scope || null); }); });
+  const hasSln = $derived(!!dotnet.data[dnKey]?.solutions.length);
+  let quickOpen = $state(false);
   // PRs abertas deste repositório (contador na aba)
   const prCount = $derived.by(() => {
     if (!p?.provider || !p.slug) return 0;
@@ -204,32 +231,130 @@
   }
   const resumable = $derived((task ? task.resumable : p?.resumable) || []);
   const ago = (iso: string) => { const m = Math.round((Date.now() - new Date(iso).getTime()) / 6e4); return m < 60 ? `${m} min` : m < 1440 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`; };
+  // ------------------------------------------------------------ minimizar terminal (o processo continua; volta pela doca)
+  const minimized = $derived(v ? scopeTerms.filter(t => v!.hidden?.includes(t.id)) : []);
+  function minimize(id: string) {
+    if (!v) return;
+    v.hidden = [...new Set([...(v.hidden || []), id])];
+    if (v.active === "t:" + id || activeTab?.key === "t:" + id) v.active = tabs.find(x => x.key !== "t:" + id)?.key || null;
+    if (v.split === "t:" + id) v.split = null;
+  }
+  function restore(id: string) {
+    if (!v) return;
+    v.hidden = (v.hidden || []).filter(x => x !== id);
+    focusTab("t:" + id);
+  }
+  async function stopTerm(t: TermInfo) {
+    if (t.alive && !(await ui.ask({ title: `Parar ${t.title}?`, message: "O processo deste terminal será encerrado.", confirm: "Parar", danger: true }))) return;
+    await post("terms/close", { id: t.id }).catch(e => ui.error(e));
+    drop(t.id);
+    if (v) v.hidden = (v.hidden || []).filter(x => x !== t.id);
+    await work.load();
+  }
+  // terminais que sumiram (fechados por fora) saem da lista de minimizados
+  $effect(() => {
+    if (!p || !work.loaded) return;
+    const ids = new Set([...p.terms, ...p.tasks.flatMap(k => k.terms)].map(t => t.id));
+    if (v?.hidden?.some(x => !ids.has(x))) untrack(() => { v!.hidden = v!.hidden!.filter(x => ids.has(x)); });
+  });
+  const runningMenu = () => [
+    ...scopeTerms.filter(t => t.alive && t.kind !== "agent").map(t => ({ label: `${v?.hidden?.includes(t.id) ? "Mostrar" : "Ir para"} ${t.title}`, icon: t.kind === "run" ? Play : SquareTerminal,
+      onclick: () => (v?.hidden?.includes(t.id) ? restore(t.id) : focusTab("t:" + t.id)) })),
+    { separator: true },
+    ...scopeTerms.filter(t => t.alive && t.kind === "run").map(t => ({ label: `Parar ${t.title}`, icon: X, danger: true, onclick: () => stopTerm(t) })),
+  ];
+
   async function closeTab(t: Tab) {
     if (!v) return;
     if (t.kind === "term") {
       const s = work.session(t.term);
-      if (t.term!.alive && (t.term!.kind === "agent" || Date.now() / 1000 - t.term!.lastOutput < 5) &&
-          !(await ui.ask({ title: `Encerrar ${t.term!.title}?`, message: s?.status === "working" ? "O agente está trabalhando agora." : "O processo deste terminal será encerrado.", confirm: "Encerrar", danger: true }))) return;
+      if (t.term!.alive && (t.term!.kind === "agent" || t.term!.kind === "run" || Date.now() / 1000 - t.term!.lastOutput < 5)) {
+        const r = await ui.ask({ title: `Encerrar ${t.term!.title}?`, danger: true, confirm: "Encerrar", alt: "Minimizar",
+          message: (s?.status === "working" ? "O agente está trabalhando agora." : "O processo deste terminal será encerrado.") + " Para só tirar da frente, minimize — ele continua rodando e fica no canto, embaixo." });
+        if (r === "alt") return minimize(t.term!.id);
+        if (!r) return;
+      }
       await post("terms/close", { id: t.term!.id }).catch(e => ui.error(e));
       drop(t.term!.id);
       await work.load();
+    } else if (t.kind === "diff") {
+      v.files = v.files.filter(f => f.key !== t.key);
     } else {
       if (dirty[t.key] && !(await ui.ask({ title: `${t.file!.path.split("/").pop()} tem alterações não salvas`, message: "Fechar e perder as alterações?", confirm: "Fechar sem salvar", danger: true }))) return;
       v.files = v.files.filter(f => f.key !== t.key);
-      forget(t.key);
+      forgetUnused(t.key, t.file!.path);
     }
     v.order = v.order.filter(k => k !== t.key);
     if (v.active === t.key) v.active = null;
   }
-  setOpener((rel, line) => openFile(rel, line));
-  function openFile(path: string, line?: number) {
+  setOpener((rel, line) => openFile(rel, line, { preview: false }));
+  /** Abre um arquivo. preview: true reaproveita a aba de visualização (clique simples no explorador/busca), como no VS Code. */
+  function openFile(path: string, line?: number, o: { preview?: boolean } = {}) {
     if (!p || !v) return;
     const key = keyOf(p.id, v.scope, path);
+    const scope = v.scope || null;
     const ex = v.files.find(f => f.key === key);
-    if (ex) ex.line = line;
-    else v.files = [...v.files, { k: "file", key, path, scope: v.scope || null, line }];
+    if (ex) { ex.line = line; if (o.preview === false) ex.preview = false; }
+    else {
+      const prev = o.preview ? v.files.find(f => f.scope === scope && f.preview && f.k === "file" && !dirty[f.key]) : null;
+      if (prev) {
+        // troca o arquivo da aba de visualização (no mesmo lugar da ordem)
+        v.order = v.order.map(k => (k === prev.key ? key : k));
+        v.files = v.files.map(f => (f === prev ? { k: "file", key, path, scope, line, preview: true } : f));
+        forgetUnused(prev.key, prev.path);
+      } else v.files = [...v.files, { k: "file", key, path, scope, line, preview: !!o.preview }];
+    }
+    v.recent = [path, ...(v.recent || []).filter(x => x !== path)].slice(0, 30);
     focusTab(key);
   }
+  /** "Abrir alterações": o diff do arquivo (preparado = HEAD × índice; senão índice × disco). */
+  function openDiff(path: string, staged = false) {
+    if (!p || !v) return;
+    const key = `d:${keyOf(p.id, v.scope, path)}:${staged ? "s" : "w"}`;
+    const scope = v.scope || null;
+    if (!v.files.some(f => f.key === key)) {
+      // o diff também é "visualização": troca o diff anterior que não foi fixado
+      const prev = v.files.find(f => f.scope === scope && f.k === "diff" && f.preview);
+      if (prev) { v.order = v.order.map(k => (k === prev.key ? key : k)); v.files = v.files.map(f => (f === prev ? { k: "diff", key, path, scope, staged, preview: true } : f)); }
+      else v.files = [...v.files, { k: "diff", key, path, scope, staged, preview: true }];
+    }
+    focusTab(key);
+  }
+  /** Libera o documento do arquivo — a não ser que um diff do mesmo arquivo ainda esteja aberto (ele usa o mesmo modelo). */
+  function forgetUnused(key: string, path: string) {
+    if (v?.files.some(f => f.k === "diff" && f.path === path && f.scope === (v!.scope || null))) return;
+    forget(key);
+  }
+  function pinTab(key: string) {
+    const f = v?.files.find(x => x.key === key);
+    if (f?.preview) f.preview = false;
+  }
+  let revealDir = $state<string | null>(null);
+  function reveal(path: string) {
+    if (v) { v.left = "files"; v.leftOpen = true; }
+    revealDir = path;
+    setTimeout(() => { if (revealDir === path) revealDir = null; }, 400);
+  }
+  async function closeMany(list: Tab[]) { for (const t of list) await closeTab(t); }
+  async function copyText(t: string, msg: string) { try { await navigator.clipboard.writeText(t); ui.toast(msg); } catch (e) { ui.error(e); } }
+  const fileTabMenu = (t: Tab) => {
+    const idx = tabs.indexOf(t);
+    const closable = (x: Tab) => x.kind === "file" || x.kind === "diff";
+    const rootPath = (task?.path || p?.path || "").replace(/[\\/]$/, "");
+    return [
+      ...(t.file?.preview ? [{ label: "Fixar a aba", icon: Pin, onclick: () => pinTab(t.key) }] : []),
+      ...(t.kind === "file" && decor.get(t.file!.path) ? [{ label: "Abrir alterações", icon: GitCompareArrows, onclick: () => openDiff(t.file!.path, false) }] : []),
+      ...(t.kind === "diff" ? [{ label: "Abrir o arquivo", icon: Code2, onclick: () => openFile(t.file!.path, undefined, { preview: false }) }] : []),
+      { label: "Revelar no explorador", icon: Files, onclick: () => reveal(t.file!.path) },
+      { label: "Copiar caminho", icon: Copy, onclick: () => copyText(rootPath + "/" + t.file!.path, "Caminho copiado") },
+      { label: "Copiar caminho relativo", icon: Copy, onclick: () => copyText(t.file!.path, "Caminho relativo copiado") },
+      { separator: true },
+      { label: "Fechar outras", icon: ListX, onclick: () => closeMany(tabs.filter(x => x !== t && closable(x))) },
+      { label: "Fechar à direita", onclick: () => closeMany(tabs.slice(idx + 1).filter(closable)) },
+      { label: "Fechar as salvas", onclick: () => closeMany(tabs.filter(x => closable(x) && !dirty[x.key])) },
+      { label: "Fechar todas as de arquivo", onclick: () => closeMany(tabs.filter(closable)) },
+    ];
+  };
   /** Projeto numa janela própria (outro monitor) — janela nativa do app. */
   function popOut(x: Project) {
     send({ type: "openWindow", hash: "/solo/" + x.id, title: `${x.name} — Codeck` });
@@ -248,12 +373,18 @@
   // atalhos: ⌘ no macOS, Ctrl no Windows (lib/keys)
   function onKey(e: KeyboardEvent) {
     if (router.view !== "work" || !p || !v) return;
-    const focusFt = () => setTimeout(() => document.querySelector<HTMLInputElement>(".work .ft input")?.focus(), 30);
-    if (matches(e, "mod+p")) { e.preventDefault(); v.left = "files"; v.leftOpen = true; focusFt(); }
+    const focusFt = () => setTimeout(() => document.querySelector<HTMLInputElement>(".work .side input")?.focus(), 30);
+    const side = (x: LeftView) => { e.preventDefault(); if (v!.left === x && leftOpen) v!.leftOpen = false; else { v!.left = x; v!.leftOpen = true; } };
+    if (matches(e, "mod+p")) { e.preventDefault(); quickOpen = true; }
     else if (matches(e, "mod+shift+f")) { e.preventDefault(); v.left = "search"; v.leftOpen = true; focusFt(); }
+    else if (matches(e, "mod+shift+e")) side("files");
+    else if (matches(e, "ctrl+shift+g") || matches(e, "mod+shift+g")) side("scm");
+    else if (matches(e, "mod+shift+x")) side("ext");
+    else if (matches(e, "mod+shift+m")) { e.preventDefault(); v.panel = !v.panel; }
+    else if (matches(e, "mod+b")) { e.preventDefault(); v.leftOpen = !leftOpen; }
     else if (matches(e, "mod+t")) { e.preventDefault(); newTerm(); }
     else if (matches(e, "mod+shift+i")) { e.preventDefault(); asking = {}; }
-    else if (matches(e, "mod+w") && activeTab && (activeTab.kind === "term" || activeTab.kind === "file")) { e.preventDefault(); closeTab(activeTab); }
+    else if (matches(e, "mod+w") && activeTab && (activeTab.kind === "term" || activeTab.kind === "file" || activeTab.kind === "diff")) { e.preventDefault(); closeTab(activeTab); }
     else {
       const n = "123456789".split("").find(d => matches(e, "mod+" + d));
       if (n && work.projects[+n - 1]) { e.preventDefault(); go("/work/" + work.projects[+n - 1].id, "soft"); }
@@ -338,7 +469,10 @@
           {:else if tab?.kind === "review" && task}
             {#key task.id}<Review project={p!} {task} onagent={(id) => focusTab("t:" + id)} />{/key}
           {:else if tab?.kind === "file" && tab.file}
-            <Editor repoId={p!.id} taskId={v!.scope} path={tab.file.path} line={tab.file.line || 0} />
+            <Editor repoId={p!.id} taskId={v!.scope} {gitRepo} path={tab.file.path} line={tab.file.line || 0} onpin={() => pinTab(tab.key)}
+              onreveal={reveal} />
+          {:else if tab?.kind === "diff" && tab.file}
+            {#key tab.key}<DiffEditor repoId={p!.id} taskId={v!.scope} {gitRepo} path={tab.file.path} staged={!!tab.file.staged} onopen={(f) => openFile(f, undefined, { preview: false })} />{/key}
           {:else}
             <div class="start">
               <h3>{task ? task.title : p!.name}</h3>
@@ -407,6 +541,7 @@
     {/each}
     <ProjectPicker />
     <span class="grow"></span>
+    <OpenSwitcher />
     <button class="btn sm ghost" title="Todos os projetos" onclick={() => go("/projects")}><LayoutGrid size={14} /> Hub</button>
   </div>
 
@@ -423,33 +558,52 @@
       <!-- esquerda: escopo (principal / tarefas) + arquivos -->
       <aside class="card left" class:hidden={!leftOpen}>
         <div class="hsplit r" role="separator" aria-orientation="vertical" title="Arraste para redimensionar" onpointerdown={(e) => drag(e, "left")}></div>
-        <div class="lm">
-          <button class:on={v.left === "files"} onclick={() => (v.left = "files")}><Code2 size={13} /> Arquivos</button>
-          <button class:on={v.left === "search"} onclick={() => (v.left = "search")}><Search size={13} /> Busca</button>
-        </div>
-        <div class="tree">
-          {#key p.id + (v.scope || "")}<FileTree repoId={p.id} taskId={v.scope} mode={v.left} onopen={openFile} active={activeTab?.file?.path || null} />{/key}
-        </div>
-        <div class="scopes" style="height:{scopesH}px">
-          <div class="vsplit" role="separator" aria-orientation="horizontal" title="Arraste para redimensionar" onpointerdown={(e) => drag(e, "scopes")}></div>
-          <button class="sc" class:on={!v.scope} onclick={() => setScope(null)}>
-            <FolderGit2 size={14} /><span class="grow ell"><b>{p.name}</b><span class="tiny muted">checkout principal</span></span>
-            {#if p.terms.length}<span class="tiny muted">{p.terms.length}</span>{/if}
-            <span class="gear" role="button" tabindex="0" title="Ajustes do projeto" onclick={(e) => { e.stopPropagation(); settingsOpen = true; }} onkeydown={(e) => e.key === "Enter" && (settingsOpen = true)}><Settings2 size={13} /></span>
-          </button>
-          <div class="sch"><span>Tarefas</span><button class="btn sm ghost" onclick={() => (newTask = {})}><Plus size={13} /> Nova</button></div>
-          {#each [...new Set(p.tasks.filter(t => t.group).map(t => t.group!))].filter(g => p!.tasks.filter(t => t.group === g).length > 1) as g (g)}
-            <button class="cmp" onclick={() => (comparing = g)}><GitCompareArrows size={13} /> Comparar {p.tasks.filter(t => t.group === g).length} soluções · {g}</button>
-          {/each}
-          {#each p.tasks as t (t.id)}
-            <button class="sc task" class:on={v.scope === t.id} onclick={() => setScope(t.id)} title={t.branch}>
-              <span class="dot {taskTone(t)}"></span>
-              <span class="grow ell"><b>{t.title}</b><span class="tiny muted mono ell"><GitBranch size={10} /> {t.branch}</span></span>
-              <span class="ags">{#each t.terms.filter(x => x.kind === "agent") as a (a.id)}<AgentIcon provider={a.meta.provider} size={13} />{/each}</span>
+        <!-- barra de atividades (como a do VS Code) -->
+        <nav class="abar" aria-label="Visões do projeto">
+          <button class:on={v.left === "files"} title={`Explorador (${kbd("mod+shift+e")})`} onclick={() => (v!.left = "files")}><Files size={18} /></button>
+          <button class:on={v.left === "search"} title={`Buscar (${kbd("mod+shift+f")})`} onclick={() => (v!.left = "search")}><Search size={18} /></button>
+          <button class:on={v.left === "scm"} title={`Controle de código-fonte (${kbd("ctrl+shift+g")})`} onclick={() => (v!.left = "scm")}><GitBranch size={18} />{#if scmCount}<span class="ab-n">{scmCount > 99 ? "99+" : scmCount}</span>{/if}</button>
+          {#if hasSln}<button class:on={v.left === "solution"} title="Gerenciador de Soluções (.NET)" onclick={() => (v!.left = "solution")}><Boxes size={18} /></button>{/if}
+          <button class:on={v.left === "ext"} title={`Extensões (${kbd("mod+shift+x")})`} onclick={() => (v!.left = "ext")}><Blocks size={18} /></button>
+          <span class="ab-grow"></span>
+          <button title="Ajustes do projeto" onclick={() => (settingsOpen = true)}><Settings2 size={17} /></button>
+        </nav>
+        <div class="side">
+          <div class="tree">
+            {#if v.left === "files" || v.left === "search"}
+              {#key p.id + (v.scope || "")}<FileTree repoId={p.id} taskId={v.scope} {gitRepo} mode={v.left} onopen={openFile} ondiff={(f) => openDiff(f, false)}
+                onterminal={(dir) => newTerm(dir ? `cd ${JSON.stringify(dir)}` : undefined)} active={revealDir || activeTab?.file?.path || null} />{/key}
+            {:else if v.left === "scm"}
+              {#key gitRepo}<ScmView {gitRepo} ondiff={openDiff} onopen={(f) => openFile(f, undefined, { preview: false })} />{/key}
+            {:else if v.left === "solution"}
+              {#key p.id + (v.scope || "")}<SolutionView repoId={p.id} taskId={v.scope} active={activeTab?.file?.path || null} onopen={openFile} onterm={(id) => { work.load().then(() => focusTab("t:" + id)); }} />{/key}
+            {:else}
+              <ExtensionsView />
+            {/if}
+          </div>
+          {#if v.left === "files"}
+          <div class="scopes" style="height:{scopesH}px">
+            <div class="vsplit" role="separator" aria-orientation="horizontal" title="Arraste para redimensionar" onpointerdown={(e) => drag(e, "scopes")}></div>
+            <button class="sc" class:on={!v.scope} onclick={() => setScope(null)}>
+              <FolderGit2 size={14} /><span class="grow ell"><b>{p.name}</b><span class="tiny muted">checkout principal</span></span>
+              {#if p.terms.length}<span class="tiny muted">{p.terms.length}</span>{/if}
+              <span class="gear" role="button" tabindex="0" title="Ajustes do projeto" onclick={(e) => { e.stopPropagation(); settingsOpen = true; }} onkeydown={(e) => e.key === "Enter" && (settingsOpen = true)}><Settings2 size={13} /></span>
             </button>
-          {:else}
-            <div class="none">Nenhuma tarefa. “Nova” cria uma branch e um worktree — o agente trabalha lá sem mexer no seu checkout.</div>
-          {/each}
+            <div class="sch"><span>Tarefas</span><button class="btn sm ghost" onclick={() => (newTask = {})}><Plus size={13} /> Nova</button></div>
+            {#each [...new Set(p.tasks.filter(t => t.group).map(t => t.group!))].filter(g => p!.tasks.filter(t => t.group === g).length > 1) as g (g)}
+              <button class="cmp" onclick={() => (comparing = g)}><GitCompareArrows size={13} /> Comparar {p.tasks.filter(t => t.group === g).length} soluções · {g}</button>
+            {/each}
+            {#each p.tasks as t (t.id)}
+              <button class="sc task" class:on={v.scope === t.id} onclick={() => setScope(t.id)} title={t.branch}>
+                <span class="dot {taskTone(t)}"></span>
+                <span class="grow ell"><b>{t.title}</b><span class="tiny muted mono ell"><GitBranch size={10} /> {t.branch}</span></span>
+                <span class="ags">{#each t.terms.filter(x => x.kind === "agent") as a (a.id)}<AgentIcon provider={a.meta.provider} size={13} />{/each}</span>
+              </button>
+            {:else}
+              <div class="none">Nenhuma tarefa. “Nova” cria uma branch e um worktree — o agente trabalha lá sem mexer no seu checkout.</div>
+            {/each}
+          </div>
+          {/if}
         </div>
       </aside>
 
@@ -458,19 +612,37 @@
         <div class="tabs">
           <button class="btn sm ghost icon lt" class:on={leftOpen} title={leftOpen ? "Recolher arquivos e tarefas" : "Mostrar arquivos e tarefas"} onclick={() => v && (v.leftOpen = !leftOpen)}><PanelLeft size={15} /></button>
           <div class="modes" role="tablist" aria-label="Modo do projeto">
-            <button role="tab" class:on={mode === "code"} aria-selected={mode === "code"} onclick={() => v && (v.mode = "code")}><Code2 size={13} /> Código</button>
-            <button role="tab" class:on={mode === "git"} aria-selected={mode === "git"} onclick={() => v && (v.mode = "git")}><GitBranch size={13} /> Git</button>
-            <button role="tab" class:on={mode === "prs"} aria-selected={mode === "prs"} onclick={() => v && (v.mode = "prs")}><GitPullRequest size={13} /> PRs{#if prCount}<span class="n">{prCount}</span>{/if}</button>
+            <button role="tab" class:on={mode === "code"} aria-selected={mode === "code"} onclick={() => v && (v.mode = "code")}><Code2 size={13} /> <span class="lbl l-mode">Código</span></button>
+            <button role="tab" class:on={mode === "git"} aria-selected={mode === "git"} onclick={() => v && (v.mode = "git")}><GitBranch size={13} /> <span class="lbl l-mode">Git</span></button>
+            <button role="tab" class:on={mode === "prs"} aria-selected={mode === "prs"} onclick={() => v && (v.mode = "prs")}><GitPullRequest size={13} /> <span class="lbl l-mode">PRs</span>{#if prCount}<span class="n">{prCount}</span>{/if}</button>
           </div>
-          <div class="tl" class:hidden={mode !== "code"}>
+          <span class="hgrow"></span>
+          <div class="tact">
+            {#if hasSln}<DotnetBar repoId={p.id} taskId={v.scope} terms={scopeTerms} onterm={(id) => { work.load().then(() => focusTab("t:" + id)); }} />{/if}
+            <div class="runbtn">
+              <button class="btn sm good-run" disabled={!lastRun && !runCfgs.length} title={lastRun ? `Executar: ${lastRun.label}` : "Escolha o que executar"}
+                onclick={() => (lastRun ? runCfg(lastRun.id) : null)}><Play size={13} /> <span class="ell lbl l-run">{lastRun ? lastRun.label : "Executar"}</span></button>
+              <Menu items={runItems} align="right" label="O que executar">{#snippet trigger()}<span class="btn sm caret"><ChevronDown size={12} /></span>{/snippet}</Menu>
+            </div>
+            <button class="btn sm ask" title={`Pedir à IA: planejar e/ou implementar (${kbd("mod+shift+i")})`} onclick={() => (asking = {})}><Sparkles size={14} /> <span class="lbl l-ask">Pedir à IA</span></button>
+            <Menu items={agentItems} align="right">{#snippet trigger()}<span class="btn sm"><Bot size={14} /> <span class="lbl l-ag">Agente</span> <ChevronDown size={12} /></span>{/snippet}</Menu>
+            <button class="btn sm ghost" title={`Novo terminal (${kbd("mod+t")})`} onclick={() => newTerm()}><SquareTerminal size={14} /></button>
+            <button class="btn sm ghost icon" title="Painel do agente" onclick={() => (v.right = !v.right)}><PanelRight size={15} /></button>
+          </div>
+        </div>
+        {#if tabs.length}
+          <div class="tl" class:other={mode !== "code"} role="tablist" aria-label="Abas abertas">
             {#each tabs as t (t.key)}
               {@const s = t.kind === "term" ? work.session(t.term) : null}
-              <div class="tab" class:on={activeTab?.key === t.key} class:dead={t.kind === "term" && !t.term?.alive} role="tab" tabindex="0" aria-selected={activeTab?.key === t.key}
-                onclick={() => focusTab(t.key)} onkeydown={(e) => e.key === "Enter" && focusTab(t.key)} onauxclick={(e) => e.button === 1 && closeTab(t)}
+              {@const fd = t.file ? decor.get(t.file.path) : null}
+              <div class="tab {fd?.tone || ''}" class:on={activeTab?.key === t.key} class:dead={t.kind === "term" && !t.term?.alive} class:preview={!!t.file?.preview} role="tab" tabindex="0" aria-selected={activeTab?.key === t.key}
+                onclick={() => focusTab(t.key)} ondblclick={() => t.file && pinTab(t.key)} onkeydown={(e) => e.key === "Enter" && focusTab(t.key)} onauxclick={(e) => e.button === 1 && closeTab(t)}
                 oncontextmenu={(e) => ui.contextMenu(e, [
                   { label: "Abrir ao lado", icon: Columns2, onclick: () => { if (v) { if (v.active === t.key || activeTab?.key === t.key) v.active = tabs.find(x => x.key !== t.key)?.key || null; v.split = t.key; } }, disabled: tabs.length < 2 },
                   ...(v?.split ? [{ label: "Fechar a divisão", onclick: () => v && (v.split = null) }] : []),
                   ...(t.kind === "term" && t.term?.kind === "run" ? [{ label: "Reiniciar", icon: RefreshCw, onclick: () => restart(t.term!) }] : []),
+                  ...(t.kind === "term" && t.term?.alive ? [{ label: "Minimizar (continua rodando)", icon: Minimize2, onclick: () => minimize(t.term!.id) }] : []),
+                  ...(t.file ? [{ separator: true }, ...fileTabMenu(t)] : []),
                   ...(t.kind !== "review" ? [{ separator: true }, { label: "Fechar", icon: X, onclick: () => closeTab(t) }] : []),
                 ])}>
                 {#if t.kind === "term" && t.term?.kind === "agent"}<AgentIcon provider={t.term.meta.provider} size={13} />
@@ -479,26 +651,18 @@
                 {:else if t.kind === "review"}<GitCompareArrows size={13} />
                 {:else if t.kind === "git"}<GitBranch size={13} />
                 {:else if t.kind === "prs"}<GitPullRequest size={13} />
-                {:else}<Code2 size={13} />{/if}
-                <span class="ell">{t.kind === "term" ? t.term!.title : t.kind === "review" ? "Revisão" : t.kind === "git" ? "Git" : t.kind === "prs" ? `PRs${prCount ? " · " + prCount : ""}` : t.file!.path.split("/").pop()}</span>
+                {:else if t.kind === "diff"}<GitCompareArrows size={13} class="dicon" />
+                {:else}<FileIcon name={t.file!.path.split("/").pop() || ""} size={14} />{/if}
+                <span class="ell tname">{t.kind === "term" ? t.term!.title : t.kind === "review" ? "Revisão" : t.kind === "git" ? "Git" : t.kind === "prs" ? `PRs${prCount ? " · " + prCount : ""}` : t.file!.path.split("/").pop() + (t.kind === "diff" ? (t.file!.staged ? " (preparado)" : " (alterações)") : "")}</span>
+                {#if fd && t.kind === "file"}<span class="tl-g" title={fd.label}>{fd.letter}</span>{/if}
                 {#if s}<span class="sdot {STATUS[s.status]?.[1]}" class:pulse={s.status === "working"} title={STATUS[s.status]?.[0]}></span>{/if}
                 {#if t.kind === "file" && dirty[t.key]}<span class="dirty" title="não salvo"></span>{/if}
-                {#if t.kind === "term" || t.kind === "file"}<button class="x" title={`Fechar (${kbd("mod+w")})`} onclick={(e) => { e.stopPropagation(); closeTab(t); }}><X size={11} /></button>{/if}
+                {#if t.kind === "term" && t.term?.alive}<button class="x" title="Minimizar — continua rodando no canto" onclick={(e) => { e.stopPropagation(); minimize(t.term!.id); }}><Minus size={11} /></button>{/if}
+                {#if t.kind === "term" || t.kind === "file" || t.kind === "diff"}<button class="x" title={`Fechar (${kbd("mod+w")})`} onclick={(e) => { e.stopPropagation(); closeTab(t); }}><X size={11} /></button>{/if}
               </div>
             {/each}
           </div>
-          <div class="tact">
-            <div class="runbtn">
-              <button class="btn sm good-run" disabled={!lastRun && !runCfgs.length} title={lastRun ? `Executar: ${lastRun.label}` : "Escolha o que executar"}
-                onclick={() => (lastRun ? runCfg(lastRun.id) : null)}><Play size={13} /> <span class="ell">{lastRun ? lastRun.label : "Executar"}</span></button>
-              <Menu items={runItems} align="right" label="O que executar">{#snippet trigger()}<span class="btn sm caret"><ChevronDown size={12} /></span>{/snippet}</Menu>
-            </div>
-            <button class="btn sm ask" title={`Pedir à IA: planejar e/ou implementar (${kbd("mod+shift+i")})`} onclick={() => (asking = {})}><Sparkles size={14} /> Pedir à IA</button>
-            <Menu items={agentItems} align="right">{#snippet trigger()}<span class="btn sm"><Bot size={14} /> Agente <ChevronDown size={12} /></span>{/snippet}</Menu>
-            <button class="btn sm ghost" title={`Novo terminal (${kbd("mod+t")})`} onclick={() => newTerm()}><SquareTerminal size={14} /></button>
-            <button class="btn sm ghost icon" title="Painel do agente" onclick={() => (v.right = !v.right)}><PanelRight size={15} /></button>
-          </div>
-        </div>
+        {/if}
         <div class="body" class:split={!!splitTab && mode === "code"}>
           {#if mode === "git"}
             <div class="pane">{#key (task?.repoId || p.id)}<RepoDetail repoId={task?.repoId || p.id} embedded />{/key}</div>
@@ -511,6 +675,30 @@
             {@render paneOf(splitTab)}</div>{/if}
           {/if}
         </div>
+        {#if v.panel && mode === "code"}
+          <div class="bpanel" style="height:{sizes.panel}px">
+            <div class="vsplit" role="separator" aria-orientation="horizontal" title="Arraste para redimensionar" onpointerdown={(e) => drag(e, "panel")}></div>
+            <ProblemsPanel lspScope={scopeKey(p.id, v.scope)} buildScope={dnKey} onopen={(f, ln) => openFile(f, ln, { preview: false })} onclose={() => v && (v.panel = false)} />
+          </div>
+        {/if}
+        {#if minimized.length}
+          <div class="dock" aria-label="Terminais minimizados">
+            {#each minimized as t (t.id)}
+              {@const s = work.session(t)}
+              <div class="dk" class:dead={!t.alive} class:busy={t.alive && (s?.status === "working" || Date.now() / 1000 - t.lastOutput < 4)}>
+                <button class="dk-main" title={`Mostrar ${t.title}`} onclick={() => restore(t.id)}>
+                  {#if t.kind === "agent"}<AgentIcon provider={t.meta.provider} size={12} />{:else if t.kind === "run"}<Play size={11} />{:else}<SquareTerminal size={12} />{/if}
+                  <span class="ell">{t.title}</span>
+                  <span class="dk-st">{t.alive ? (s ? STATUS[s.status]?.[0] || "rodando" : "rodando") : `terminou${t.exit != null ? ` (${t.exit})` : ""}`}</span>
+                </button>
+                <button class="dk-x" title={t.alive ? "Parar" : "Fechar"} onclick={() => stopTerm(t)}><X size={11} /></button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+        <StatusBar {gitRepo} fileShown={mode === "code" && activeTab?.kind === "file"} building={dotnet.build[dnKey] || null}
+          running={scopeTerms.filter(x => x.kind === "run" && x.alive).length} onrunning={(e) => ui.contextMenu(e, runningMenu())}
+          onbranch={() => v && (v.mode = "git")} onproblems={() => v && (v.panel = !v.panel)} />
       </section>
 
       {#if v.right}
@@ -524,6 +712,10 @@
 </div>
 
 {#if settingsOpen && p}<ProjectSettings project={p} onclose={() => (settingsOpen = false)} />{/if}
+
+{#if quickOpen && p && v}
+  <QuickOpen repoId={p.id} taskId={v.scope} recent={v.recent || []} {decor} onpick={(f, ln) => openFile(f, ln, { preview: false })} onclose={() => (quickOpen = false)} />
+{/if}
 
 {#if comparing && p}
   <Compare project={p} tasks={p.tasks.filter(t => t.group === comparing)} onclose={() => (comparing = null)} onview={(t) => setScope(t.id)} />
@@ -589,10 +781,11 @@
     color: var(--muted); font: 600 12.5px var(--font); cursor: pointer; transition: background var(--t), color var(--t); }
   .modes button:hover { color: var(--text); }
   .modes button.on { background: var(--surface-3); color: var(--text); box-shadow: var(--shadow-1); }
-  .modes .n { font: 650 10.5px/1 var(--font); padding: 2px 6px; border-radius: 99px; background: var(--accent); color: #fff; }
+  .modes .n { font: 650 10.5px/1 var(--font); padding: 2px 6px; border-radius: 99px; background: var(--accent); color: var(--accent-ink); }
   .lt { margin-bottom: 4px; flex: none; }
   .lt:not(.on) { color: var(--accent); }
-  .tl.hidden { visibility: hidden; }
+  .tl.other .tab.on { background: none; color: var(--muted); }
+  .tl.other .tab.on::after { display: none; }
   .left.hidden { display: none; }
   .left, .right { position: relative; }
   .hsplit { position: absolute; top: 0; bottom: 0; width: 10px; z-index: 6; cursor: col-resize; }
@@ -605,7 +798,19 @@
   :global(body.resizing) { cursor: col-resize; user-select: none; }
   :global(body.resizing iframe, body.resizing .xterm, body.resizing .monaco-editor) { pointer-events: none; }
   .card { min-height: 0; overflow: hidden; }
-  .left { display: flex; flex-direction: column; }
+  .left { display: flex; flex-direction: row; }
+  /* barra de atividades + a visão escolhida (explorador, busca, Git, solução, extensões) */
+  .abar { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 42px; flex: none; padding: 6px 0; border-right: 1px solid var(--line); background: var(--bg-2); }
+  .abar button { position: relative; display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 8px; background: none; color: var(--muted); cursor: pointer;
+    transition: color var(--t-fast), background var(--t-fast); }
+  .abar button:hover { color: var(--text); background: var(--surface-2); }
+  .abar button.on { color: var(--text); }
+  .abar button.on::before { content: ""; position: absolute; left: -4px; top: 8px; bottom: 8px; width: 2px; border-radius: 2px; background: var(--accent); }
+  .ab-n { position: absolute; right: 1px; bottom: 2px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 99px; background: var(--accent); color: var(--accent-ink);
+    font: 700 9.5px/15px var(--font); text-align: center; animation: pop 0.25s var(--spring); }
+  @keyframes pop { from { transform: scale(0.4); } }
+  .ab-grow { flex: 1; }
+  .side { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .scopes { position: relative; display: flex; flex-direction: column; gap: 2px; padding: 10px 8px 8px; overflow: auto; flex: none; border-top: 1px solid var(--line); }
   .sc { display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 8px; border: 0; border-radius: 8px; background: none; color: var(--text-2);
     font: 13px var(--font); text-align: left; cursor: pointer; transition: background var(--t); animation: rise 0.25s var(--ease-out) both; }
@@ -622,20 +827,42 @@
   .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--line-3); }
   .dot.accent { background: var(--accent); animation: ping 1.2s var(--ease) infinite; } .dot.warn { background: var(--warn); } .dot.good { background: var(--good); } .dot.muted { background: var(--text-2); }
   .none { font-size: 12px; color: var(--muted); padding: 4px 8px 8px; }
-  .lm { display: flex; gap: 2px; padding: 8px 8px 0; }
-  .lm button { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 26px; border: 0; border-radius: 7px; background: none;
-    color: var(--muted); font: 600 12px var(--font); cursor: pointer; }
-  .lm button.on { background: var(--surface-3); color: var(--text); }
   .tree { flex: 1; min-height: 0; }
-  .center { display: flex; flex-direction: column; }
-  .tabs { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--line); padding: 4px 6px 0; flex: none; }
-  .tl { flex: 1; display: flex; gap: 2px; overflow-x: auto; min-width: 0; }
-  .tab { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 6px 0 10px; border-radius: 8px 8px 0 0; color: var(--muted); font: 500 12.5px var(--font);
-    cursor: pointer; max-width: 220px; flex: none; position: relative; transition: background var(--t-fast), color var(--t-fast); }
+  .center { display: flex; flex-direction: column; container-type: inline-size; }
+  /* barra de ferramentas que cabe em qualquer largura: os rótulos somem antes dos botões */
+  @container (max-width: 1020px) { .l-ask { display: none; } }
+  @container (max-width: 930px) { .l-ag { display: none; } }
+  @container (max-width: 860px) { .l-mode { display: none; } .runbtn .good-run { max-width: 120px; } }
+  @container (max-width: 760px) { .l-run { display: none; } }
+  .tabs { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--line); padding: 4px 6px 0; flex: none; min-width: 0; }
+  .tl { display: flex; gap: 1px; overflow-x: auto; min-width: 0; flex: none; padding: 0 6px; border-bottom: 1px solid var(--line); background: var(--bg-2); scrollbar-width: none; }
+  .tl::-webkit-scrollbar { display: none; }
+  .hgrow { flex: 1; min-width: 4px; }
+  .tab { display: flex; align-items: center; gap: 6px; height: 33px; padding: 0 6px 0 10px; color: var(--muted); font: 500 12.5px var(--font);
+    cursor: pointer; max-width: 230px; flex: none; position: relative; transition: background var(--t-fast), color var(--t-fast); border-right: 1px solid var(--line); }
   .tab:hover { background: var(--surface-2); color: var(--text-2); }
-  .tab.on { background: var(--surface-2); color: var(--text); }
-  .tab.on::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: 0; height: 2px; border-radius: 2px; background: var(--accent); }
+  .tab.on { background: var(--ed-bg, var(--surface)); color: var(--text); }
+  .tab.on::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--accent); }
   .tab.dead { opacity: 0.55; }
+  .tab.preview .tname { font-style: italic; }
+  .tab.mod .tname, .tab.mod .tl-g { color: #e2c08d; } .tab.add .tname, .tab.add .tl-g { color: #73c991; } .tab.del .tname, .tab.del .tl-g { color: #e5717d; }
+  :global([data-theme="light"]) .tab.mod .tname, :global([data-theme="light"]) .tab.mod .tl-g { color: #a26a00; }
+  :global([data-theme="light"]) .tab.add .tname, :global([data-theme="light"]) .tab.add .tl-g { color: #2f8a4a; }
+  .tl-g { font: 650 10px/1 var(--mono); }
+  .tab :global(.dicon) { color: var(--info); }
+  /* doca dos terminais minimizados: no canto, embaixo, continuam rodando */
+  .dock { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; padding: 5px 8px; border-top: 1px solid var(--line); background: var(--bg-2); flex: none; }
+  .dk { display: flex; align-items: center; max-width: 260px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--surface-2); animation: rise 0.2s var(--ease-out); }
+  .dk.busy { border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+  .dk.busy .dk-main :global(svg) { color: var(--good); animation: ping 1.6s var(--ease) infinite; border-radius: 50%; }
+  .dk.dead { opacity: 0.6; }
+  .dk-main { display: flex; align-items: center; gap: 6px; min-width: 0; height: 24px; padding: 0 4px 0 8px; border: 0; background: none; color: var(--text-2); font: 500 12px var(--font); cursor: pointer; }
+  .dk-main:hover { color: var(--text); }
+  .dk-st { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+  .dk-x { display: grid; place-items: center; width: 22px; height: 22px; margin-right: 2px; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; }
+  .dk-x:hover { background: var(--surface-3); color: var(--bad); }
+  .bpanel { position: relative; flex: none; border-top: 1px solid var(--line); min-height: 0; }
+  .bpanel .vsplit { top: -4px; }
   .sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
   .sdot.accent { background: var(--accent); } .sdot.good { background: var(--good); } .sdot.warn { background: var(--warn); } .sdot.info { background: var(--info); }
   .pulse { animation: ping 1.2s var(--ease) infinite; }

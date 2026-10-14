@@ -9,6 +9,7 @@
   import { setTermSizeHint } from "../../lib/api";
   import { isMac } from "../../lib/keys";
   import { platform } from "../../lib/native";
+  import { extTerminal } from "../../lib/exttheme";
   // no Windows o ConPTY já refaz as linhas ao mudar a largura: o xterm refluir de novo por cima embaralhava a tela
   const isWin = () => platform() === "windows";
 
@@ -22,6 +23,8 @@
   function css(name: string) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
   function theme() {
     const light = document.documentElement.dataset.theme === "light";
+    const ext = extTerminal();
+    if (ext) return ext;
     return light
       ? { background: "#ffffff", foreground: "#1f2430", cursor: "#4f6ef7", selectionBackground: "#4f6ef733", black: "#1f2430", brightBlack: "#6b7385",
           red: "#d1384f", green: "#0f9f66", yellow: "#a86c12", blue: "#3f5fe0", magenta: "#8b4cd6", cyan: "#0a83b8", white: "#c9ced8" }
@@ -176,7 +179,7 @@
   }
 
   export function retheme() { for (const l of live.values()) l.term.options.theme = theme(); }
-  new MutationObserver(retheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  new MutationObserver(retheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-ext-theme"] });
 </script>
 
 <script lang="ts">

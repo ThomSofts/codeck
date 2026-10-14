@@ -15,6 +15,25 @@ export const PREF_DEFAULTS = {
   "editor.wordWrap": false,
   "editor.lineNumbers": true,
   "editor.stickyScroll": true,
+  /** fonte do editor (vazio = JetBrains Mono embutida); qualquer fonte instalada no sistema vale */
+  "editor.fontFamily": "" as string,
+  "editor.ligatures": false,
+  /** 0 = detecta pelo arquivo */
+  "editor.tabSize": 0,
+  "editor.renderWhitespace": "selection" as "none" | "boundary" | "selection" | "all",
+  "editor.cursorStyle": "line" as "line" | "block" | "underline",
+  "editor.cursorBlinking": "smooth" as "blink" | "smooth" | "phase" | "expand" | "solid",
+  "editor.bracketPairs": true,
+  "editor.gitGutter": true,
+  "editor.formatOnSave": false,
+  "editor.autoSave": "off" as "off" | "afterDelay" | "onFocusChange",
+  /** tema de cores e de ícones vindos de extensões do VS Code ("" = o do Codeck) */
+  "workbench.colorTheme": "" as string,
+  "workbench.iconTheme": "" as string,
+  /** o tema de cores da extensão pinta o app inteiro (barra lateral, painéis), não só o editor */
+  "workbench.themeApp": true,
+  /** extensões desligadas no Codeck (snippets e linguagens delas não entram) */
+  "ext.disabled": [] as string[],
   "terminal.fontSize": 13,
   "terminal.scrollback": 10000,
   "terminal.cursorBlink": true,
@@ -29,7 +48,12 @@ export const PREF_DEFAULTS = {
   /** hub de projetos: ordem e agrupamento lembrados */
   "hub.sort": "recent" as string,
   "hub.group": "none" as string,
-  "hub.view": "grid" as "grid" | "list",
+  /** cartões ou lista densa; "auto" = lista quando há muitos repositórios */
+  "hub.view": "auto" as "auto" | "grid" | "list",
+  /** projetos fixados no topo do hub (ids dos repositórios locais) */
+  "hub.pinned": [] as string[],
+  /** seções recolhidas do hub (chave da seção, por agrupamento) */
+  "hub.collapsed": [] as string[],
   /** densidade da interface */
   "ui.density": "comfortable" as "comfortable" | "compact",
   /** abrir o último projeto ao iniciar */
@@ -65,7 +89,7 @@ class Prefs {
   private async flush() {
     const ui = this.pending;
     this.pending = {};
-    try { await post("prefs", { ui }); } catch { /* fica valendo na tela; grava na próxima mudança */ }
+    try { await post("prefs", { ui }, { quiet: true }); } catch { /* fica valendo na tela; grava na próxima mudança */ }
   }
 }
 

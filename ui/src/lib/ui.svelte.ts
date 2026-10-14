@@ -2,6 +2,8 @@
 export interface Toast { id: number; text: string; kind: "ok" | "error" | "info" | "loading"; action?: { label: string; run: () => void } }
 export interface Dialog {
   title: string; message?: string; detail?: string[]; confirm?: string; cancel?: string; danger?: boolean;
+  /** terceiro botão (ex.: "Minimizar"): o diálogo devolve "alt" */
+  alt?: string;
   input?: { label: string; value?: string; placeholder?: string; multiline?: boolean; required?: boolean };
   blocked?: string[]; resolve: (v: string | boolean | null) => void;
 }

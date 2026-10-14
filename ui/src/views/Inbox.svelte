@@ -65,7 +65,7 @@
 
 <svelte:window onkeydown={onkey} />
 
-<Page title="Fila" sub="Tudo que espera você — PRs, deploys e permissões, do GitHub e do Azure DevOps">
+<Page live={["prs", "deploys"]} title="Fila" sub="Tudo que espera você — PRs, deploys e permissões, do GitHub e do Azure DevOps">
   {#if !ready}
     <Skeleton kpis={6} rows={7} />
   {:else}

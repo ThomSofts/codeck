@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 # IDs herdados do nome antigo (PR Pilot): o serviço do Keychain e a entropia do DPAPI fazem parte da credencial
 # já gravada — trocar aqui deixaria de ler os PATs e tokens de quem atualizou. São internos; o usuário não os vê.
@@ -59,11 +60,20 @@ def get(account, ref):
         return None
     service = ref.get("service") or AZURE
     if ref.get("store") == "keychain":
-        r = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w"],
-                           capture_output=True, text=True, timeout=20)
-        if r.returncode != 0:
-            raise RuntimeError("Credencial não encontrada no Keychain — conecte a conta de novo")
-        return r.stdout.strip()
+        # o Keychain às vezes falha por um instante (Mac acordando, chaveiro ainda travado): tenta de novo antes de
+        # dizer que a credencial sumiu — antes isso parecia "a conta desconectou sozinha"
+        for attempt in range(3):
+            try:
+                r = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w"],
+                                   capture_output=True, text=True, timeout=20)
+            except subprocess.TimeoutExpired:
+                r = None
+            if r is not None and r.returncode == 0:
+                return r.stdout.strip()
+            if r is not None and r.returncode == 44:   # errSecItemNotFound: não existe mesmo
+                break
+            time.sleep(1.5 * (attempt + 1))
+        raise RuntimeError("Credencial não encontrada no Keychain — conecte a conta de novo")
     if ref.get("store") == "dpapi":
         return _dpapi(base64.b64decode(ref["blob"]), False, _DPAPI_ENTROPY[service]).decode()
     return None

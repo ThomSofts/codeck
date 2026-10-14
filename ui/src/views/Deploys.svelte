@@ -24,7 +24,7 @@
     inProgress: ["⟳", "warn"], queued: ["⟳", "warn"], scheduled: ["⏱", "warn"], notStarted: ["–", "neutral"] };
 </script>
 
-<Page title="Deploys" sub="Aprovações de release e de environment, permissões de pipeline e o que subiu por último">
+<Page live={["deploys"]} title="Deploys" sub="Aprovações de release e de environment, permissões de pipeline e o que subiu por último">
   {#snippet actions()}<a class="btn sm" href="#/automation">⚡ Regras de deploy</a>{/snippet}
   {#if !store.deploysReady}
     <Skeleton rows={8} />

@@ -1,7 +1,10 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  let { title, sub = "", actions = undefined, children, icon = undefined }:
-    { title: string; sub?: string; actions?: Snippet; children: Snippet; icon?: Snippet } = $props();
+  import type { Source } from "../lib/types";
+  import SourceStatus from "./SourceStatus.svelte";
+  // live: as fontes que a tela mostra — o cabeçalho diz se estão lendo ou quando atualizaram, e ↻ relê só elas
+  let { title, sub = "", actions = undefined, children, icon = undefined, live = undefined }:
+    { title: string; sub?: string; actions?: Snippet; children: Snippet; icon?: Snippet; live?: Source[] } = $props();
 </script>
 
 <section class="page">
@@ -12,6 +15,7 @@
       {#if sub}<p>{sub}</p>{/if}
     </div>
     <span class="spacer"></span>
+    {#if live?.length}<SourceStatus sources={live} />{/if}
     {#if actions}<div class="acts">{@render actions()}</div>{/if}
   </header>
   <div class="pb">{@render children()}</div>

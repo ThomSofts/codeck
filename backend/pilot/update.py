@@ -47,13 +47,17 @@ def download_update():
         raise ValueError("Nome de instalador inesperado no latest.json")
     path = os.path.join(UPDATES_DIR, name)
     update_state["downloading"] = True
+    update_state["progress"] = {"done": 0, "total": int(u.get("size") or 0)}
     try:
         digest = hashlib.sha256()
         req = urllib.request.Request(u["url"], headers={"User-Agent": "Codeck"})
         with urllib.request.urlopen(req, timeout=60) as resp, open(path + ".part", "wb") as f:
+            if not update_state["progress"]["total"]:
+                update_state["progress"]["total"] = int(resp.headers.get("Content-Length") or 0)
             while chunk := resp.read(1 << 16):
                 digest.update(chunk)
                 f.write(chunk)
+                update_state["progress"]["done"] += len(chunk)   # a tela mostra a barra de download
         if digest.hexdigest() != u["sha256"] or (u.get("size") and os.path.getsize(path + ".part") != int(u["size"])):
             os.remove(path + ".part")
             raise ValueError("O instalador baixado não confere com o publicado. Nada foi instalado; tente de novo.")

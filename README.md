@@ -21,6 +21,8 @@ Os mesmos instaladores ficam em [Releases](https://github.com/LMThomaz/codeck/re
 
 Depois de instalado, o app **se atualiza sozinho**:
 - Ele consulta o `latest.json`, mostra um aviso e o botão **Atualizar agora**.
+- Antes de instalar, confere o que se perderia ao reabrir — arquivos sem salvar (com "Salvar tudo" ali mesmo), agentes
+  trabalhando, processos rodando e projetos abertos — e só então baixa, mostrando o progresso.
 - Antes de instalar, confere o SHA-256 do instalador baixado.
 - Quando há uma versão obrigatória (`required`), ele bloqueia o uso até atualizar.
 
@@ -32,9 +34,11 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
 
 **Projetos (v3) — programar com IA sem sair do app**
 - Projetos abertos em abas, quantos quiser. Em cada um: agentes de IA, terminais de verdade e arquivos lado a lado.
-- **Hub de projetos:** todos os clones da máquina, com busca, filtros (abertos, com agente, com alterações, parados) e
-  ordem por últimos acessados, mais/menos usados (seu tempo com o projeto e sessões de IA), último commit ou nome;
-  agrupa por grupo, conta ou pasta.
+- **Hub de projetos:** "Abertos agora" no topo (estado ao vivo dos agentes, branch, alterações, fechar), fixados e
+  recentes, e todos os clones numa lista densa (feita para centenas de repositórios) com busca, filtros (abertos, com
+  agente, com alterações, parados, fixados), ordem por últimos acessados, mais/menos usados, último commit ou nome,
+  seções recolhíveis por grupo, conta ou pasta, e teclado (digite para buscar, ↑↓, Enter abre, ⌘↩ abre sem sair).
+  Na barra de abas, o botão de projetos abertos lista todos para trocar ou fechar.
 - **Grupos de projetos** (como os grupos de abas do navegador): nome, cor, recolher/expandir nas abas, abrir/fechar
   todos. Arraste uma aba para o grupo ou use o clique direito.
 - **Pedir à IA** (⌘⇧I / Ctrl+Shift+I): descreva a tarefa ou escolha uma issue e escolha o fluxo — só planejar,
@@ -52,9 +56,32 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
   devolve o limite — custa frações de centavo e o app continua sem ler token nenhum.
 - A CLI é procurada no PATH do seu terminal (lendo o `.zprofile` e o `.zshrc`) e nas pastas de instalação comuns
   (`~/.local/bin`, npm, Homebrew, nvm…); no Windows, no PATH do usuário gravado no registro.
-- **Editor** (Monaco, o do VS Code) que acompanha ao vivo o que o agente edita, ⌘P, busca no projeto, terminais (⌘T).
+- **Editor como o VS Code** (Monaco, o editor do VS Code), que acompanha ao vivo o que o agente edita:
+  - barra de atividades: Explorador (⌘⇧E), Busca (⌘⇧F, com maiúsculas/regex), Controle de código-fonte (⌃⇧G, com a
+    contagem de alterações), Gerenciador de Soluções (.NET) e Extensões (⌘⇧X);
+  - explorador com as cores do Git (alterado, novo, apagado, conflito — a pasta herda a cor), guias de indentação,
+    pastas compactas, novo arquivo/pasta, renomear (F2), excluir (vai para a Lixeira), copiar caminho, teclado ↑↓←→;
+  - controle de código-fonte: alterações preparadas e não preparadas (lista ou árvore), commit (⌘↩, "commit e enviar",
+    amend), sincronizar, stash, descartar; clique abre o **diff** (lado a lado ou em linha, editável, ⌘S salva);
+  - abas de visualização (clique simples reaproveita a aba, duplo clique fixa), "fechar outras/à direita/salvas",
+    breadcrumbs, marcas do Git na margem (novo/alterado/apagado), ⌘P com busca aproximada (`arquivo:42`, `:42`);
+  - painel **Problemas** (⌘⇧M) com os erros do servidor de linguagem e da compilação, e **barra de status** com branch,
+    sincronizar, erros/avisos, linha e coluna, indentação, fim de linha (LF/CRLF) e linguagem — clicáveis;
+  - fonte (qualquer uma instalada), ligaduras, tabulação, cursor, colchetes coloridos, formatar ao salvar e salvar
+    automático em Configurações → Editor.
   Markdown abre renderizado (ou código, ou lado a lado): as checkboxes de um roteiro de testes marcam direto e salvam,
   com o progresso "N de M concluídos".
+- **.NET como no Visual Studio**: solução (.sln/.slnx) com pastas e projetos (web, console, Windows, biblioteca,
+  testes; .NET Framework clássico ou SDK), configuração (Debug/Release…), projeto(s) de inicialização, **F5** (compila e
+  inicia — o .exe, o site no IIS Express com a URL do projeto, ou `dotnet run`), Shift+F5 para, ⌘⇧B/Ctrl+Shift+B compila,
+  Recompilar/Limpar/Restaurar NuGet, e a Lista de Erros vinda da saída do MSBuild. No Windows usa o MSBuild do Visual
+  Studio/Build Tools (achado pelo vswhere); no Mac, o `dotnet` (projetos SDK) ou o Mono. "Abrir no Visual Studio" no
+  Gerenciador de Soluções.
+- **Extensões do VS Code**: usa as que você já tem no VS Code/Cursor (e os temas que vêm com o VS Code) e instala novas
+  do Open VSX — **temas de cores** (pintam o editor, o terminal e, se quiser, o app inteiro), **temas de ícones**
+  (Material Icon Theme, vscode-icons, Seti…), **snippets** e linguagens. Seletor de tema com prévia ao vivo e "usar a
+  aparência do VS Code" (tema, ícones, fonte e ajustes do editor). Extensões que rodam código (depuradores, linters)
+  continuam só no VS Code.
 - **Quadro** (kanban) editável: colunas e cartões seus, com grupo, projetos (os que **mudam** — um worktree em cada,
   na mesma branch —, os de **consulta** e o **principal**, onde a IA roda), etiquetas, prioridade, prazo e item
   ligado. "Planejar"/"Implementar" no cartão abre a tarefa com o contexto do cartão, do grupo e das pastas; o cartão
@@ -72,6 +99,8 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
 - **Executar** como no VS Code: configurações do `.vscode/launch.json` (com `compounds`, `preLaunchTask` e `envFile`, lido
   só na hora), scripts do `package.json` (npm/pnpm/yarn/bun), perfis do .NET (`launchSettings.json`), Go, Rust e Compose.
 - Painéis laterais redimensionáveis arrastando a borda; tarefas abaixo dos arquivos.
+- **Minimizar** um terminal em execução (o "−" na aba, o clique direito ou ao fechar): o processo continua e ele fica
+  numa doca no canto de baixo — clique para voltar, × para parar.
 - **Retomar** a conversa de um agente depois de fechar o app; dividir a tela (clique direito na aba → Abrir ao lado);
   abrir um projeto em **janela própria** (clique direito na aba do projeto).
 - **Limites**: aviso ao passar de 80% e 95%, sugestão de outra conta ao criar tarefa e página de uso por dia,
@@ -93,6 +122,10 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
   estágio → branch, com *"só se eu já aprovei a PR de origem"*) e permissão (pipeline → recurso), com prévia do que
   cada regra pegaria.
 - **Análise** (lead time, aprovações, criadores, repositórios) e **Histórico** de tudo que você e o piloto fizeram.
+
+**Leitura em tempo real, por fonte**: PRs, builds, deploys e issues são lidos cada um no próprio ciclo — o que chega
+primeiro já aparece. Cada tela mostra "lendo…" ou "atualizado há X" no cabeçalho (com ↻ para reler só ela), a barra
+lateral marca o item que está lendo, e o fio de progresso do topo fica só para as ações que você dispara.
 
 **Sem internet**: o app continua mostrando o que já tinha lido (PRs, builds, listas de repositórios) com um alerta
 fixo, tenta reconectar a cada 10 s e atualiza tudo assim que a rede volta.
@@ -133,6 +166,10 @@ fixo, tenta reconectar a cada 10 s e atualiza tudo assim que a rede volta.
 |---|---|---|
 | **Azure DevOps** | PAT por organização (Configurações → Azure DevOps), com teste de cada permissão | PRs, builds, releases, environments, work items, repositórios |
 | **GitHub** | *Entrar com GitHub* (device flow), o login do `gh` CLI ou um token | contas pessoais, organizações e repositórios de terceiros a que o perfil tem acesso |
+
+Quando o GitHub entrega um token que expira (com refresh token), o app o renova sozinho antes de vencer; se um token
+for recusado, ele tenta renovar (ou reler o do `gh` CLI) antes de dar a conta por desconectada — e, se não der, mostra
+**Entrar de novo** em Configurações → GitHub, que reconecta a mesma conta sem perder ajustes.
 
 O *Entrar com GitHub* usa o OAuth App **Codeck** (device flow), cujo client id está em `backend/pilot/github.py`
 (`GITHUB_CLIENT_ID`). Ele é público: o device flow não usa client secret. Quem distribuir outro build pode trocá-lo

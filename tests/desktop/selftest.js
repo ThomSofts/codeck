@@ -289,6 +289,23 @@
     await shot("06-editor");
     return "salvo no disco";
   });
+  await step("Explorador e Git: cor do arquivo alterado, diff e ⌘P", async () => {
+    // o explorador pinta o arquivo alterado (M) e a barra de atividades conta as alterações
+    await waitFor(() => byText(".ft .n.mod", "a.txt"), 12000);
+    click(await waitFor(".abar button[title^='Controle']")); await sleep(800);
+    click(await waitFor(() => byText(".scm .f", "a.txt"), 8000)); await sleep(2500);
+    if (!txt($(".tab.on")).includes("alterações")) throw new Error("não abriu o diff (aba: " + txt($(".tab.on")) + ")");
+    await waitFor(".dv .monaco-diff-editor", 8000);
+    await shot("06b-diff");
+    click($(".abar button[title^='Explorador']")); await sleep(500);
+    // ⌘P: abre arquivo pela busca aproximada
+    await press("p", MOD);
+    const qi = await waitFor(".qo input", 4000);
+    qi.focus(); await type("util"); await sleep(600);
+    await press("Enter"); await sleep(1500);
+    if (!txt($(".tab.on")).includes("util.ts")) throw new Error("⌘P não abriu util.ts (aba: " + txt($(".tab.on")) + ")");
+    return "a.txt em M, diff aberto pelo controle de código-fonte, ⌘P abriu util.ts";
+  });
   await step("Editor: servidor de linguagem (erro, hover e F12)", async () => {
     if (!CTX.lsp) return "pulado — sem servidor instalado no teste";
     click(byText(".ft .n.file", "main.ts")); await sleep(1000);
@@ -391,7 +408,7 @@
     await api("ws/file", { repoId: apiRepo.id, path: "roteiro.md", text: "# Roteiro\n\n- [ ] abrir o app\n- [ ] testar\n" });
     await go("#/work/" + apiRepo.id, 1200);
     click(await waitFor(() => byText(".sc", "checkout principal"))); await sleep(500);
-    click(await waitFor(() => byText(".lm button", "Arquivos")));
+    click(await waitFor(".abar button[title^='Explorador']"));
     click(await waitFor(".ft .bar button[title='Recarregar']")); await sleep(1500);
     click(await waitFor(() => byText(".ft .n", "roteiro.md"), 6000));
     click(await waitFor(() => $(".doc input[type=checkbox]"), 10000)); await sleep(2500);

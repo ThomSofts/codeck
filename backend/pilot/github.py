@@ -17,7 +17,7 @@ import urllib.request
 import uuid
 
 from . import secrets
-from .core import CONFIG_FILE, OfflineError, is_network_error, load_json, now_iso
+from .core import CONFIG_FILE, OfflineError, is_network_error, load_json, now_iso, save_json
 
 API_URL = "https://api.github.com"
 SCOPES = "repo read:org workflow"
@@ -87,6 +87,7 @@ class GitHub:
         self.rate = {}
         self._etags = {}
         self._lock = threading.Lock()
+        self.auth_error = None   # {"at", "message"} quando o GitHub recusou o token e não deu para renovar sozinho
 
     # ------------------------------------------------------------ HTTP
     def token(self):
@@ -94,9 +95,48 @@ class GitHub:
             self._token = secrets.get(self.id, self.cfg.get("secret"))
             if not self._token:
                 raise RuntimeError("Token do GitHub não configurado")
+        # token que expira (App do GitHub com "expire user tokens", ou OAuth com refresh): renova 10 min antes
+        exp = self.cfg.get("expiresAt")
+        if exp and self.cfg.get("refreshSecret") and time.time() > exp - 600:
+            self._renew("expirando")
         return self._token
 
-    def req(self, method, path, body=None, raw=False, etag=False, accept="application/vnd.github+json", headers_out=None):
+    def _renew(self, why):
+        """Recupera o acesso sem pedir login de novo: troca o refresh token por um novo par, ou relê o token do gh CLI
+        (que o próprio gh renova). Devolve True se conseguiu um token diferente do atual."""
+        with _renew_lock:
+            # outra thread pode ter renovado enquanto esta esperava: relê do config antes de gastar o refresh token
+            fresh = next((a for a in load_json(CONFIG_FILE, {}).get("github", []) if a.get("id") == self.id), None)
+            if fresh and fresh.get("expiresAt", 0) > (self.cfg.get("expiresAt") or 0):
+                self.cfg.update(fresh)
+                self._token = None
+                self._token = secrets.get(self.id, fresh.get("secret"))
+                return True
+            old = self._token
+            try:
+                if self.cfg.get("refreshSecret"):
+                    rt = secrets.get(self.id + "-r", self.cfg["refreshSecret"])
+                    t = _form_post("https://github.com/login/oauth/access_token", {
+                        "client_id": client_id(), "grant_type": "refresh_token", "refresh_token": rt})
+                    if not t.get("access_token"):
+                        raise RuntimeError(t.get("error_description") or t.get("error") or "o GitHub recusou a renovação")
+                    self._token = t["access_token"]
+                    _persist_tokens(self.id, t, self.cfg)
+                elif self.cfg.get("source") == "gh-cli" and gh_cli_path():
+                    tok = gh_cli_token()
+                    if tok == old:
+                        return False
+                    self._token = tok
+                    _persist_tokens(self.id, {"access_token": tok}, self.cfg)
+                else:
+                    return False
+                print(f"[{now_iso()}] github: token de @{self.login} renovado ({why})", flush=True)
+                return self._token != old
+            except Exception as e:  # noqa: BLE001
+                print(f"[{now_iso()}] github: não renovei o token de @{self.login} ({why}): {str(e)[:200]}", flush=True)
+                return False
+
+    def req(self, method, path, body=None, raw=False, etag=False, accept="application/vnd.github+json", headers_out=None, _retry=True):
         url = path if path.startswith("http") else f"{API_URL}/{path.lstrip('/')}"
         data = json.dumps(body).encode() if body is not None else None
         r = urllib.request.Request(url, data=data, method=method)
@@ -112,6 +152,7 @@ class GitHub:
         try:
             with urllib.request.urlopen(r, timeout=30) as resp:
                 self._note_rate(resp.headers)
+                self.auth_error = None
                 if headers_out is not None:
                     headers_out.update({k.lower(): v for k, v in resp.headers.items()})
                 payload = resp.read()
@@ -125,6 +166,14 @@ class GitHub:
             self._note_rate(e.headers)
             if e.code == 304 and cached:
                 return cached[1]
+            if e.code == 401 and _retry and self.id != "teste":
+                # token recusado: renova (refresh token / gh CLI) e tenta UMA vez de novo antes de dar a conta por caída
+                print(f"[{now_iso()}] github: 401 para @{self.login} em {method} {path.split('?')[0]}"
+                      f" (expira: {e.headers.get('github-authentication-token-expiration') or 'não informado'})", flush=True)
+                if self._renew("recusado"):
+                    return self.req(method, path, body, raw, etag, accept, headers_out, _retry=False)
+            if e.code == 401:
+                self.auth_error = {"at": now_iso(), "message": "o GitHub recusou o token (expirado ou revogado)"}
             msg = e.read().decode(errors="replace")[:400]
             raise RuntimeError(f"HTTP {e.code} em {method} {path}: {msg}") from None
         except OSError as e:
@@ -425,6 +474,24 @@ class GitHub:
 
 # ---------------------------------------------------------------- login: código de dispositivo e gh CLI
 device_flows = {}   # id -> {status, userCode, verificationUri, expires, interval, error, account}
+_renew_lock = threading.Lock()
+
+
+def _persist_tokens(aid, t, cfg):
+    """Grava o token novo (e o refresh token e as validades, quando o GitHub manda) no cofre e no config.json."""
+    entry_upd = {"secret": secrets.put(aid, t["access_token"], secrets.GITHUB)}
+    if t.get("refresh_token"):
+        entry_upd["refreshSecret"] = secrets.put(aid + "-r", t["refresh_token"], secrets.GITHUB)
+    entry_upd["expiresAt"] = int(time.time() + int(t["expires_in"])) if t.get("expires_in") else None
+    entry_upd["refreshExpiresAt"] = int(time.time() + int(t["refresh_token_expires_in"])) if t.get("refresh_token_expires_in") \
+        else cfg.get("refreshExpiresAt")
+    entry_upd["renewedAt"] = now_iso()
+    full = load_json(CONFIG_FILE, {})
+    for a in full.get("github", []):
+        if a.get("id") == aid:
+            a.update(entry_upd)
+    save_json(CONFIG_FILE, full, private=True)
+    cfg.update(entry_upd)
 
 
 def _form_post(url, fields):
@@ -458,7 +525,7 @@ def device_start(on_token):
                 return
             if t.get("access_token"):
                 try:
-                    flow["account"] = on_token(t["access_token"])
+                    flow["account"] = on_token(t["access_token"], t)
                     flow["status"] = "done"
                 except Exception as e:  # noqa: BLE001
                     flow.update(status="error", error=str(e)[:200])

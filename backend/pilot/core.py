@@ -84,7 +84,7 @@ REPOS_FILE = os.path.join(DATA, "repos.json")
 CATALOGS_FILE = os.path.join(DATA, "catalogs.json")
 LIBRARY_FILE = os.path.join(DATA, "library.json")
 UPDATES_DIR = os.path.join(DATA, "updates")
-STATIC_DIR = os.path.join(BACKEND_DIR, "static")
+STATIC_DIR = os.path.abspath(os.environ.get("CODECK_STATIC") or os.path.join(BACKEND_DIR, "static"))   # CODECK_STATIC: outra build (testes)
 
 DEFAULT_PORT = 47821  # porta incomum de propósito: não briga com APIs/fronts locais
 APP_VERSION = os.environ.get("CODECK_VERSION") or "dev"
@@ -102,6 +102,8 @@ state = {
     "polling": None, "offline": None, "prs": [], "myPrs": [], "builds": [], "buildErrors": {}, "errors": {}, "lastPoll": None, "me": {}, "pollMs": None,
     "deploys": [], "releases": [], "deployErrors": {}, "lastDeployPoll": None, "lastBuildPoll": None,
     "issues": [], "issueErrors": {}, "lastIssuePoll": None, "ghErrors": {},
+    # cada fonte lê no próprio ciclo: loading[fonte] = desde quando está lendo (None = parada); updated = última leitura
+    "loading": {}, "updated": {},
 }
 notifications = []    # fila lida pelo app: {"seq", "title", "subtitle", "message", "target"}
 _notify = {"seq": 0}

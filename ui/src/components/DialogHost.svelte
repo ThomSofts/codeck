@@ -54,6 +54,7 @@
           <button class="btn confirm" onclick={() => ui.close(false)}>Entendi</button>
         {:else}
           <button class="btn ghost" onclick={() => ui.close(d.input ? null : false)}>{d.cancel || "Cancelar"}</button>
+          {#if d.alt}<button class="btn" onclick={() => ui.close("alt")}>{d.alt}</button>{/if}
           <button class="btn confirm {d.danger ? 'danger-solid' : 'primary'}" onclick={ok} disabled={!!d.input?.required && !value.trim()}>{d.confirm || "Confirmar"}</button>
         {/if}
       </div>

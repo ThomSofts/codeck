@@ -1,8 +1,9 @@
 <script lang="ts">
-  // Fio de progresso no topo: acende enquanto o backend lê Azure/GitHub ou enquanto uma ação está sendo enviada.
+  // Fio de progresso no topo: só para o que VOCÊ pediu — uma ação sendo enviada ou o "Atualizar tudo". As leituras
+  // automáticas de cada fonte (PRs, builds, deploys, issues) aparecem no próprio lugar (barra lateral e cabeçalho da tela).
   import { store } from "../lib/store.svelte";
   import { ui } from "../lib/ui.svelte";
-  const on = $derived((store.fetching && !store.offline) || ui.inflight > 0);
+  const on = $derived((store.refreshing && !store.offline) || ui.inflight > 0);
 </script>
 
 <div class="tp" class:on class:send={ui.inflight > 0} aria-hidden="true"><span></span></div>

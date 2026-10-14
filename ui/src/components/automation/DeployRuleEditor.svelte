@@ -96,7 +96,7 @@
   h4 { margin: 0 0 10px; font: 650 11px/1 var(--font); text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-2); display: flex; align-items: center; gap: 8px; }
   .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
   h5 { margin: 14px 0 8px; font-size: 12px; color: var(--text-2); }
-  .step { width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; display: inline-grid; place-items: center; font-size: 11px; }
+  .step { width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: inline-grid; place-items: center; font-size: 11px; }
   .preview { border-bottom: 0; }
   .sentence { background: var(--bg-2); border: 1px solid var(--line); border-radius: 11px; padding: 11px 13px; line-height: 1.55; }
   .warnbox { margin-top: 10px; padding: 9px 12px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 13px; }

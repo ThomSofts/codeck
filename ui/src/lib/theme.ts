@@ -12,7 +12,14 @@ function read(): ThemePref {
   return "system";
 }
 
-const resolved = () => (pref === "system" ? (mq.matches ? "light" : "dark") : pref);
+/** tema de cores de uma extensão pintando o app: ele decide se é claro ou escuro (ver lib/extensions) */
+let forced: "dark" | "light" | null = null;
+const resolved = () => forced || (pref === "system" ? (mq.matches ? "light" : "dark") : pref);
+export function forceTheme(t: "dark" | "light" | null) {
+  if (t === forced) return;
+  forced = t;
+  paint(true);
+}
 
 function paint(animate: boolean) {
   const t = resolved();

@@ -2,6 +2,7 @@
 intervalo de leitura, editor preferido e tema. Credenciais vão para o cofre (secrets.py); a tela nunca as recebe de volta."""
 import os
 import re
+import time
 import uuid
 
 from . import catalogs, engine, git, github, secrets
@@ -26,7 +27,9 @@ def public_config():
                   "hasPat": bool(o.get("secret") or o.get("patCommand")), "patCommand": bool(o.get("patCommand")),
                   "patStore": STORE_LABEL.get((o.get("secret") or {}).get("store"), ""),
                   "me": (ctx.orgs[o["name"]].me if o["name"] in ctx.orgs else None)} for o in cfg.get("orgs", [])],
-        "github": [{k: a.get(k) for k in ("id", "login", "name", "avatar", "scopes", "connectedAt")} |
+        "github": [{k: a.get(k) for k in ("id", "login", "name", "avatar", "scopes", "connectedAt", "source", "expiresAt", "renewedAt")} |
+                   {"autoRenew": bool(a.get("refreshSecret")) or a.get("source") == "gh-cli",
+                    "authError": (ctx.gh[a["id"]].auth_error if a["id"] in ctx.gh else None)} |
                    {"enabled": a.get("enabled", True), "store": STORE_LABEL.get((a.get("secret") or {}).get("store"), ""),
                     "rate": (ctx.gh[a["id"]].rate if a["id"] in ctx.gh else None)} for a in cfg.get("github", [])],
         "githubLogin": bool(github.client_id()),
@@ -78,7 +81,9 @@ def save_azure(body):
 
 
 
-def add_github_token(token, source="token"):
+def add_github_token(token, source="token", grant=None):
+    """Conecta (ou reconecta, mantendo o id e os ajustes) uma conta do GitHub. `grant` é a resposta do login pelo
+    navegador: quando o GitHub entrega token que expira, vem junto o refresh token — o app renova sozinho depois."""
     token = (token or "").strip()
     if not re.fullmatch(r"(gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,250}|[a-f0-9]{40}", token):
         raise ValueError("Isso não parece um token do GitHub (começa com ghp_, gho_ ou github_pat_)")
@@ -91,6 +96,15 @@ def add_github_token(token, source="token"):
     entry = {"id": aid, "login": me["login"], "name": me["name"], "avatar": me["avatar"], "scopes": probe.scopes,
              "secret": secrets.put(aid, token, secrets.GITHUB), "enabled": True, "source": source,
              "connectedAt": github.now_iso()}
+    grant = grant or {}
+    if grant.get("refresh_token"):
+        entry["refreshSecret"] = secrets.put(aid + "-r", grant["refresh_token"], secrets.GITHUB)
+    elif prev and prev.get("refreshSecret"):
+        secrets.delete(aid + "-r", prev["refreshSecret"])   # reconectou com token que não expira: o refresh antigo sai
+    if grant.get("expires_in"):
+        entry["expiresAt"] = int(time.time() + int(grant["expires_in"]))
+    if grant.get("refresh_token_expires_in"):
+        entry["refreshExpiresAt"] = int(time.time() + int(grant["refresh_token_expires_in"]))
     cfg["github"] = [a for a in accounts if a["id"] != aid] + [entry]
     save_json(CONFIG_FILE, cfg, private=True)
     engine.reload_accounts()
@@ -102,6 +116,8 @@ def remove_github(aid):
     for a in cfg.get("github", []):
         if a["id"] == aid:
             secrets.delete(aid, a.get("secret"))
+            if a.get("refreshSecret"):
+                secrets.delete(aid + "-r", a["refreshSecret"])
     cfg["github"] = [a for a in cfg.get("github", []) if a["id"] != aid]
     save_json(CONFIG_FILE, cfg, private=True)
     engine.reload_accounts()

@@ -1,6 +1,6 @@
 <script lang="ts">
   // Pedir à IA um cartão do quadro: escolhe o fluxo (planejar / planejar e implementar / implementar), a conta, em qual
-  // projeto a IA roda e quais outros mudam (worktree na mesma branch) ou só são consultados.
+  // projeto a IA trabalha e quais outros ela também altera (worktree na mesma branch) ou só consulta.
   import { ClipboardList, Hammer, Lightbulb, Star } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { kanban, type Card } from "../../lib/kanban.svelte";
@@ -42,17 +42,17 @@
   <div class="f">
     {#if group}<div class="grp" style="--g:{group.color}"><span class="dot"></span>Grupo <b>{group.name}</b><span class="tiny muted">— os {group.repoIds.length} projetos dele vão como contexto</span></div>{/if}
 
-    <div class="label">Onde a IA roda e o que ela muda</div>
+    <div class="label">Onde a IA vai trabalhar</div>
     <div class="projs">
       {#each [...new Set([...c.projects, ...c.refs])] as id (id)}
         {@const r = repos.byId(id)}
         {@const isChange = id === primary || change.includes(id)}
         <div class="pr" class:prim={id === primary}>
-          <button class="star" class:on={id === primary} title="Rodar a IA neste projeto" onclick={() => { primary = id; if (!change.includes(id)) change = [...change, id]; refs = refs.filter(x => x !== id); }}><Star size={14} /></button>
+          <button class="star" class:on={id === primary} title="Tornar o projeto principal (a IA trabalha aqui)" onclick={() => { primary = id; if (!change.includes(id)) change = [...change, id]; refs = refs.filter(x => x !== id); }}><Star size={14} /></button>
           <ProviderIcon provider={r?.provider || null} size={13} />
           <span class="grow ell"><b>{r?.name || "projeto removido"}</b>{#if !r?.exists}<span class="tiny bad"> não está nesta máquina</span>{/if}</span>
-          {#if id === primary}<span class="pill accent">a IA roda aqui</span>
-          {:else}<button class="pill" class:accent={isChange} class:neutral={!isChange} onclick={() => toggle(id)} title="Clique para alternar">{isChange ? "muda (worktree)" : "só consulta"}</button>{/if}
+          {#if id === primary}<span class="pill accent">principal — a IA trabalha aqui</span>
+          {:else}<button class="pill" class:accent={isChange} class:neutral={!isChange} onclick={() => toggle(id)} title="Clique para alternar entre alterar e só consultar">{isChange ? "também altera" : "só consulta"}</button>{/if}
         </div>
       {:else}<div class="small muted">O cartão não tem projetos — edite e marque ao menos um.</div>{/each}
     </div>

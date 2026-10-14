@@ -41,12 +41,42 @@ export function loadMonaco(): Promise<typeof Monaco> {
       colors: { "editor.background": "#12151c", "editor.lineHighlightBackground": "#171b24", "editorLineNumber.foreground": "#4a5163",
         "editorLineNumber.activeForeground": "#a7aec0", "editor.selectionBackground": "#6f8cff40", "editorCursor.foreground": "#8ba3ff",
         "editorIndentGuide.background1": "#1d222d", "editorWidget.background": "#1a1f29", "editorGutter.background": "#12151c",
-        "minimap.background": "#12151c", "scrollbarSlider.background": "#ffffff14" },
+        "minimap.background": "#12151c", "scrollbarSlider.background": "#ffffff14",
+        "diffEditor.insertedLineBackground": "#3ccf9112", "diffEditor.insertedTextBackground": "#3ccf912e", "diffEditor.removedLineBackground": "#ff6b7d12",
+        "diffEditor.removedTextBackground": "#ff6b7d33", "diffEditorGutter.insertedLineBackground": "#3ccf9126", "diffEditorGutter.removedLineBackground": "#ff6b7d26",
+        "diffEditor.unchangedRegionBackground": "#0e1117" },
     });
-    monaco.editor.defineTheme("codeck-light", { base: "vs", inherit: true, rules: [], colors: { "editor.background": "#ffffff" } });
+    monaco.editor.defineTheme("codeck-light", { base: "vs", inherit: true, rules: [], colors: { "editor.background": "#ffffff",
+      "diffEditor.insertedLineBackground": "#0f9f6612", "diffEditor.insertedTextBackground": "#0f9f662b", "diffEditor.removedLineBackground": "#e0384f10",
+      "diffEditor.removedTextBackground": "#e0384f2b" } });
+    loaded = monaco;
+    if (ext) monaco.editor.defineTheme("cd-ext", ext.data);
     return monaco;
   })();
   return loading;
 }
 
-export const monacoTheme = () => (document.documentElement.dataset.theme === "light" ? "codeck-light" : "codeck-dark");
+// ------------------------------------------------------------ tema de cores (o do Codeck ou o de uma extensão do VS Code)
+let loaded: typeof Monaco | null = null;
+let ext: { id: string; data: Monaco.editor.IStandaloneThemeData } | null = null;
+const listeners = new Set<() => void>();
+let observer: MutationObserver | null = null;
+const fire = () => { for (const l of listeners) l(); };
+
+/** Tema de uma extensão (já convertido para o formato do Monaco) — null volta ao do Codeck. */
+export function setEditorTheme(t: { id: string; data: Monaco.editor.IStandaloneThemeData } | null) {
+  ext = t;
+  if (loaded && t) loaded.editor.defineTheme("cd-ext", t.data);
+  if (loaded) loaded.editor.setTheme(monacoTheme());
+  fire();
+}
+export const monacoTheme = () => (ext ? "cd-ext" : document.documentElement.dataset.theme === "light" ? "codeck-light" : "codeck-dark");
+/** Avisa quando o tema muda (claro/escuro do app ou tema de extensão). */
+export function onThemeChange(cb: () => void): { dispose(): void } {
+  listeners.add(cb);
+  if (!observer) {
+    observer = new MutationObserver(fire);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  }
+  return { dispose: () => listeners.delete(cb) };
+}

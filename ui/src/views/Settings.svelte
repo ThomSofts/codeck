@@ -21,6 +21,7 @@
   import Switch from "../components/Switch.svelte";
   import Segmented from "../components/Segmented.svelte";
   import AiAccounts from "../components/settings/AiAccounts.svelte";
+  import { extensions } from "../lib/extensions.svelte";
   import { repos } from "../lib/repos.svelte";
   import TestResult from "../components/TestResult.svelte";
   import { chooseTheme, type ThemePref } from "../lib/theme";
@@ -59,18 +60,37 @@
   // ------------------------------------------------------------ linhas de ajuste (também o índice da busca)
   type Opt = { value: string; label: string; icon?: any };
   type Row = { sec: SecId; id: string; label: string; desc?: string; kw?: string;
-    kind: "pref-switch" | "pref-select" | "pref-seg" | "rule-switch" | "auto" | "theme" | "ext-editor" | "poll" | "note" | "data-dir" | "diag" | "security" | "link";
+    kind: "pref-switch" | "pref-select" | "pref-seg" | "pref-text" | "rule-switch" | "auto" | "theme" | "ext-theme" | "ext-icons" | "vscode-import" | "ext-editor" | "poll" | "note" | "data-dir" | "diag" | "security" | "link";
     key?: string; options?: Opt[]; when?: () => boolean };
   const sizes = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => ({ value: String(a + i), label: `${a + i} px` }));
   const ROWS: Row[] = [
     // aparência
     { sec: "appearance", id: "theme", kind: "theme", label: "Tema", desc: `“Sistema” acompanha o claro/escuro do ${OS} e troca sozinho.`, kw: "escuro claro dark light cor" },
+    { sec: "appearance", id: "colorTheme", kind: "ext-theme", label: "Tema de cores", desc: "Os temas do VS Code desta máquina (os seus e os que vêm com ele) e os instalados pelo Codeck. Pinta o editor, o terminal e — se ligado abaixo — o app inteiro.", kw: "vscode extensão tema cor dark+ monokai dracula one dark ayu" },
+    { sec: "appearance", id: "themeApp", kind: "pref-switch", key: "workbench.themeApp", label: "O tema de cores pinta o app inteiro", desc: "Desligado, o tema vale só no editor e no terminal; o resto segue Sistema/Escuro/Claro.", kw: "vscode tema app" },
+    { sec: "appearance", id: "iconTheme", kind: "ext-icons", label: "Tema de ícones", desc: "Ícones de arquivo e pasta do explorador, das abas e do ⌘P (Material Icon Theme, vscode-icons, Seti…).", kw: "vscode extensão ícone material seti" },
+    { sec: "appearance", id: "vscodeImport", kind: "vscode-import", label: "Usar a aparência do VS Code", desc: "Lê as configurações do VS Code/Cursor desta máquina: tema, ícones, fonte, tamanho, ligaduras, tabulação, salvar automático.", kw: "vscode cursor importar configurações" },
+    { sec: "appearance", id: "extLink", kind: "note", label: "Extensões", desc: "Instale temas, ícones e snippets do marketplace aberto (Open VSX) no painel Extensões do projeto (ícone de blocos na barra da esquerda).", kw: "extensão marketplace open vsx instalar" },
     { sec: "appearance", id: "density", kind: "pref-seg", key: "ui.density", label: "Densidade", desc: "Compacta diminui alturas e espaçamentos — cabe mais na tela.",
       options: [{ value: "comfortable", label: "Confortável" }, { value: "compact", label: "Compacta" }], kw: "tamanho espaço compacto" },
     { sec: "appearance", id: "sidebar", kind: "pref-switch", key: "sidebar.collapsed", label: "Barra lateral recolhida", desc: `Só os ícones; os menus abrem por cima. Atalho: ${kbd("mod+\\")}.`, kw: "menu aside retrair" },
     { sec: "appearance", id: "openProjects", kind: "pref-switch", key: "sidebar.openProjects", label: "Projetos abertos na barra lateral", desc: "Lista os projetos abertos abaixo de “Projetos”, para trocar rápido.", kw: "abas menu" },
     // editor
     { sec: "editor", id: "edFont", kind: "pref-select", key: "editor.fontSize", label: "Tamanho da fonte", options: sizes(11, 20), kw: "letra zoom" },
+    { sec: "editor", id: "edFamily", kind: "pref-text", key: "editor.fontFamily", label: "Fonte", desc: "Qualquer fonte instalada no sistema (Fira Code, Cascadia Code, JetBrains Mono, SF Mono, Consolas…). Vazio = JetBrains Mono.", kw: "fonte font family letra" },
+    { sec: "editor", id: "ligatures", kind: "pref-switch", key: "editor.ligatures", label: "Ligaduras", desc: "=> != === viram um símbolo só (precisa de uma fonte com ligaduras, como Fira Code ou Cascadia Code).", kw: "ligatures fira" },
+    { sec: "editor", id: "tabSize", kind: "pref-select", key: "editor.tabSize", label: "Tabulação",
+      options: [{ value: "0", label: "Detectar pelo arquivo" }, { value: "2", label: "2 espaços" }, { value: "4", label: "4 espaços" }, { value: "8", label: "8 espaços" }], kw: "tab indentação espaços" },
+    { sec: "editor", id: "cursor", kind: "pref-seg", key: "editor.cursorStyle", label: "Cursor", options: [{ value: "line", label: "Linha" }, { value: "block", label: "Bloco" }, { value: "underline", label: "Sublinhado" }], kw: "cursor caret" },
+    { sec: "editor", id: "blinking", kind: "pref-select", key: "editor.cursorBlinking", label: "Animação do cursor",
+      options: [{ value: "smooth", label: "Suave" }, { value: "blink", label: "Piscar" }, { value: "phase", label: "Fase" }, { value: "expand", label: "Expandir" }, { value: "solid", label: "Fixo" }], kw: "cursor piscar" },
+    { sec: "editor", id: "whitespace", kind: "pref-select", key: "editor.renderWhitespace", label: "Mostrar espaços",
+      options: [{ value: "none", label: "Nunca" }, { value: "boundary", label: "Nas bordas" }, { value: "selection", label: "Na seleção" }, { value: "all", label: "Sempre" }], kw: "whitespace espaço tab" },
+    { sec: "editor", id: "brackets", kind: "pref-switch", key: "editor.bracketPairs", label: "Colchetes coloridos", desc: "Cada par de ( ) [ ] { } numa cor, como no VS Code.", kw: "bracket pair colorization" },
+    { sec: "editor", id: "gutter", kind: "pref-switch", key: "editor.gitGutter", label: "Alterações do Git na margem", desc: "Faixa verde (novo), azul (alterado) e o triângulo vermelho (apagado) ao lado dos números de linha.", kw: "git gutter diff margem" },
+    { sec: "editor", id: "formatSave", kind: "pref-switch", key: "editor.formatOnSave", label: "Formatar ao salvar", desc: "Usa o formatador do servidor de linguagem (ou do Monaco) a cada ⌘S.", kw: "format prettier salvar" },
+    { sec: "editor", id: "autoSave", kind: "pref-select", key: "editor.autoSave", label: "Salvar automaticamente",
+      options: [{ value: "off", label: "Não" }, { value: "afterDelay", label: "1 s depois de parar de digitar" }, { value: "onFocusChange", label: "Ao sair do editor" }], kw: "auto save salvar" },
     { sec: "editor", id: "minimap", kind: "pref-switch", key: "editor.minimap", label: "Minimapa", desc: "A miniatura do arquivo à direita do editor." },
     { sec: "editor", id: "wrap", kind: "pref-switch", key: "editor.wordWrap", label: "Quebra de linha", desc: "Linhas longas continuam na linha de baixo em vez de rolar para o lado.", kw: "word wrap" },
     { sec: "editor", id: "lineNumbers", kind: "pref-switch", key: "editor.lineNumbers", label: "Números de linha" },
@@ -172,6 +192,7 @@
     if (!orgs.length && !c.github.length) orgs = [blankOrg()];
   }
   $effect(() => { untrack(() => load().catch(ui.error)); });
+  $effect(() => { untrack(() => { if (!extensions.loaded) extensions.load(); }); });
 
   const blankOrg = (): OrgForm => ({ name: "", url: "https://dev.azure.com/", pat: "", enabled: true });
 
@@ -257,6 +278,27 @@
     <select class="input" value={String(prefs.get(r.key as PrefKey))} onchange={(e) => setPref(r.key!, (e.target as HTMLSelectElement).value)}>
       {#each r.options || [] as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
     </select>
+  {:else if r.kind === "pref-text"}
+    <input class="input" list="cd-fonts" value={String(prefs.get(r.key as PrefKey) || "")} placeholder="JetBrains Mono" onchange={(e) => setPref(r.key!, (e.target as HTMLInputElement).value.trim())} />
+    <datalist id="cd-fonts">{#each ["JetBrains Mono", "Fira Code", "Cascadia Code", "Cascadia Mono", "SF Mono", "Menlo", "Monaco", "Consolas", "Source Code Pro", "Hack", "Iosevka", "Monaspace Neon", "Ubuntu Mono", "Roboto Mono", "IBM Plex Mono", "Geist Mono"] as f (f)}<option value={f}></option>{/each}</datalist>
+  {:else if r.kind === "ext-theme"}
+    <select class="input" value={extensions.activeTheme ? `${extensions.activeTheme.ext}|${extensions.activeTheme.id}` : ""} onchange={(e) => {
+      const v = (e.target as HTMLSelectElement).value; const hit = extensions.themes.find(x => `${x.ext.id}|${x.theme.id}` === v);
+      extensions.applyTheme(hit?.ext || null, hit?.theme); flashSaved(); }}>
+      <option value="">Codeck (padrão)</option>
+      {#each extensions.themes as x (x.ext.id + x.theme.id)}<option value={`${x.ext.id}|${x.theme.id}`}>{x.theme.label} — {x.ext.displayName}</option>{/each}
+    </select>
+  {:else if r.kind === "ext-icons"}
+    <select class="input" value={extensions.activeIcons ? `${extensions.activeIcons.ext}|${extensions.activeIcons.id}` : ""} onchange={(e) => {
+      const v = (e.target as HTMLSelectElement).value; const hit = extensions.iconThemes.find(x => `${x.ext.id}|${x.theme.id}` === v);
+      extensions.applyIcons(hit?.ext || null, hit?.theme); flashSaved(); }}>
+      <option value="">Codeck (padrão)</option>
+      {#each extensions.iconThemes as x (x.ext.id + x.theme.id)}<option value={`${x.ext.id}|${x.theme.id}`}>{x.theme.label} — {x.ext.displayName}</option>{/each}
+    </select>
+  {:else if r.kind === "vscode-import"}
+    <div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">
+      {#each extensions.vscodeSettings as x (x.app)}<button class="btn sm" onclick={() => extensions.importVscode(x.settings)}>Do {x.app}</button>{:else}<span class="small muted">configurações do VS Code não encontradas</span>{/each}
+    </div>
   {:else if r.kind === "pref-seg"}
     <Segmented size="sm" value={String(prefs.get(r.key as PrefKey))} options={r.options || []} onchange={(v) => setPref(r.key!, v)} />
   {:else if r.kind === "rule-switch"}
@@ -375,12 +417,17 @@
           <div class="card org">
             <div class="row" style="gap:10px">
               <Avatar name={a.login} src={a.avatar} size={30} />
-              <div><b>{a.name || a.login}</b><div class="tiny muted">@{a.login} · {a.store || "cofre"} · conectado {dateTime(a.connectedAt)}</div></div>
+              <div><b>{a.name || a.login}</b><div class="tiny muted">@{a.login} · {a.store || "cofre"} · conectado {dateTime(a.connectedAt)}{a.renewedAt ? ` · renovado ${dateTime(a.renewedAt)}` : ""}</div></div>
               <span class="spacer"></span>
               {#if a.rate}<span class="tiny muted">API {a.rate.remaining}/{a.rate.limit}</span>{/if}
+              <button class="btn sm" title="Entra de novo nesta conta (mantém os ajustes e o que você acompanha)" onclick={() => (a.source === "gh-cli" ? addAccount("cli") : startDevice())} disabled={!!busy}><LogIn size={14} /> Entrar de novo</button>
               <button class="btn sm" onclick={() => testGh(a.id)}><KeyRound size={14} /> Testar</button>
               <button class="btn sm ghost danger" onclick={() => removeGh(a)}><Trash2 size={14} /></button>
             </div>
+            {#if a.authError}
+              <div class="autherr small"><b>O GitHub recusou o token</b> ({dateTime(a.authError.at)}) e o app não conseguiu renovar sozinho. Use <b>Entrar de novo</b> — a conta, os ajustes e o que você acompanha continuam.</div>
+            {/if}
+            <div class="tiny muted">{a.expiresAt ? `Token que expira (${dateTime(new Date(a.expiresAt * 1000).toISOString())})${a.autoRenew ? " — renovado sozinho antes de vencer" : ""}` : a.source === "gh-cli" ? "Token do gh CLI — se ele mudar, o app relê sozinho" : "Token sem validade — só para de funcionar se for revogado no GitHub"}</div>
             {#if a.scopes?.length}<div class="scopes">{#each a.scopes as s (s)}<span class="pill neutral">{s}</span>{/each}</div>{/if}
             {#if ghTests[a.id]}<div class="test"><TestResult test={ghTests[a.id]} /></div>{/if}
             {@render trackRow("github:" + a.login, a.login)}
@@ -509,4 +556,6 @@
   .key + .key { border-top: 1px solid var(--line); }
   .key .kbd { font-size: 11.5px; padding: 4px 7px; }
   @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } .tabs { flex-direction: row; flex-wrap: wrap; } .ng, .find, .sec-note { display: none; } .fields { grid-template-columns: 1fr; } }
+  .autherr { padding: 8px 11px; border-radius: 9px; background: var(--bad-soft); color: var(--text-2); }
+  .autherr b { color: var(--bad); }
 </style>

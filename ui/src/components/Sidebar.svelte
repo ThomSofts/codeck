@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Source } from "../lib/types";
   // Barra lateral. Expandida: menus com contadores, os projetos abertos (em grupos, compactos) e as coleções de
   // repositórios. Recolhida (⌘\ / Ctrl+\): só ícones — passar o mouse abre um popover com o submenu de cada item.
   import { BarChart3, Gauge, Code2, RefreshCw, CircleDot, FolderGit2, GitPullRequest, Hammer, History, Inbox, Pin, Rocket, Search, Settings, Zap,
@@ -73,6 +74,9 @@
       store.load();
     } catch (e) { ui.error(e); }
   }
+  // cada item da barra mostra a leitura da própria fonte (sem acender nada no topo)
+  const SRC_OF: Record<string, Source[]> = { inbox: ["prs", "deploys"], prs: ["prs"], builds: ["builds"], deploys: ["deploys"], issues: ["issues"] };
+  const SRC_LABEL: [Source, string][] = [["prs", "PRs"], ["builds", "builds"], ["deploys", "deploys"], ["issues", "issues"]];
   const syncText = $derived(store.error ? "backend fora do ar" : store.offline ? "sem conexão" : s?.polling ? `lendo ${s.polling}…` : store.refreshing ? "pedindo leitura…"
     : s?.lastPoll ? `lido às ${time(s.lastPoll)}` : "primeira leitura…");
   async function manualRefresh() {
@@ -164,6 +168,7 @@
           <n.icon size={16} />
           {#if !collapsed}<span class="lbl">{n.label}</span>{/if}
           {#if n.live}<span class="live"></span>{/if}
+          {#if SRC_OF[n.id]?.some(x => store.loadingOf(x))}<span class="ld" title="lendo agora…"></span>{/if}
           {#if n.count !== undefined && n.count !== null}<span class="count" class:hot={n.hot && n.count > 0 && !isOn(n.id)}>{n.count}</span>{/if}
         </button>
         {#if !collapsed && n.id === "projects" && work.projects.length && prefs.get("sidebar.openProjects")}
@@ -197,15 +202,17 @@
         {/each}
       </div>
     {/if}
-    <div class="sync" class:on={store.fetching && !store.offline} class:off={!!store.error || store.offline}>
+    <div class="sync" class:on={store.refreshing && !store.offline} class:off={!!store.error || store.offline}>
       {#if !collapsed}
         <span class="state">
           <span class="pulse"></span>
-          {#key syncText}<span class="txt">{syncText}</span>{/key}
+          {#if store.error || store.offline || !s?.lastPoll}{#key syncText}<span class="txt">{syncText}</span>{/key}
+          {:else}<span class="srcs">{#each SRC_LABEL as [k, l] (k)}<button class="src" class:on={store.loadingOf(k)} title={store.loadingOf(k) ? `lendo ${l}…` : store.updatedOf(k) ? `${l}: lido às ${time(store.updatedOf(k)!)} — clique para ler agora` : `${l}: ainda não lido`}
+            onclick={() => store.refreshSource(k)}>{l}</button>{/each}</span>{/if}
         </span>
       {/if}
-      <button class="btn ghost sm icon" title={store.fetching ? "Lendo…" : `Ler tudo agora · ${syncText}`} aria-label="Atualizar" disabled={store.refreshing} onclick={manualRefresh}>
-        <RefreshCw size={14} class={store.fetching ? "spin" : ""} />
+      <button class="btn ghost sm icon" title={store.refreshing ? "Lendo tudo…" : "Ler tudo agora"} aria-label="Atualizar" disabled={store.refreshing} onclick={manualRefresh}>
+        <RefreshCw size={14} class={store.refreshing ? "spin" : ""} />
       </button>
       <button class="btn ghost sm icon" title={`${collapsed ? "Expandir" : "Recolher"} a barra lateral (${kbd("mod+\\")})`} onclick={toggleCollapsed}>
         {#if collapsed}<PanelLeftOpen size={15} />{:else}<PanelLeftClose size={15} />{/if}
@@ -284,7 +291,7 @@
     border: 1px solid var(--line); transition: background var(--t), color var(--t); }
   .collapsed nav .count { position: absolute; top: 1px; right: 0; padding: 2px 4px; font-size: 9.5px; min-width: 15px; text-align: center; }
   .collapsed nav .count:not(.hot) { display: none; }
-  .item.on .count { background: var(--accent); color: #fff; border-color: transparent; }
+  .item.on .count { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
   .count.hot { background: var(--bad); color: #fff; border-color: transparent; }
   .chg { font: 650 10px/1 var(--font); color: var(--warn); }
   .live { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 0 var(--warn); animation: live 1.6s infinite; }
@@ -318,4 +325,11 @@
   .flist { display: flex; flex-direction: column; gap: 1px; }
   .flist :global(.it), .flist :global(.gh) { padding-left: 12px !important; }
   .flist :global(.sub) { padding-left: 26px !important; }
+  .ld { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--accent-line); border-top-color: var(--accent); animation: spin 0.9s linear infinite; flex: none; }
+  .srcs { display: inline-flex; gap: 2px; flex-wrap: wrap; }
+  .src { border: 0; background: none; padding: 1px 4px; border-radius: 5px; color: var(--muted); font: 500 11px var(--font); cursor: pointer; transition: color var(--t), background var(--t); }
+  .src:hover { color: var(--text); background: var(--surface-2); }
+  .src.on { color: var(--accent); background: var(--accent-soft); animation: breathe-src 1.2s var(--ease) infinite; }
+  @keyframes breathe-src { 50% { opacity: 0.55; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>

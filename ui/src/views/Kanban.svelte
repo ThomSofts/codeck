@@ -149,7 +149,7 @@
                   <span class="chips">
                     {#if g}<span class="gchip" style="--g:{g.color}"><Layers size={10} /> {g.name}</span>{/if}
                     {#each c.projects as id (id)}{@const r = repos.byId(id)}<span class="pchip" class:prim={id === c.primary}>{#if id === c.primary}<Star size={9} />{/if}{r?.name || "?"}</span>{/each}
-                    {#if c.refs.length}<span class="pchip ref" title={c.refs.map(id => repos.byId(id)?.name).join(", ")}>+{c.refs.length} consulta</span>{/if}
+                    {#if c.refs.length}<span class="pchip ref" title={c.refs.map(id => repos.byId(id)?.name).join(", ")}>+{c.refs.length} p/ consulta</span>{/if}
                     {#each c.labels as l (l)}<span class="lchip">{l}</span>{/each}
                   </span>
                 </button>

@@ -34,7 +34,7 @@
   function select(k: string) { go(`/prs/${tab}/${encodeURIComponent(k)}`, "soft"); }
 </script>
 
-<Page title="Pull requests" sub="GitHub e Azure DevOps num lugar só">
+<Page live={["prs"]} title="Pull requests" sub="GitHub e Azure DevOps num lugar só">
   {#if !store.prsReady}
     <Skeleton kpis={4} rows={8} />
   {:else}

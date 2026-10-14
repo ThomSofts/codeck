@@ -1,7 +1,7 @@
 <script lang="ts">
-  // Cartão do quadro: o que fazer, em qual grupo e em quais projetos. Cada projeto entra como "muda" (a IA altera; um
-  // worktree em cada, mesma branch) ou "consulta" (a IA lê, não altera); o principal (★) é onde a IA roda.
-  import { Eye, FolderPlus, Layers, Pencil, Sparkles, Star, Trash2 } from "@lucide/svelte";
+  // Cartão do quadro: o que fazer, em qual grupo e em quais projetos. Cada projeto tem um papel: Principal (a IA abre e
+  // trabalha nele), Também altera (um worktree na mesma branch) ou Só consulta (a IA lê, não altera).
+  import { Eye, FolderPlus, Layers, Pencil, Plus, Sparkles, Star, Trash2, X } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { kanban, PRIORITY, type Card, type Priority } from "../../lib/kanban.svelte";
   import { repos } from "../../lib/repos.svelte";
@@ -40,9 +40,12 @@
         || Number(!inG(a.id)) - Number(!inG(b.id)) || a.name.localeCompare(b.name)).slice(0, t ? 60 : 40);
   });
   const roleOf = (id: string) => (projects.includes(id) ? "change" : refs.includes(id) ? "ref" : "none");
-  function setRole(id: string, role: string) {
+  // os escolhidos, o principal primeiro
+  const chosen = $derived([...(primary ? [primary] : []), ...projects.filter(x => x !== primary), ...refs]);
+  function setRole(id: string, role: "primary" | "change" | "ref" | "none") {
     projects = projects.filter(x => x !== id);
     refs = refs.filter(x => x !== id);
+    if (role === "primary") { projects = [id, ...projects]; primary = id; return; }
     if (role === "change") { projects = [...projects, id]; if (!primary) primary = id; }
     else if (role === "ref") refs = [...refs, id];
     if (primary === id && role !== "change") primary = projects[0] || null;
@@ -111,31 +114,49 @@
           <option value="">Sem grupo</option>{#each work.groups as g (g.id)}<option value={g.id}>{g.name} ({g.repoIds.length})</option>{/each}
         </select>
         <button class="btn sm" onclick={newGroup}><FolderPlus size={13} /> Novo grupo</button>
-        {#if group}<button class="btn sm ghost" onclick={useGroup} title="Põe os projetos do grupo como consulta"><Layers size={13} /> Usar os projetos do grupo</button>{/if}
       </div>
     </div>
 
-    <div class="label">Projetos <span class="muted">— <b>muda</b>: a IA altera (worktree na mesma branch) · <b>consulta</b>: só lê · <Star size={10} /> onde a IA roda</span></div>
-    <input class="input" bind:value={q} placeholder="filtrar projetos…" />
+    <div class="label">Onde a IA vai trabalhar</div>
+    <div class="where">
+      {#each chosen as id (id)}
+        {@const r = repos.byId(id)}
+        {@const role = id === primary ? "primary" : roleOf(id)}
+        <div class="wp" class:prim={role === "primary"}>
+          <ProviderIcon provider={r?.provider || null} size={14} />
+          <span class="grow ell"><b>{r?.name || "projeto removido"}</b><span class="tiny muted"> {(r?.path || "").replace(/^\/Users\/[^/]+/, "~")}</span></span>
+          <div class="seg" role="radiogroup" aria-label={`Papel de ${r?.name}`}>
+            <button class:on={role === "primary"} title="A IA abre aqui: o terminal, o agente e a branch nascem neste projeto" onclick={() => setRole(id, "primary")}><Star size={11} /> Principal</button>
+            <button class:on={role === "change"} title="A IA também altera este projeto (um worktree na mesma branch)" onclick={() => setRole(id, "change")}><Pencil size={11} /> Também altera</button>
+            <button class:on={role === "ref"} title="A IA só lê este projeto para entender o contexto — não altera nada" onclick={() => setRole(id, "ref")}><Eye size={11} /> Só consulta</button>
+          </div>
+          <button class="rm" title="Tirar do cartão" onclick={() => setRole(id, "none")}><X size={13} /></button>
+        </div>
+      {:else}
+        <div class="empty small muted">Nenhum projeto ainda. Adicione abaixo o projeto em que a IA vai trabalhar.</div>
+      {/each}
+    </div>
+    {#if primary}
+      <p class="sum small">
+        A IA trabalha em <b>{repos.byId(primary)?.name}</b>{#if projects.length > 1}, criando a mesma branch também em <b>{projects.filter(x => x !== primary).map(x => repos.byId(x)?.name).join(", ")}</b>{/if}{#if refs.length}, e consulta <b>{refs.map(x => repos.byId(x)?.name).join(", ")}</b> sem alterar{/if}.
+      </p>
+    {/if}
+    <div class="add">
+      <input class="input" bind:value={q} placeholder={chosen.length ? "Adicionar outro projeto…" : "Buscar o projeto…"} />
+      {#if group}<button class="btn sm ghost" onclick={useGroup} title="Adiciona os projetos do grupo como consulta"><Layers size={13} /> Projetos do grupo</button>{/if}
+    </div>
     <div class="projs">
-      {#each list as r (r.id)}
-        {@const role = roleOf(r.id)}
+      {#each list.filter(r => roleOf(r.id) === "none") as r (r.id)}
         {@const g = work.groupOf(r.id)}
-        <div class="pr" class:on={role !== "none"}>
+        <div class="pr">
           <ProviderIcon provider={r.provider || null} size={13} />
           <span class="grow ell"><b>{r.name}</b>{#if g}<span class="gdot" style="background:{g.color}" title={g.name}></span>{/if}<span class="tiny muted"> {r.path.replace(/^\/Users\/[^/]+/, "~")}</span></span>
-          {#if role === "change"}
-            <button class="star" class:on={primary === r.id} title={primary === r.id ? "A IA roda aqui" : "Rodar a IA neste projeto"} onclick={() => (primary = r.id)}><Star size={13} /></button>
-          {/if}
-          <div class="seg">
-            <button class:on={role === "none"} onclick={() => setRole(r.id, "none")}>—</button>
-            <button class:on={role === "change"} onclick={() => setRole(r.id, "change")}>muda</button>
-            <button class:on={role === "ref"} onclick={() => setRole(r.id, "ref")}>consulta</button>
-          </div>
+          {#if !primary}<button class="btn sm primary" onclick={() => setRole(r.id, "primary")}><Star size={12} /> Principal</button>
+          {:else}<button class="btn sm" onclick={() => setRole(r.id, "change")}><Plus size={12} /> Altera</button>
+            <button class="btn sm ghost" onclick={() => setRole(r.id, "ref")}><Eye size={12} /> Consulta</button>{/if}
         </div>
       {:else}<div class="small muted">Nenhum projeto clonado com esse nome.</div>{/each}
     </div>
-    {#if projects.length > 1}<p class="tiny muted">A IA roda em <b>{repos.byId(primary || "")?.name}</b> e cria a mesma branch em {projects.filter(x => x !== primary).map(x => repos.byId(x)?.name).join(", ")}.</p>{/if}
 
     {#if issues.length}
       <details class="wi" open={!!workItem}>
@@ -149,7 +170,7 @@
     <span class="spacer"></span>
     <button class="btn" onclick={onclose}>Cancelar</button>
     <button class="btn" disabled={busy || !title.trim()} onclick={() => save(false)}>Salvar</button>
-    <button class="btn primary" disabled={busy || !title.trim() || !projects.length} title={projects.length ? "" : "Marque ao menos um projeto que muda"} onclick={() => save(true)}><Sparkles size={14} /> Salvar e pedir à IA</button>
+    <button class="btn primary" disabled={busy || !title.trim() || !projects.length} title={projects.length ? "" : "Escolha o projeto principal"} onclick={() => save(true)}><Sparkles size={14} /> Salvar e pedir à IA</button>
   {/snippet}
 </Drawer>
 
@@ -169,17 +190,28 @@
   .chip:hover { color: var(--text); border-color: var(--accent); }
   .grow-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .grow-row .input { flex: 1; min-width: 180px; }
-  .projs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; max-height: 300px; overflow: auto; padding: 4px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg-2); }
+  .where { display: grid; gap: 6px; }
+  .wp { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 10px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--surface-2);
+    font-size: 12.5px; animation: rise 0.2s var(--ease-out); flex-wrap: wrap; }
+  .wp.prim { border-color: color-mix(in srgb, var(--warn) 55%, transparent); background: color-mix(in srgb, var(--warn) 7%, var(--surface-2)); }
+  .wp .grow { flex: 1; min-width: 140px; }
+  .wp .seg button { display: inline-flex; align-items: center; gap: 4px; }
+  .wp .seg button.on:first-child { color: var(--warn); }
+  .rm { display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; }
+  .rm:hover { background: var(--surface-3); color: var(--bad); }
+  .empty { padding: 10px 12px; border-radius: 10px; border: 1px dashed var(--line-3); }
+  .sum { margin: 0; padding: 8px 12px; border-radius: 10px; background: var(--accent-soft); color: var(--text-2); }
+  .sum b { color: var(--text); }
+  .add { display: flex; gap: 6px; }
+  .add .input { flex: 1; }
+  .projs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; max-height: 240px; overflow: auto; padding: 4px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg-2); }
   .pr { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 8px; font-size: 12.5px; color: var(--text-2); }
-  .pr.on { background: var(--surface-2); color: var(--text); }
+  .pr:hover { background: var(--surface-2); color: var(--text); }
   .pr .grow { flex: 1; min-width: 0; }
   .gdot { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-left: 6px; }
   .seg { display: flex; gap: 1px; padding: 2px; border-radius: 7px; background: var(--bg-2); border: 1px solid var(--line); flex: none; }
   .seg button { height: 22px; padding: 0 8px; border: 0; border-radius: 5px; background: none; color: var(--muted); font: 600 11px var(--font); cursor: pointer; }
   .seg button.on { background: var(--surface-3); color: var(--text); }
-  .star { display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px; background: none; color: var(--faint); cursor: pointer; }
-  .star.on { color: var(--warn); }
-  .star.on :global(svg) { fill: currentColor; }
   .wi summary { cursor: pointer; font-size: 13px; color: var(--text-2); }
   .wil { display: grid; gap: 2px; max-height: 180px; overflow: auto; margin-top: 6px; }
   .wil button { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 0; border-radius: 7px; background: none; color: var(--text-2);

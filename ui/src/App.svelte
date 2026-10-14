@@ -10,6 +10,7 @@
   import RepoHub from "./components/repo/RepoHub.svelte";
   import { applyDensity } from "./lib/density";
   import { prefs } from "./lib/prefs.svelte";
+  import { extensions } from "./lib/extensions.svelte";
   import Projects from "./views/Projects.svelte";
   import Kanban from "./views/Kanban.svelte";
   import { ui } from "./lib/ui.svelte";
@@ -54,6 +55,18 @@
 
   // densidade da interface (Configurações → Aparência)
   $effect(() => { void prefs.get("ui.density"); applyDensity(); });
+  // tema de cores/ícones e snippets das extensões do VS Code: assim que as preferências chegam do backend
+  $effect(() => { if (store.s) untrack(() => extensions.restore().catch(() => {})); });
+  // ligar/desligar "o tema pinta o app inteiro" reaplica o tema atual
+  $effect(() => {
+    void prefs.get("workbench.themeApp");
+    untrack(() => {
+      const a = extensions.activeTheme;
+      const e = a && extensions.list.find(x => x.id === a.ext);
+      const t = e?.themes.find(x => x.id === a!.id);
+      if (e && t) extensions.applyTheme(e, t, false);
+    });
+  });
   // /work/board (o quadro antigo) agora é a página do Quadro
   $effect(() => { if (router.view === "work" && router.parts[1] === "board") untrack(() => go("/board/agents", "soft")); });
   // abrir o app: volta para o último projeto, se a preferência mandar (Configurações → Projetos)
