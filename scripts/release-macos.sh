@@ -38,7 +38,7 @@ fail() { printf '\n\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 [ "$(uname)" = Darwin ] || fail "Só no macOS."
 # o openssl do sistema (LibreSSL) não tem "x509 -ext" e sai com erro no STARTTLS do FTP: usa o do Homebrew
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-openssl version | grep -q '^OpenSSL 3' || fail "Precisa do OpenSSL 3 (brew install openssl@3)."
+case "$(openssl version)" in "OpenSSL 3"*) ;; *) fail "Precisa do OpenSSL 3 (brew install openssl@3)." ;; esac
 for tool in jq lftp create-dmg openssl gh; do command -v "$tool" >/dev/null || fail "Falta o $tool (brew install $tool)."; done
 
 cd "$ROOT"
