@@ -36,6 +36,9 @@ say() { printf '\n\033[1;36m▸ %s\033[0m\n' "$*"; }
 fail() { printf '\n\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
 [ "$(uname)" = Darwin ] || fail "Só no macOS."
+# o openssl do sistema (LibreSSL) não tem "x509 -ext" e sai com erro no STARTTLS do FTP: usa o do Homebrew
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+openssl version | grep -q '^OpenSSL 3' || fail "Precisa do OpenSSL 3 (brew install openssl@3)."
 for tool in jq lftp create-dmg openssl gh; do command -v "$tool" >/dev/null || fail "Falta o $tool (brew install $tool)."; done
 
 cd "$ROOT"
@@ -63,11 +66,8 @@ if [ "$DRY_RUN" = false ]; then
   export LFTP_PASSWORD
   # O servidor é um IP com certificado *.hstgr.io: a cadeia é conferida aqui e o lftp dispensa só o hostname.
   cert="$(mktemp)"
-  # o servidor fecha a conexão do jeito dele e o s_client sai com 1 ("poll error") mesmo com a cadeia válida:
-  # vale o resultado da verificação que ele imprime, não o código de saída
-  tls="$(openssl s_client -starttls ftp -connect "$DOWNLOADS_FTP_SERVER:21" -verify_return_error -verify 5 </dev/null 2>&1 || true)"
-  grep -q 'Verify return code: 0 (ok)' <<< "$tls" || fail "Certificado do FTP não validou."
-  openssl x509 > "$cert" <<< "$tls" || fail "Certificado do FTP não validou."
+  openssl s_client -starttls ftp -connect "$DOWNLOADS_FTP_SERVER:21" -verify_return_error -verify 5 \
+    </dev/null 2>/dev/null | openssl x509 > "$cert" || fail "Certificado do FTP não validou."
   openssl x509 -in "$cert" -noout -checkend 0 >/dev/null || fail "Certificado do FTP vencido."
   openssl x509 -in "$cert" -noout -ext subjectAltName | grep -q 'DNS:\*\.hstgr\.io' || fail "Certificado do FTP não é da Hostinger."
 fi
