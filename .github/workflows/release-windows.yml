@@ -300,6 +300,7 @@ jobs:
       - name: Migração do nome antigo (Commitdeck → Codeck)
         run: |
           $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          if (-not (Test-Path $run)) { New-Item -Path $run -Force | Out-Null }   # a imagem do runner pode vir sem a chave
           foreach ($r in $env:APPDATA, $env:LOCALAPPDATA) { Remove-Item -Recurse -Force (Join-Path $r 'Codeck') -ErrorAction SilentlyContinue }
           $old = Join-Path $env:APPDATA 'Commitdeck'
           New-Item -ItemType Directory -Force $old | Out-Null
