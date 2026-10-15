@@ -63,8 +63,11 @@ if [ "$DRY_RUN" = false ]; then
   export LFTP_PASSWORD
   # O servidor é um IP com certificado *.hstgr.io: a cadeia é conferida aqui e o lftp dispensa só o hostname.
   cert="$(mktemp)"
-  openssl s_client -starttls ftp -connect "$DOWNLOADS_FTP_SERVER:21" -verify_return_error -verify 5 \
-    </dev/null 2>/dev/null | openssl x509 > "$cert" || fail "Certificado do FTP não validou."
+  # o servidor fecha a conexão do jeito dele e o s_client sai com 1 ("poll error") mesmo com a cadeia válida:
+  # vale o resultado da verificação que ele imprime, não o código de saída
+  tls="$(openssl s_client -starttls ftp -connect "$DOWNLOADS_FTP_SERVER:21" -verify_return_error -verify 5 </dev/null 2>&1 || true)"
+  grep -q 'Verify return code: 0 (ok)' <<< "$tls" || fail "Certificado do FTP não validou."
+  openssl x509 > "$cert" <<< "$tls" || fail "Certificado do FTP não validou."
   openssl x509 -in "$cert" -noout -checkend 0 >/dev/null || fail "Certificado do FTP vencido."
   openssl x509 -in "$cert" -noout -ext subjectAltName | grep -q 'DNS:\*\.hstgr\.io' || fail "Certificado do FTP não é da Hostinger."
 fi
