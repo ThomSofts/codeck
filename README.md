@@ -24,6 +24,8 @@ Depois de instalado, o app **se atualiza sozinho**:
 - Antes de instalar, confere o que se perderia ao reabrir — arquivos sem salvar (com "Salvar tudo" ali mesmo), agentes
   trabalhando, processos rodando e projetos abertos — e só então baixa, mostrando o progresso.
 - Antes de instalar, confere o SHA-256 do instalador baixado.
+- Na primeira abertura de cada versão nova, copia os dados locais (contas, quadro, projetos, regras, histórico) para
+  `backups/` dentro da pasta de dados, antes de qualquer migração — guarda as 5 últimas cópias.
 - Quando há uma versão obrigatória (`required`), ele bloqueia o uso até atualizar.
 
 O app não é assinado por certificado comercial (decisão da ThomSoft):
@@ -41,8 +43,11 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
   Na barra de abas, o botão de projetos abertos lista todos para trocar ou fechar.
 - **Grupos de projetos** (como os grupos de abas do navegador): nome, cor, recolher/expandir nas abas, abrir/fechar
   todos. Arraste uma aba para o grupo ou use o clique direito.
-- **Pedir à IA** (⌘⇧I / Ctrl+Shift+I): descreva a tarefa ou escolha uma issue e escolha o fluxo — só planejar,
-  planejar → você aprova → implementar, ou implementar direto. Vira uma tarefa em worktree ou roda no checkout.
+- **Pedir à IA** (⌘⇧I / Ctrl+Shift+I): uma caixa no painel do projeto — escreva e Enter manda direto para o agente,
+  na conta do projeto (lembrada por projeto), no checkout ou numa tarefa nova; dá para mandar para uma sessão já
+  aberta. "Mais opções" abre o formulário completo (issue, só planejar, planejar → aprovar → implementar).
+- **Pular permissões (bypass)** por projeto, em Ajustes do projeto (desligado por padrão): os agentes abrem sem pedir
+  permissão (Claude, Codex, Gemini, Cursor). Um escudo na aba mostra os projetos com bypass.
 - **Tarefas em worktree:** "Nova tarefa" cria a branch, o worktree, copia os arquivos locais que o Git não leva
   (`workspace.local.json`, `nuget.config`, `.env`… — e garante que eles nunca entrem num commit), roda a preparação e
   abre o(s) agente(s) com o prompt. Vários agentes no mesmo pedido = cada um no seu worktree; **Comparar** mostra o que
@@ -60,7 +65,9 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
   - barra de atividades: Explorador (⌘⇧E), Busca (⌘⇧F, com maiúsculas/regex), Controle de código-fonte (⌃⇧G, com a
     contagem de alterações), Gerenciador de Soluções (.NET) e Extensões (⌘⇧X);
   - explorador com as cores do Git (alterado, novo, apagado, conflito — a pasta herda a cor), guias de indentação,
-    pastas compactas, novo arquivo/pasta, renomear (F2), excluir (vai para a Lixeira), copiar caminho, teclado ↑↓←→;
+    pastas compactas, novo arquivo/pasta, renomear (F2), recortar/copiar/colar/duplicar, excluir (vai para a
+    Lixeira), copiar caminho, seleção múltipla, teclado ↑↓←→; arraste para mover (⌥ copia) e arraste arquivos e
+    pastas do Finder/Explorer para dentro do projeto;
   - controle de código-fonte: alterações preparadas e não preparadas (lista ou árvore), commit (⌘↩, "commit e enviar",
     amend), sincronizar, stash, descartar; clique abre o **diff** (lado a lado ou em linha, editável, ⌘S salva);
   - abas de visualização (clique simples reaproveita a aba, duplo clique fixa), "fechar outras/à direita/salvas",
@@ -84,8 +91,10 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
   continuam só no VS Code.
 - **Quadro** (kanban) editável: colunas e cartões seus, com grupo, projetos (os que **mudam** — um worktree em cada,
   na mesma branch —, os de **consulta** e o **principal**, onde a IA roda), etiquetas, prioridade, prazo e item
-  ligado. "Planejar"/"Implementar" no cartão abre a tarefa com o contexto do cartão, do grupo e das pastas; o cartão
-  anda sozinho para "Em andamento" e "Revisão". A aba "Tarefas dos agentes" mostra as tarefas pelo estado do agente.
+  ligado, anexos (imagens e arquivos: cole, arraste ou anexe) e checklist. Cartão rápido só com título direto na
+  coluna — a IA é opcional. "Planejar"/"Implementar" no cartão abre a tarefa com o contexto do cartão, do grupo, das
+  pastas e dos anexos; o cartão anda sozinho para "Em andamento" e "Revisão", com aviso e histórico de quem moveu
+  (você ou a IA). A aba "Tarefas dos agentes" mostra as tarefas pelo estado do agente.
 - Atalhos: "Revisar com IA" na PR, "Corrigir com IA" no build quebrado (com o log), "Pedir à IA"/"Começar tarefa"/
   "Adicionar ao quadro" na issue/work item.
 - Os terminais não herdam a chave do app nem segredos: um agente não consegue chamar a API local nem ler os PATs.
@@ -115,9 +124,12 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
   *"needs permission to access a resource"*.
 - **Pull requests** dos dois provedores: para revisar, minhas (com o que as trava), todas e arquivadas. Aprovar,
   pedir mudança e comentar sem sair do app.
-- **Builds e Actions**: execuções recentes com filtros; no que falhou, o job, as anotações e o trecho do log em volta
-  do erro. *Tentar de novo* (só o que falhou), *Rodar de novo* e *Cancelar*.
-- **Issues e tarefas**: issues do GitHub e work items do Azure atribuídos a você ou que mencionam você.
+  Na PR, **Histórico** (H) mostra tudo que aconteceu com ela e **Commits** (C) abre a branch no clone local.
+- **Builds e Actions**: execuções recentes com filtros; no que está rodando, o que acontece de verdade (etapa atual,
+  "falhando em…", aguardando aprovação, esperando agente, sem progresso — relido a cada 20 s); no que falhou, o job,
+  as anotações e o trecho do log em volta do erro. *Tentar de novo* (só o que falhou), *Rodar de novo* e *Cancelar*.
+- **Issues e tarefas**: issues do GitHub e work items do Azure atribuídos a você ou que mencionam você. "Não
+  acompanhar issues de…" num item desliga só as issues daquele repositório/projeto (PRs, builds e deploys seguem).
 - **Automação**: regras por prioridade — PR (criador → branch → aprovar/arquivar/notificar), deploy (pipeline →
   estágio → branch, com *"só se eu já aprovei a PR de origem"*) e permissão (pipeline → recurso), com prévia do que
   cada regra pegaria.
@@ -146,6 +158,9 @@ fixo, tenta reconectar a cada 10 s e atualiza tudo assim que a rede volta.
 - **Branches**: agrupadas em pastas (`feature/`, `fix/`…), com ações no "⋯" e no clique direito — checkout, atualizar
   sem checkout, publicar, merge, rebase, PR, nova branch a partir dela, renomear e apagar; tags (enviar, apagar no
   servidor) e stashes. Clique direito num commit do graph: branch/tag aqui, cherry-pick, revert, reset, copiar SHA.
+- **Limpar branches locais**: busca e poda o remoto e recomenda (já marcadas) as branches mergeadas na principal
+  (main/master, inclusive squash/rebase) e as de remoto apagado sem commit só seu; o resto fica "para avaliar" ou
+  nunca é oferecido (atual, principal, protegidas, em worktree, com commits que não subiram).
 - **Limpar repositório local** (manda para a Lixeira) — desabilitado quando há algo não commitado, stash, operação
   em andamento ou commit que não subiu.
 - **Repositório**: graph de commits no estilo GitKraken (faixas coloridas, avatar do autor, branches e tags),

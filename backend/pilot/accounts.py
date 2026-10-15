@@ -74,7 +74,7 @@ def save_azure(body):
     for o in current.get("orgs", []):
         if o.get("id") and o["id"] not in kept:
             secrets.delete(o["id"], o.get("secret"))  # organização removida: some do cofre também
-    cfg = {**current, "orgs": orgs, "pollSeconds": min(max(int(body.get("pollSeconds") or 60), 15), 3600)}
+    cfg = {**current, "orgs": orgs, "pollSeconds": engine.clamp_poll(body.get("pollSeconds"))}
     save_json(CONFIG_FILE, cfg, private=True)
     engine.reload_accounts()
 
@@ -135,8 +135,9 @@ def test_github(body):
 
 def save_prefs(body):
     cfg = load_json(CONFIG_FILE, {})
+    poll_changed = "pollSeconds" in body and engine.clamp_poll(body.get("pollSeconds")) != cfg.get("pollSeconds", 60)
     if "pollSeconds" in body:
-        cfg["pollSeconds"] = min(max(int(body.get("pollSeconds") or 60), 15), 3600)
+        cfg["pollSeconds"] = engine.clamp_poll(body.get("pollSeconds"))
     if body.get("editor") in git.EDITORS:
         cfg["editor"] = body["editor"]
     if body.get("theme") in THEMES:
@@ -164,3 +165,5 @@ def save_prefs(body):
         cfg["ui"] = dict(list(ui.items())[-UI_MAX:])
     save_json(CONFIG_FILE, cfg, private=True)
     ctx.config = cfg
+    if poll_changed:
+        engine.refresh()   # os ciclos estavam dormindo no intervalo antigo: acordam e passam a usar o novo

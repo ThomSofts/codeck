@@ -1,7 +1,7 @@
 <script lang="ts">
-  // Ajustes do projeto (projeto = repositório): o que copiar para cada worktree (arquivos locais que o Git não leva),
-  // a preparação, os repositórios relacionados e o shell. As pastas são as dos próprios repositórios — nada a configurar.
-  import { Plus, X } from "@lucide/svelte";
+  // Ajustes do projeto (projeto = repositório): os agentes (conta de IA e pular permissões), o que copiar para cada
+  // worktree (arquivos locais que o Git não leva), a preparação, os repositórios relacionados e o shell.
+  import { Plus, ShieldOff, X } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { post } from "../../lib/api";
   import { ui } from "../../lib/ui.svelte";
@@ -9,6 +9,7 @@
   import { work } from "../../lib/work.svelte";
   import { repos } from "../../lib/repos.svelte";
   import Drawer from "../Drawer.svelte";
+  import Switch from "../Switch.svelte";
 
   let { project, onclose }: { project: Project; onclose: () => void } = $props();
   const s0 = untrack(() => project.settings);
@@ -16,6 +17,10 @@
   let setup = $state(s0.setup || "");
   let shell = $state((s0 as any).shell || "");
   let addDirs = $state<string[]>([...((s0 as any).addDirs || [])]);
+  let bypass = $state(!!s0.bypass);
+  let account = $state<string>(untrack(() => work.defaultAccount(project) || ""));
+  // só grava a conta se ela mudou aqui: salvar outro ajuste não pode fixar o padrão da organização no projeto
+  const account0 = untrack(() => account);
   let novo = $state("");
   let relQ = $state("");
   // relacionados = outros repositórios da sua lista (sem os worktrees das tarefas)
@@ -30,7 +35,7 @@
   async function save() {
     busy = true;
     try {
-      await post("ws/settings", { repoId: project.id, copy, setup, shell, addDirs });
+      await post("ws/settings", { repoId: project.id, copy, setup, shell, addDirs, bypass, ...(account && account !== account0 ? { account } : {}) });
       await work.load();
       ui.toast("Ajustes do projeto salvos");
       onclose();
@@ -42,6 +47,21 @@
 
 <Drawer title={`Ajustes de ${project.name}`} subtitle="Valem para as próximas tarefas e terminais deste projeto" {onclose} width={560}>
   <div class="form">
+    <section>
+      <h4>Agentes de IA</h4>
+      <label class="acc"><span class="small muted">Conta deste projeto</span>
+        <select class="input" bind:value={account}>
+          {#each work.ai.filter(a => a.installed) as a (a.id)}<option value={a.id}>{a.label} · {a.name}{a.email ? ` (${a.email})` : ""}</option>{/each}
+        </select></label>
+      <p class="small muted">Vem marcada no “Pedir à IA” e no “Abrir agente”. Muda sozinha para a última conta usada neste projeto.</p>
+      <div class="byp" class:on={bypass}>
+        <Switch bind:checked={bypass} label="Pular permissões (bypass)"
+          hint="Os agentes abertos neste projeto — pedido, tarefa nova, cartão do quadro — editam arquivos e rodam comandos sem perguntar." />
+        {#if bypass}<p class="small warn"><ShieldOff size={12} /> Só ligue em repositório em que você confia: o agente pode apagar arquivos, instalar pacotes e fazer push sem confirmação.
+          Claude Code: <span class="mono">--dangerously-skip-permissions</span> (no “Planejar”, o plano continua esperando sua aprovação) · Codex: <span class="mono">--dangerously-bypass-approvals-and-sandbox</span> ·
+          Gemini: <span class="mono">--yolo</span> · Cursor: <span class="mono">--force</span> · OpenCode: sem flag (use o <span class="mono">opencode.json</span>).</p>{/if}
+      </div>
+    </section>
     <section>
       <h4>Copiar para cada worktree</h4>
       <p class="small muted">Arquivos locais que o Git não leva e sem os quais o projeto não roda. Aceita padrões (<span class="mono">**/appsettings.Development.json</span>).
@@ -90,4 +110,9 @@
   .sugg .pill { cursor: pointer; border: 1px dashed var(--line-3); }
   textarea { resize: vertical; height: auto; font-size: 12.5px; padding: 8px 10px; }
   .spacer { flex: 1; }
+  .acc { display: grid; gap: 5px; }
+  .byp { display: grid; gap: 8px; padding: 10px 12px; border-radius: var(--r-sm); border: 1px solid var(--line-2); transition: border-color var(--t), background var(--t); }
+  .byp.on { border-color: color-mix(in srgb, var(--warn) 45%, transparent); background: var(--warn-soft); }
+  .byp .warn { color: var(--text-2); line-height: 1.5; }
+  .byp .warn :global(svg) { color: var(--warn); vertical-align: -2px; }
 </style>

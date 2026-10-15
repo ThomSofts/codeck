@@ -17,6 +17,16 @@ from .core import (ARCHIVE_FILE, CONFIG_FILE, NOTIFIED_FILE, ctx, load_json, loc
 from .rules import get_rules, matching_deploy_rule, matching_rule, protected_set, rule_label
 
 deploy_failures = {}  # key -> ts da última falha automática (não insiste a cada ciclo)
+# Intervalo de leitura: 15 s a 10 min. Mais que isso, a fila e as regras automáticas (aprovar PR/deploy) ficam paradas
+# tempo demais e a tela parece "travada" — versões antigas aceitavam até 1 h.
+POLL_MIN, POLL_MAX, POLL_DEFAULT = 15, 600, 60
+
+
+def clamp_poll(v):
+    try:
+        return min(max(int(v or POLL_DEFAULT), POLL_MIN), POLL_MAX)
+    except (TypeError, ValueError):
+        return POLL_DEFAULT
 
 
 # ---------------------------------------------------------------- contas
@@ -36,6 +46,11 @@ def migrate_plain_secrets(cfg):
 def load_accounts():
     cfg = load_json(CONFIG_FILE, {})
     try:
+        poll = cfg.get("pollSeconds", POLL_DEFAULT)
+        fixed = POLL_DEFAULT if isinstance(poll, (int, float)) and poll > POLL_MAX else clamp_poll(poll)
+        if poll != fixed:   # 30 min / 1 h das versões antigas voltam para o padrão (1 min)
+            cfg["pollSeconds"] = fixed
+            save_json(CONFIG_FILE, cfg, private=True)
         if migrate_plain_secrets(cfg):
             save_json(CONFIG_FILE, cfg, private=True)
     except Exception as e:  # noqa: BLE001 — sem cofre, não sobe nada com credencial em texto
@@ -387,6 +402,7 @@ def poll_builds():
                 all_b.extend(b for b in state["builds"] if b.get("provider", "azure") == prov
                              and (b.get("account") == acc.login if prov == "github" else b["org"] == src_name))
             continue
+        _live_phases(acc, builds)
         me_id = (acc.me or {}).get("id")
         recent = now() - timedelta(hours=3)
         for b in builds:
@@ -413,6 +429,34 @@ def poll_builds():
     unique.sort(key=lambda b: b.get("queued") or "", reverse=True)
     with lock:
         state.update(builds=unique, buildErrors=errors, lastBuildPoll=now_iso())
+
+
+_phases = {}   # key do build -> último "o que está fazendo" lido (fica se uma leitura falhar)
+
+
+def _live_phases(acc, builds):
+    """Builds em andamento ganham `phase`: o status do Azure/GitHub continua "em andamento" enquanto uma etapa já
+    falhou, espera aprovação ou espera agente — a tela mostra o que acontece de verdade."""
+    from concurrent.futures import ThreadPoolExecutor
+    running = [b for b in builds if b["status"] != "completed"][:15]
+
+    def read(b):
+        try:
+            if isinstance(acc, github.GitHub):
+                return b["key"], acc.run_phase(b["project"], b["id"])
+            return b["key"], acc.build_phase(b["project"], b["id"])
+        except Exception:  # noqa: BLE001 — sem a timeline, fica o que já se sabia
+            return b["key"], _phases.get(b["key"])
+    if running:
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            got = dict(ex.map(read, running))
+        _phases.update({k: v for k, v in got.items() if v})
+    for b in running:
+        if _phases.get(b["key"]):
+            b["phase"] = _phases[b["key"]]
+    done = {b["key"] for b in builds if b["status"] == "completed"}
+    for k in [k for k in _phases if k in done]:
+        _phases.pop(k, None)
 
 
 # ---------------------------------------------------------------- issues e itens de trabalho
@@ -449,6 +493,14 @@ def refresh(source=None):
         _wakes[k].set()
 
 
+def _fast_builds():
+    """Algum build andando de verdade (não parado esperando aprovação/agente) que começou há menos de 3 h?"""
+    recent = now() - timedelta(hours=3)
+    with lock:
+        return any(b.get("status") == "inProgress" and (b.get("phase") or {}).get("state") in (None, "running", "failing")
+                   and (parse_dt(b.get("started") or b.get("queued")) or recent) > recent for b in state["builds"])
+
+
 def _source_loop(key):
     fn, mult, delay = SOURCES[key]
     time.sleep(delay)   # não sai tudo junto na abertura
@@ -471,8 +523,12 @@ def _source_loop(key):
             _offline[key] = offline
             # "offline" guarda DESDE QUANDO está sem rede; volta a None na 1ª leitura que funcionar
             state["offline"] = (state.get("offline") or now_iso()) if all(_offline.get(k) for k in SOURCES) else None
-        # sem rede: tenta de novo a cada 10 s para reconectar logo; com rede, no intervalo escolhido
-        _wakes[key].wait(10 if offline else max(15, int(ctx.config.get("pollSeconds", 60))) * (1 if offline else mult))
+        # sem rede: tenta de novo a cada 10 s para reconectar logo; com rede, no intervalo escolhido — com build rodando,
+        # os builds releem a cada 20 s (o andamento, a falha e o fim aparecem logo)
+        wait = clamp_poll(ctx.config.get("pollSeconds")) * mult
+        if key == "builds" and _fast_builds():
+            wait = min(wait, 20)
+        _wakes[key].wait(10 if offline else wait)
         _wakes[key].clear()
 
 

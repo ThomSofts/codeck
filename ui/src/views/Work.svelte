@@ -3,7 +3,7 @@
   // esquerda com os arquivos; no centro, abas de agentes, terminais e arquivos; à direita, o agente e os limites.
   // ⌘/Ctrl+P abre arquivo · ⇧F busca no projeto · T novo terminal · W fecha a aba · 1…9 troca de projeto · ⇧I pede à IA.
   // As abas de projeto podem ficar em GRUPOS (como no navegador): nome, cor, recolher/expandir e quantos estão abertos.
-  import { Bot, GitPullRequest, PanelLeft, Layers, Play, RefreshCw, ChevronDown, Code2, FolderGit2, GitBranch, AppWindow, Columns2, GitCompareArrows, LayoutGrid, PanelRight, Settings2, Plus, Search, SquareTerminal, X, Sparkles, FolderPlus, FolderMinus, Palette, Pencil, FolderOpen, Trash2, ChevronRight, Files, Blocks, Boxes, Copy, Pin, ListX, TriangleAlert, Minus, Minimize2 } from "@lucide/svelte";
+  import { Bot, GitPullRequest, PanelLeft, Layers, Play, RefreshCw, ChevronDown, Code2, FolderGit2, GitBranch, AppWindow, Columns2, GitCompareArrows, LayoutGrid, PanelRight, Settings2, Plus, Search, SquareTerminal, X, Sparkles, FolderPlus, FolderMinus, Palette, Pencil, FolderOpen, Trash2, ChevronRight, Files, Blocks, Boxes, Copy, Pin, ListX, TriangleAlert, Minus, Minimize2, ShieldOff } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { get, post } from "../lib/api";
   import { send } from "../lib/native";
@@ -20,7 +20,7 @@
   import AgentIcon from "../components/work/AgentIcon.svelte";
   import AgentPanel from "../components/work/AgentPanel.svelte";
   import Editor, { dirty, forget, keyOf } from "../components/work/Editor.svelte";
-  import FileTree from "../components/work/FileTree.svelte";
+  import FileTree, { type FsChange } from "../components/work/FileTree.svelte";
   import FileIcon from "../components/work/FileIcon.svelte";
   import DiffEditor from "../components/work/DiffEditor.svelte";
   import ScmView from "../components/work/ScmView.svelte";
@@ -202,6 +202,9 @@
   });
   let comparing = $state<string | null>(null);
   let asking = $state<{ preset?: any } | null>(null);
+  /** "Pedir à IA" (⌘⇧I, botão): o campo de pedido no painel da direita — Enter manda direto ao agente da conta do
+   *  projeto. O diálogo completo (issue, fluxos) abre pelo "Mais opções" do painel. */
+  function ask() { if (v) v.right = true; work.focusComposer(p?.id); }
   function asked(r: { projectId: string; taskId: string | null; termId?: string }) {
     asking = null;
     if (!v) return;
@@ -325,6 +328,33 @@
     if (v?.files.some(f => f.k === "diff" && f.path === path && f.scope === (v!.scope || null))) return;
     forget(key);
   }
+  /** O explorador moveu/renomeou (to) ou excluiu (to: null): a aba do arquivo vai junto para o caminho novo ou fecha;
+   *  diff do arquivo fecha (o "antes" mudou de nome). */
+  function fsChanged(changes: FsChange[]) {
+    if (!p || !v) return;
+    const scope = v.scope || null, within = (x: string, of: string) => x === of || x.startsWith(of + "/");
+    for (const c of changes) {
+      for (const f of v.files.filter(f => f.scope === scope && within(f.path, c.from))) {
+        const old = f.key;
+        if (f.k === "file" && c.to !== null) {
+          const path = c.to + f.path.slice(c.from.length), key = keyOf(p.id, v.scope, path);
+          // substituiu um arquivo que estava aberto: a aba dele dá lugar à que chegou
+          if (v.files.some(x => x.key === key)) { v.files = v.files.filter(x => x.key !== key); v.order = v.order.filter(k => k !== key); forget(key); }
+          v.files = v.files.map(x => (x.key === old ? { ...x, key, path } : x));
+          v.order = v.order.map(k => (k === old ? key : k));
+          if (v.active === old) v.active = key;
+          if (v.split === old) v.split = key;
+        } else {
+          v.files = v.files.filter(x => x.key !== old);
+          v.order = v.order.filter(k => k !== old);
+          if (v.active === old) v.active = null;
+          if (v.split === old) v.split = null;
+        }
+        if (f.k === "file") forget(old);
+      }
+      if (v.recent) v.recent = v.recent.flatMap(r => (!within(r, c.from) ? [r] : c.to === null ? [] : [c.to + r.slice(c.from.length)]));
+    }
+  }
   function pinTab(key: string) {
     const f = v?.files.find(x => x.key === key);
     if (f?.preview) f.preview = false;
@@ -383,7 +413,7 @@
     else if (matches(e, "mod+shift+m")) { e.preventDefault(); v.panel = !v.panel; }
     else if (matches(e, "mod+b")) { e.preventDefault(); v.leftOpen = !leftOpen; }
     else if (matches(e, "mod+t")) { e.preventDefault(); newTerm(); }
-    else if (matches(e, "mod+shift+i")) { e.preventDefault(); asking = {}; }
+    else if (matches(e, "mod+shift+i")) { e.preventDefault(); ask(); }
     else if (matches(e, "mod+w") && activeTab && (activeTab.kind === "term" || activeTab.kind === "file" || activeTab.kind === "diff")) { e.preventDefault(); closeTab(activeTab); }
     else {
       const n = "123456789".split("").find(d => matches(e, "mod+" + d));
@@ -430,7 +460,7 @@
   const tabMenu = (x: Project) => {
     const g = work.groupOf(x.id);
     return [
-      { label: "Pedir à IA…", icon: Sparkles, onclick: () => { go("/work/" + x.id, "soft"); asking = {}; } },
+      { label: "Pedir à IA…", icon: Sparkles, onclick: () => { go("/work/" + x.id, "soft"); if (views[x.id]) views[x.id].right = true; work.focusComposer(x.id); } },
       { label: "Abrir em janela própria", icon: AppWindow, onclick: () => popOut(x) },
       { label: "Ajustes do projeto", icon: Settings2, onclick: () => { go("/work/" + x.id, "soft"); settingsOpen = true; } },
       { separator: true },
@@ -485,7 +515,7 @@
                   {/each}
                 </div>
               {/if}
-              <button class="askcta" onclick={() => (asking = {})}><Sparkles size={18} /><span><b>Pedir à IA</b><span class="tiny muted">descreva a tarefa ou escolha uma issue — planejar, aprovar e implementar</span></span><span class="kbd">{kbd("mod+shift+i")}</span></button>
+              <button class="askcta" onclick={ask}><Sparkles size={18} /><span><b>Pedir à IA</b><span class="tiny muted">escreva o pedido no painel — Enter manda direto para o agente da conta do projeto</span></span><span class="kbd">{kbd("mod+shift+i")}</span></button>
               <div class="cards">
                 {#each work.ai.filter(a => a.installed).slice(0, 6) as a (a.id)}
                   <button class="cardbtn" onclick={() => newAgent(a.id)}><AgentIcon provider={a.provider} size={20} /><span><b>{a.label}</b><span class="tiny muted">{a.name}{a.email ? " · " + a.email : ""}</span></span></button>
@@ -509,6 +539,7 @@
     oncontextmenu={(e) => ui.contextMenu(e, tabMenu(x))}>
     <ProviderIcon provider={(x.provider as any) || null} size={13} />
     <span class="ell">{x.name}</span>
+    {#if x.settings?.bypass}<span class="byp" title="Pular permissões ligado: os agentes deste projeto não pedem permissão"><ShieldOff size={11} /></span>{/if}
     {#if n}<span class="badge warn" title="agente(s) precisando de você">{n}</span>{:else if busy}<span class="live" title="agente trabalhando"></span>{/if}
     <button class="x" title="Fechar projeto" onclick={(e) => { e.stopPropagation(); work.close(x.id); }}><X size={12} /></button>
   </div>
@@ -571,7 +602,7 @@
         <div class="side">
           <div class="tree">
             {#if v.left === "files" || v.left === "search"}
-              {#key p.id + (v.scope || "")}<FileTree repoId={p.id} taskId={v.scope} {gitRepo} mode={v.left} onopen={openFile} ondiff={(f) => openDiff(f, false)}
+              {#key p.id + (v.scope || "")}<FileTree repoId={p.id} taskId={v.scope} {gitRepo} mode={v.left} onopen={openFile} ondiff={(f) => openDiff(f, false)} onfs={fsChanged}
                 onterminal={(dir) => newTerm(dir ? `cd ${JSON.stringify(dir)}` : undefined)} active={revealDir || activeTab?.file?.path || null} />{/key}
             {:else if v.left === "scm"}
               {#key gitRepo}<ScmView {gitRepo} ondiff={openDiff} onopen={(f) => openFile(f, undefined, { preview: false })} />{/key}
@@ -624,7 +655,7 @@
                 onclick={() => (lastRun ? runCfg(lastRun.id) : null)}><Play size={13} /> <span class="ell lbl l-run">{lastRun ? lastRun.label : "Executar"}</span></button>
               <Menu items={runItems} align="right" label="O que executar">{#snippet trigger()}<span class="btn sm caret"><ChevronDown size={12} /></span>{/snippet}</Menu>
             </div>
-            <button class="btn sm ask" title={`Pedir à IA: planejar e/ou implementar (${kbd("mod+shift+i")})`} onclick={() => (asking = {})}><Sparkles size={14} /> <span class="lbl l-ask">Pedir à IA</span></button>
+            <button class="btn sm ask" title={`Pedir à IA (${kbd("mod+shift+i")})`} onclick={ask}><Sparkles size={14} /> <span class="lbl l-ask">Pedir à IA</span></button>
             <Menu items={agentItems} align="right">{#snippet trigger()}<span class="btn sm"><Bot size={14} /> <span class="lbl l-ag">Agente</span> <ChevronDown size={12} /></span>{/snippet}</Menu>
             <button class="btn sm ghost" title={`Novo terminal (${kbd("mod+t")})`} onclick={() => newTerm()}><SquareTerminal size={14} /></button>
             <button class="btn sm ghost icon" title="Painel do agente" onclick={() => (v.right = !v.right)}><PanelRight size={15} /></button>
@@ -704,7 +735,8 @@
       {#if v.right}
         <aside class="card right">
           <div class="hsplit l" role="separator" aria-orientation="vertical" title="Arraste para redimensionar" onpointerdown={(e) => drag(e, "right")}></div>
-          <AgentPanel project={p} {task} term={activeTerm} onremoved={() => setScope(null)} onreview={() => task && focusTab("r:" + task.id)} />
+          <AgentPanel project={p} {task} term={activeTerm} onremoved={() => setScope(null)} onreview={() => task && focusTab("r:" + task.id)}
+            onstarted={asked} onmore={(t) => (asking = { preset: t.trim() ? { text: t } : null })} />
         </aside>
       {/if}
     </div>
@@ -739,6 +771,7 @@
   .ptab .x, .tab .x { display: grid; place-items: center; width: 18px; height: 18px; border: 0; border-radius: 5px; background: none; color: var(--muted); cursor: pointer; opacity: 0; transition: opacity var(--t-fast); flex: none; }
   .ptab:hover .x, .ptab.on .x, .tab:hover .x, .tab.on .x { opacity: 1; }
   .ptab .x:hover, .tab .x:hover { background: var(--surface-3); color: var(--text); }
+  .ptab .byp { display: grid; place-items: center; color: var(--warn); flex: none; }
   .badge { font: 650 10.5px/1 var(--font); padding: 3px 6px; border-radius: 99px; background: var(--warn); color: #1a1205; }
   .live { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: ping 1.2s var(--ease) infinite; }
   @keyframes ping { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); } 80%, 100% { box-shadow: 0 0 0 6px transparent; } }
@@ -887,7 +920,9 @@
   .cardbtn { display: flex; align-items: center; gap: 12px; padding: 14px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--surface-2);
     color: var(--text); font: 13px var(--font); text-align: left; cursor: pointer; transition: border-color var(--t), transform var(--t) var(--spring); }
   .cardbtn:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .cardbtn { min-width: 0; overflow: hidden; }
   .cardbtn span { display: grid; min-width: 0; }
+  .cardbtn span span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cardbtn.accent { border-style: dashed; color: var(--accent); }
   .cardbtn :global(svg) { flex: none; }
   .keys { margin-top: 8px; }

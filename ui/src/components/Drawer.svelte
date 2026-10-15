@@ -1,8 +1,7 @@
 <script lang="ts">
   // Gaveta lateral (editores, formulários): entra deslizando com o fundo desfocado; Esc ou clique fora fecha.
   import { X } from "@lucide/svelte";
-  import { untrack, type Snippet } from "svelte";
-  import { store } from "../lib/store.svelte";
+  import type { Snippet } from "svelte";
 
   let { title, onclose, width = 620, children, footer = undefined, subtitle = "" }:
     { title: string; onclose: () => void; width?: number; children: Snippet; footer?: Snippet; subtitle?: string } = $props();
@@ -12,11 +11,12 @@
     closing = true;
     setTimeout(onclose, 190);
   }
+  // Não segura a atualização automática: a gaveta pode ficar aberta (detalhe de build/PR em janela estreita) e o que
+  // está por trás dela tem de continuar vivo. Os formulários guardam o rascunho no próprio estado.
   $effect(() => {
-    untrack(() => store.hold++);
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
     document.addEventListener("keydown", onKey);
-    return () => { untrack(() => store.hold--); document.removeEventListener("keydown", onKey); };
+    return () => document.removeEventListener("keydown", onKey);
   });
 </script>
 

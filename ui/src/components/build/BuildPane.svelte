@@ -16,11 +16,19 @@
   const waiting = $derived(store.s?.deploys.find(d => d.buildId === b.id && d.org === b.org));
 
   $effect(() => {
-    void b.key; void b.status; void b.result;
+    const key = b.key, running = b.status !== "completed";
+    void b.result;
     detail = null; error = null;
-    get("build", { key: b.key }).then(d => (detail = d)).catch(e => (error = e.message));
+    const load = () => get("build", { key }).then(d => { if (key === b.key) { detail = d; error = null; } }).catch(e => (error = e.message));
+    load();
+    if (!running) return;
+    // em andamento: as etapas e o que falhou se atualizam sozinhos (sem esperar o ciclo da lista)
+    const t = setInterval(() => { if (document.visibilityState === "visible") load(); }, 10000);
+    return () => clearInterval(t);
   });
   const failedRun = $derived(["failed", "partiallySucceeded", "canceled"].includes(b.result || ""));
+  /** já falhou uma etapa, mas o resto ainda roda: dá para corrigir com IA, mas "tentar de novo" só depois de terminar */
+  const failing = $derived(failedRun || b.phase?.state === "failing");
   /** Worktree na branch do build com um agente corrigindo — o prompt já leva o trecho do log de cada etapa que falhou. */
   function fixWithAi() {
     const logs = (detail?.failed || []).map((f: any) => `### ${f.name}\n${(f.logTail || "").slice(-4000)}`).join("\n\n");
@@ -37,9 +45,10 @@
 <div class="pane-h">
   <div class="small muted row"><ProviderIcon provider={b.provider} size={12} />{b.org}{#if b.folder} · {b.folder}{/if} · <span class="pill {st.cls}">{st.icon} {st.label}</span></div>
   <h2>{b.pipeline} <span class="muted">{b.number}</span></h2>
+  {#if st.detail}<div class="now {st.cls}">{st.detail}</div>{/if}
   <div class="acts">
-    {#if failedRun}<button class="btn sm primary" onclick={() => buildAction(b, "retry")}><RotateCcw size={13} /> Tentar de novo</button>
-      <button class="btn sm" title="Abre um worktree na branch com um agente corrigindo (o log vai junto)" onclick={fixWithAi}><Bot size={13} /> Corrigir com IA</button>{/if}
+    {#if failedRun}<button class="btn sm primary" onclick={() => buildAction(b, "retry")}><RotateCcw size={13} /> Tentar de novo</button>{/if}
+    {#if failing}<button class="btn sm" title="Abre um worktree na branch com um agente corrigindo (o log vai junto)" onclick={fixWithAi}><Bot size={13} /> Corrigir com IA</button>{/if}
     {#if b.status === "completed"}<button class="btn sm" onclick={() => buildAction(b, "rerun")}><Play size={13} /> Rodar de novo</button>{/if}
     {#if b.status !== "completed"}<button class="btn sm danger" onclick={() => buildAction(b, "cancel")}><Square size={12} /> Cancelar</button>{/if}
     {#if waiting}<a class="btn sm" href={"#/inbox/" + encodeURIComponent(waiting.key)}>{waiting.kind === "permission" ? "Ver permissão" : "Ver aprovação"}</a>{/if}
@@ -77,6 +86,8 @@
 <style>
   .pane-h { padding: 16px 18px 14px; border-bottom: 1px solid var(--line); }
   h2 { margin: 6px 0 4px; font-size: 16.5px; letter-spacing: -0.015em; }
+  .now { font-size: 12.5px; color: var(--text-2); }
+  .now.bad { color: var(--bad); } .now.warn { color: var(--warn); }
   .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
   .pane-b { padding: 10px 18px 18px; }
   h4 { margin: 18px 0 8px; font: 650 10.5px/1 var(--font); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }

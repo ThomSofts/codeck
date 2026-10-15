@@ -1,23 +1,35 @@
+<script lang="ts" module>
+  /** O que mudou de lugar (to) ou foi excluído (to: null) — as abas abertas acompanham */
+  export type FsChange = { from: string; to: string | null };
+</script>
+
 <script lang="ts">
-  // Explorador (como o do VS Code): arquivos do projeto/tarefa (git ls-files: versionados + novos não ignorados) em
-  // árvore, com as cores do Git (M alterado, U novo, D apagado, A adicionado, ! conflito — a pasta herda a cor), ícones do
-  // tema de ícones, menu de contexto (novo, renomear, excluir, copiar caminho, abrir alterações) e teclado (↑↓ ←→ Enter F2).
+  // Explorador (como o do VS Code): arquivos do projeto/tarefa (git ls-files: versionados + novos não ignorados, e as
+  // pastas vazias) em árvore, com as cores do Git (M alterado, U novo, D apagado, A adicionado, ! conflito — a pasta herda a
+  // cor), ícones do tema de ícones, menu de contexto (novo, recortar/copiar/colar, duplicar, renomear, excluir, caminho,
+  // abrir alterações) e teclado (↑↓ ←→ Enter F2 ⌘X ⌘C ⌘V ⌘⌫ — Ctrl no Windows). Seleção múltipla com ⌘/⇧-clique.
+  // Arrastar move (com ⌥/Ctrl copia) para outra pasta; arrastar do Finder/Explorer copia para dentro do projeto.
   // Clique abre em "visualização" (a aba é reaproveitada); duplo clique fixa. Também a busca no conteúdo.
   // Pastas abrem sob demanda e a árvore é indexada uma vez por leitura — projeto com dezenas de milhares de arquivos continua leve.
-  import { CaseSensitive, ChevronRight, ChevronsDownUp, Copy, FilePlus2, FolderOpen, FolderPlus, GitCompareArrows, Pencil, Regex, RefreshCw, Search, SquareTerminal, Trash2, X } from "@lucide/svelte";
+  import { CaseSensitive, ChevronRight, ChevronsDownUp, ClipboardPaste, Copy, CopyPlus, FilePlus2, FolderOpen, FolderPlus, GitCompareArrows, Pencil, Regex, RefreshCw, Scissors, Search, SquareTerminal, Trash2, X } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { get, post } from "../../lib/api";
+  import { isMac, kbd, matches as isKey } from "../../lib/keys";
   import { fileManagerName } from "../../lib/native";
   import { folderDecor, scm } from "../../lib/scm.svelte";
   import { icons } from "../../lib/fileicons.svelte";
   import { ui } from "../../lib/ui.svelte";
+  import { dirty, docs, keyOf, saveDoc } from "./Editor.svelte";
   import FileIcon from "./FileIcon.svelte";
 
   type OpenOpts = { preview?: boolean };
-  let { repoId, taskId = null, gitRepo = null, mode = "files", onopen, ondiff, onterminal, active = null }:
+  let { repoId, taskId = null, gitRepo = null, mode = "files", onopen, ondiff, onterminal, onfs, active = null }:
     { repoId: string; taskId?: string | null; gitRepo?: string | null; mode?: "files" | "search"; onopen: (path: string, line?: number, o?: OpenOpts) => void;
-      ondiff?: (path: string) => void; onterminal?: (dir: string) => void; active?: string | null } = $props();
+      ondiff?: (path: string) => void; onterminal?: (dir: string) => void; onfs?: (changes: FsChange[]) => void; active?: string | null } = $props();
   let all = $state<string[]>([]);
+  // pastas vazias: as que o backend achou e as criadas aqui (pasta vazia dentro de pasta nova o git não mostra)
+  let emptyDirs = $state<string[]>([]);
+  let ghosts = $state<string[]>([]);
   let root = $state("");
   let open = $state<Record<string, boolean>>({});
   let q = $state("");
@@ -33,6 +45,10 @@
   let listEl: HTMLDivElement | undefined = $state();
   // criação/renomeação em linha: { at: pasta-mãe ("" = raiz), kind, path?: o que está sendo renomeado }
   let edit = $state<{ at: string; kind: "file" | "folder" | "rename"; path?: string; value: string } | null>(null);
+  // seleção (⌘/Ctrl-clique alterna, ⇧-clique estende a partir da âncora) e a área de transferência do explorador
+  let sel = $state<string[]>([]);
+  let anchor: string | null = null;
+  let clip = $state<{ cut: boolean; paths: string[] } | null>(null);
 
   // As props chegam como getters que releem o projeto a cada leitura do /api/ws (2,5 s). O efeito depende só desta
   // chave: antes ele rodava a cada leitura e zerava as pastas abertas ("a árvore fechava sozinha").
@@ -59,10 +75,12 @@
     if (!silent) loading = true;
     const k = scope;
     try {
-      const r = await get<{ files: string[]; root: string }>("ws/files", { repoId, taskId });
+      const r = await get<{ files: string[]; root: string; dirs?: string[] }>("ws/files", { repoId, taskId, dirs: 1 });
       if (k !== scope) return;
       const files = r.files.sort((a, b) => a.localeCompare(b));
       if (files.length !== all.length || files.some((f, i) => f !== all[i])) all = files;
+      const dirs = (r.dirs || []).sort();
+      if (dirs.join("\0") !== emptyDirs.join("\0")) emptyDirs = dirs;
       root = r.root;
     }
     catch (e) { if (!silent) ui.error(e); }
@@ -120,6 +138,10 @@
       }
       ensure(acc).files.push(f);
     }
+    for (const g of new Set([...emptyDirs, ...ghosts])) {
+      let acc = "";
+      for (const part of g.split("/").filter(Boolean)) { const parent = acc; acc += part + "/"; if (!dirs.has(acc)) { ensure(parent).dirs.push(acc); ensure(acc); } }
+    }
     const cmp = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true });
     for (const d of dirs.values()) { d.dirs.sort(cmp); d.files.sort((a, b) => cmp(a.split("/").pop()!, b.split("/").pop()!)); }
     return { dirs, files };
@@ -160,13 +182,39 @@
       .sort((a, b) => score(a) - score(b) || a.length - b.length).slice(0, 300);
   });
   const visible = $derived<Row[]>(q.trim() ? matches.map(f => ({ path: f, name: f.split("/").pop()!, dir: false, depth: 0 })) : rows);
+  const rowBy = $derived(new Map(visible.map(r => [r.path, r])));
 
-  // ------------------------------------------------------------ teclado
+  // ------------------------------------------------------------ seleção e teclado
+  const scrollTo = (path: string) => listEl?.querySelector(`[data-p="${CSS.escape(path)}"]`)?.scrollIntoView({ block: "nearest" });
+  function range(a: string, b: string) {
+    const i = visible.findIndex(r => r.path === a), j = visible.findIndex(r => r.path === b);
+    if (i < 0 || j < 0) return [b];
+    return visible.slice(Math.min(i, j), Math.max(i, j) + 1).map(r => r.path);
+  }
+  function pick(path: string, e?: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) {
+    const add = e && (isMac() ? e.metaKey : e.ctrlKey);
+    if (e?.shiftKey && anchor) sel = range(anchor, path);
+    else if (add) { sel = sel.includes(path) ? sel.filter(x => x !== path) : [...sel, path]; anchor = path; }
+    else { sel = [path]; anchor = path; }
+    cursor = path;
+  }
+  /** Alvo de uma ação na linha: a seleção inteira se a linha faz parte dela; senão só a linha. Sem item dentro de pasta
+   *  que também foi escolhida (mover a pasta já leva ele). */
+  function targets(path: string | null): string[] {
+    const list = path && !(sel.length > 1 && sel.includes(path)) ? [path] : sel.length ? sel : path ? [path] : [];
+    return list.filter(p => !list.some(q => q !== p && q.endsWith("/") && p.startsWith(q)));
+  }
   function onKey(e: KeyboardEvent) {
     if (edit || (e.target as HTMLElement).closest("input")) return;
     const i = visible.findIndex(r => r.path === cursor);
     const r = visible[i];
-    const move = (j: number) => { const n = visible[Math.max(0, Math.min(visible.length - 1, j))]; if (n) { cursor = n.path; listEl?.querySelector(`[data-p="${CSS.escape(n.path)}"]`)?.scrollIntoView({ block: "nearest" }); } };
+    const move = (j: number) => {
+      const n = visible[Math.max(0, Math.min(visible.length - 1, j))];
+      if (!n) return;
+      if (e.shiftKey && anchor) { sel = range(anchor, n.path); cursor = n.path; } else pick(n.path);
+      scrollTo(n.path);
+    };
+    const done = () => { e.preventDefault(); e.stopPropagation(); };
     if (e.key === "ArrowDown") { e.preventDefault(); move(i + 1); }
     else if (e.key === "ArrowUp") { e.preventDefault(); move(i - 1); }
     else if (e.key === "ArrowRight" && r?.dir) { e.preventDefault(); if (!open[r.path]) toggleDir(r.path, true); else move(i + 1); }
@@ -177,20 +225,72 @@
     }
     else if (e.key === "Enter" && r) { e.preventDefault(); if (r.dir) toggleDir(r.path); else onopen(r.path, undefined, { preview: false }); }
     else if (e.key === " " && r && !r.dir) { e.preventDefault(); onopen(r.path, undefined, { preview: true }); }
-    else if (e.key === "F2" && r) { e.preventDefault(); startRename(r.path, r.dir); }
-    else if ((e.key === "Delete" || (e.key === "Backspace" && (e.metaKey || e.ctrlKey))) && r) { e.preventDefault(); remove(r.path, r.dir); }
+    else if (e.key === "F2" && r) { e.preventDefault(); startRename(r.path); }
+    else if ((e.key === "Delete" || (e.key === "Backspace" && (e.metaKey || e.ctrlKey))) && (r || sel.length)) { done(); remove(targets(cursor)); }
+    else if (isKey(e, "mod+c") && (r || sel.length)) { done(); toClip(targets(cursor), false); }
+    else if (isKey(e, "mod+x") && (r || sel.length)) { done(); toClip(targets(cursor), true); }
+    else if (isKey(e, "mod+v") && clip) { done(); paste(cursor ? dirOf(cursor, cursor.endsWith("/")) : ""); }
+    else if (isKey(e, "mod+a")) { done(); sel = visible.map(x => x.path); }
+    else if (e.key === "Escape" && (clip?.cut || sel.length > 1)) { done(); if (clip?.cut) clip = null; else if (cursor) sel = [cursor]; }
   }
 
-  // ------------------------------------------------------------ arquivos: criar, renomear, excluir
+  // ------------------------------------------------------------ arquivos: criar, renomear, mover, copiar, excluir
   const dirOf = (p: string, dir: boolean) => (dir ? p : p.replace(/[^/]+$/, ""));
+  const strip = (p: string) => p.replace(/\/$/, "");
+  const base = (p: string) => strip(p).split("/").pop()!;
+  const parentOf = (p: string) => strip(p).replace(/[^/]+$/, "");
+  /** p é a própria `of` (sem a barra final) ou está dentro dela */
+  const within = (p: string, of: string) => p === of || p.startsWith(of + "/");
+  function touched() { if (gitRepo) scm.touch(gitRepo); }
+  /** Depois de criar/colar/mover: relê, abre as pastas de destino e seleciona o que chegou */
+  async function landed(paths: string[], dirs: Set<string> = new Set()) {
+    await load(true);
+    touched();
+    const next = { ...open };
+    for (const p of paths) { let acc = ""; for (const part of p.split("/").slice(0, -1)) { acc += part + "/"; next[acc] = true; } }
+    open = next; saveOpen();
+    const rowsOf = paths.map(p => (dirs.has(p) || index.dirs.has(p + "/") ? p + "/" : p));
+    if (rowsOf.length) { sel = rowsOf; anchor = cursor = rowsOf[0]; requestAnimationFrame(() => scrollTo(rowsOf[0])); }
+  }
+  /** Pastas vazias criadas aqui acompanham o que foi movido/excluído */
+  function remapGhosts(changes: FsChange[]) {
+    let g = ghosts;
+    for (const c of changes) g = g.flatMap(x => (within(strip(x), c.from) ? (c.to === null ? [] : [c.to + strip(x).slice(c.from.length) + "/"]) : [x]));
+    ghosts = g;
+  }
+  function changed(changes: FsChange[]) {
+    if (!changes.length) return;
+    remapGhosts(changes);
+    if (clip) clip = { ...clip, paths: clip.paths.flatMap(p => { const c = changes.find(c => within(strip(p), c.from)); return !c ? [p] : c.to === null ? [] : [c.to + p.slice(c.from.length)]; }) };
+    onfs?.(changes);
+  }
+  /** Arquivos abertos com alteração não salva dentro de `paths` */
+  function dirtyIn(paths: string[]) {
+    const roots = paths.map(strip);
+    return [...docs.entries()].filter(([k, d]) => dirty[k] && d.repoId === repoId && (d.taskId || null) === (taskId || null) && roots.some(r => within(d.rel, r)))
+      .map(([, d]) => d);
+  }
+  /** Mover/renomear arquivo com alteração não salva: salva antes (com a sua confirmação) — senão a aba perderia a edição */
+  async function saveBefore(paths: string[]) {
+    const ds = dirtyIn(paths);
+    if (!ds.length) return true;
+    const names = ds.map(d => d.rel.split("/").pop()).join(", ");
+    if (!(await ui.ask({ title: `${names} ${ds.length === 1 ? "tem" : "têm"} alterações não salvas`, message: "Salvar antes de mover?", confirm: "Salvar e mover" }))) return false;
+    try { for (const d of ds) await saveDoc(d); return true; } catch (e) { ui.error(e); return false; }
+  }
+
   function startNew(kind: "file" | "folder", at: string) {
     if (at) toggleDir(at, true);
     edit = { at, kind, value: "" };
     q = "";
   }
-  function startRename(path: string, dir: boolean) {
-    const name = path.replace(/\/$/, "").split("/").pop()!;
-    edit = { at: dirOf(path.replace(/\/$/, ""), false), kind: "rename", path: dir ? path : path, value: name };
+  /** Campo de nome: pega o foco (o `autofocus` do Svelte não tira o foco da lista, então o F2 não deixava digitar) e
+   *  seleciona o nome sem a extensão, como no VS Code */
+  function grab(i: HTMLInputElement) {
+    requestAnimationFrame(() => { i.focus(); const dot = i.value.lastIndexOf("."); i.setSelectionRange(0, dot > 0 ? dot : i.value.length); });
+  }
+  function startRename(path: string) {
+    edit = { at: dirOf(strip(path), false), kind: "rename", path, value: base(path) };
   }
   async function commitEdit() {
     const e = edit;
@@ -200,46 +300,257 @@
     if (!v) return;
     try {
       if (e.kind === "rename") {
-        const from = e.path!.replace(/\/$/, ""), to = e.at + v;
+        const from = strip(e.path!), to = e.at + v;
         if (to === from) return;
+        if (!(await saveBefore([from]))) return;
         await post("ws/fs/rename", { repoId, taskId, from, to });
-        await load(true);
-        ui.toast("Renomeado");
+        changed([{ from, to }]);
+        await landed([to], new Set(e.path!.endsWith("/") ? [to] : []));
       } else {
-        const path = e.at + v;
+        const path = strip(e.at + v);
         await post("ws/fs/create", { repoId, taskId, path, folder: e.kind === "folder" });
-        await load(true);
+        if (e.kind === "folder") ghosts = [...ghosts, path + "/"];
+        await landed([path], new Set(e.kind === "folder" ? [path] : []));
         if (e.kind === "file") onopen(path, undefined, { preview: false });
-        else toggleDir(path.replace(/\/?$/, "/"), true);
       }
-      if (gitRepo) scm.touch(gitRepo);
     } catch (err) { ui.error(err); }
   }
-  async function remove(path: string, dir: boolean) {
-    const name = path.replace(/\/$/, "");
-    if (!(await ui.ask({ title: `Excluir ${name.split("/").pop()}${dir ? " e tudo dentro dela" : ""}?`, message: "Vai para a Lixeira — dá para recuperar de lá.", confirm: "Mover para a Lixeira", danger: true }))) return;
-    try { await post("ws/fs/delete", { repoId, taskId, path: name }); await load(true); if (gitRepo) scm.touch(gitRepo); ui.toast("Movido para a Lixeira"); }
-    catch (e) { ui.error(e); }
+  async function remove(paths: string[]) {
+    if (!paths.length) return;
+    const one = paths.length === 1, dir = paths[0].endsWith("/");
+    const unsaved = dirtyIn(paths).length;
+    if (!(await ui.ask({ title: one ? `Excluir ${base(paths[0])}${dir ? " e tudo dentro dela" : ""}?` : `Excluir ${paths.length} itens?`,
+      message: "Vai para a Lixeira — dá para recuperar de lá." + (unsaved ? ` ${unsaved === 1 ? "Um arquivo aberto tem" : `${unsaved} arquivos abertos têm`} alterações não salvas, que serão perdidas.` : ""),
+      detail: one ? undefined : paths.slice(0, 12).map(strip), confirm: "Mover para a Lixeira", danger: true }))) return;
+    try {
+      const r = await post<{ paths: string[] }>("ws/fs/delete", { repoId, taskId, paths: paths.map(strip) });
+      changed(r.paths.map(p => ({ from: p, to: null })));
+      sel = [];
+      await load(true); touched();
+      ui.toast(one ? "Movido para a Lixeira" : `${r.paths.length} itens movidos para a Lixeira`);
+    } catch (e) { ui.error(e); await load(true); }
   }
+  function toClip(paths: string[], cut: boolean) {
+    if (!paths.length) return;
+    clip = { cut, paths };
+    ui.toast(`${paths.length === 1 ? base(paths[0]) : paths.length + " itens"} ${cut ? "recortado" : "copiado"}${paths.length === 1 ? "" : "s"} — cole com ${kbd("mod+v")}`, "info");
+  }
+  async function paste(at: string) {
+    const c = clip;
+    if (!c?.paths.length) return;
+    if (c.cut) { if (await moveTo(c.paths, at)) clip = null; return; }
+    await copyTo(c.paths, at);
+  }
+  /** Copia para a pasta `at` ("" = raiz). Nome repetido vira "nome copy.ext", como no VS Code. */
+  async function copyTo(paths: string[], at: string) {
+    try {
+      const r = await post<{ copied: { from: string; to: string }[] }>("ws/fs/copy", { repoId, taskId, paths: paths.map(strip), dest: strip(at) });
+      await landed(r.copied.map(x => x.to), new Set(r.copied.filter((x, i) => paths[i]?.endsWith("/")).map(x => x.to)));
+      return true;
+    } catch (e) { ui.error(e); await load(true); return false; }
+  }
+  async function duplicate(paths: string[]) {
+    const out: string[] = [], dirs = new Set<string>();
+    try {
+      for (const p of paths) {
+        const r = await post<{ copied: { to: string }[] }>("ws/fs/copy", { repoId, taskId, paths: [strip(p)], dest: strip(parentOf(p)) });
+        for (const x of r.copied) { out.push(x.to); if (p.endsWith("/")) dirs.add(x.to); }
+      }
+    } catch (e) { ui.error(e); }
+    await landed(out, dirs);
+  }
+  /** Move para a pasta `at`. Nome que já existe lá: pergunta antes de substituir (o que estava vai para a Lixeira). */
+  async function moveTo(paths: string[], at: string) {
+    const dest = strip(at);
+    const bad = paths.find(p => p.endsWith("/") && within(dest, strip(p)));
+    if (bad) { ui.toast(`Não dá para mover ${base(bad)} para dentro dela mesma`, "error"); return false; }
+    paths = paths.filter(p => parentOf(p) !== (dest ? dest + "/" : ""));
+    if (!paths.length) return true;
+    if (!(await saveBefore(paths))) return false;
+    try {
+      const body = { repoId, taskId, paths: paths.map(strip), dest };
+      let r = await post<{ moved: { from: string; to: string }[]; conflicts: string[] }>("ws/fs/move", body);
+      if (r.conflicts.length) {
+        const one = r.conflicts.length === 1;
+        if (!(await ui.ask({ title: one ? `Já existe ${base(r.conflicts[0])} em ${dest ? base(dest) : "raiz do projeto"}` : `${r.conflicts.length} itens já existem em ${dest ? base(dest) : "raiz do projeto"}`,
+          message: "Substituir? O que está lá vai para a Lixeira.", detail: one ? undefined : r.conflicts.slice(0, 12), confirm: "Substituir", danger: true }))) return false;
+        r = await post("ws/fs/move", { ...body, overwrite: true });
+      }
+      changed(r.moved.map(m => ({ from: m.from, to: m.to })));
+      await landed(r.moved.map(m => m.to), new Set(r.moved.filter(m => index.dirs.has(m.from + "/") || ghosts.includes(m.to + "/")).map(m => m.to)));
+      return true;
+    } catch (e) { ui.error(e); await load(true); return false; }
+  }
+
+  // ------------------------------------------------------------ arrastar e soltar
+  // De dentro da árvore: move para a pasta sob o cursor (⌥ no Mac / Ctrl no Windows copia). De fora (Finder/Explorer): a
+  // WebView entrega só o conteúdo (File), sem caminho — as pastas são percorridas aqui e enviadas em pedaços ao backend.
+  const DRAG = "application/x-codeck-paths";
+  const MAX_DROP = 200 * 1024 * 1024, MAX_ITEMS = 5000, CHUNK = 2 * 1024 * 1024;
+  let dragging = $state<string[] | null>(null);
+  let dropAt = $state<string | null>(null);   // pasta de destino em destaque ("" = raiz)
+  let hoverDir: string | null = null;
+  let hoverTimer: ReturnType<typeof setTimeout> | undefined;
+  let leaveTimer: ReturnType<typeof setTimeout> | undefined;
+  const isCopy = (e: DragEvent) => (isMac() ? e.altKey : e.ctrlKey);
+  function dragStart(e: DragEvent, r: Row) {
+    if (edit) return e.preventDefault();
+    if (!sel.includes(r.path)) pick(r.path);
+    const paths = targets(r.path);
+    dragging = paths;
+    e.dataTransfer?.setData(DRAG, JSON.stringify(paths));
+    e.dataTransfer?.setData("text/plain", paths.map(abs).join("\n"));   // soltar no terminal/editor escreve o caminho
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "copyMove";
+  }
+  function dragEnd() { dragging = null; dropAt = null; clearTimeout(hoverTimer); hoverDir = null; }
+  /** Pasta onde a soltura cai: a própria linha se for pasta; senão a pasta do arquivo; fora das linhas, a raiz */
+  function dropDir(e: DragEvent) {
+    const el = (e.target as HTMLElement).closest<HTMLElement>("[data-p]");
+    const r = el ? rowBy.get(el.dataset.p!) : null;
+    return { r, at: r ? dirOf(r.path, r.dir) : "" };
+  }
+  function dragOver(e: DragEvent) {
+    const dt = e.dataTransfer;
+    if (!dt || q.trim()) return;
+    const external = !dragging && [...dt.types].includes("Files");
+    if (!dragging && !external) return;
+    const { r, at } = dropDir(e);
+    // pasta para dentro dela mesma, ou mover para onde já está: não aceita a soltura
+    if (dragging && (dragging.some(p => p.endsWith("/") && within(strip(at), strip(p))) || (!isCopy(e) && dragging.every(p => parentOf(p) === at)))) {
+      dt.dropEffect = "none"; dropAt = null; return;
+    }
+    e.preventDefault();
+    clearTimeout(leaveTimer);
+    dt.dropEffect = external || isCopy(e) ? "copy" : "move";
+    dropAt = at;
+    // pasta fechada sob o cursor abre depois de um instante, como no VS Code
+    const hd = r?.dir && !open[r.path] ? r.path : null;
+    if (hd !== hoverDir) { clearTimeout(hoverTimer); hoverDir = hd; if (hd) hoverTimer = setTimeout(() => { if (hoverDir === hd) toggleDir(hd, true); }, 600); }
+  }
+  function dragLeave() {
+    // o dragleave dispara a cada filho cruzado (e sem relatedTarget no WebKit): só some se o dragover não voltar logo
+    clearTimeout(leaveTimer);
+    leaveTimer = setTimeout(() => { dropAt = null; clearTimeout(hoverTimer); hoverDir = null; }, 120);
+  }
+  async function onDrop(e: DragEvent) {
+    const dt = e.dataTransfer;
+    if (!dt || dropAt === null) return;
+    e.preventDefault();
+    const at = dropAt, copy = isCopy(e);
+    let inner: string[] | null = dragging;
+    try { inner ??= dt.getData(DRAG) ? JSON.parse(dt.getData(DRAG)) : null; } catch { inner = null; }
+    // as entradas do Finder/Explorer só valem durante o evento: pega já, percorre depois
+    const entries = inner ? [] : [...dt.items].filter(i => i.kind === "file").map(i => (i as any).webkitGetAsEntry?.() as FileSystemEntry | null);
+    const files = inner ? [] : [...dt.files];
+    dragEnd();
+    if (inner) { if (copy) await copyTo(inner, at); else await moveTo(inner, at); }
+    else await importExternal(entries.every(Boolean) && entries.length ? entries as FileSystemEntry[] : null, files, at);
+  }
+
+  type Incoming = { rel: string; file?: File; dir?: boolean };
+  const SKIP = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);   // lixo do sistema não vem junto
+  async function walk(entry: FileSystemEntry, rel: string, out: Incoming[]) {
+    if (out.length > MAX_ITEMS) throw new Error(`Mais de ${MAX_ITEMS} itens — copie pelo Finder/Explorer`);
+    if (entry.isFile) {
+      if (SKIP.has(entry.name)) return;
+      out.push({ rel, file: await new Promise<File>((ok, fail) => (entry as FileSystemFileEntry).file(ok, fail)) });
+    } else if (entry.isDirectory) {
+      out.push({ rel, dir: true });
+      const reader = (entry as FileSystemDirectoryEntry).createReader();
+      for (;;) {
+        const batch = await new Promise<FileSystemEntry[]>((ok, fail) => reader.readEntries(ok, fail));   // vem em lotes (~100)
+        if (!batch.length) break;
+        for (const c of batch) await walk(c, rel + "/" + c.name, out);
+      }
+    }
+  }
+  function b64(buf: ArrayBuffer) {
+    const u = new Uint8Array(buf);
+    let s = "";
+    for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  async function importExternal(entries: FileSystemEntry[] | null, files: File[], at: string) {
+    const dest = strip(at);
+    const prog = ui.progress("Lendo o que foi solto…");
+    try {
+      // cada item solto ganha um nome livre na pasta de destino ("nome copy.ext" se já existe) — nunca sobrescreve
+      const tops: { name: string; items: Incoming[] }[] = [];
+      if (entries) for (const en of entries) { const items: Incoming[] = []; await walk(en, en.name, items); tops.push({ name: en.name, items }); }
+      else for (const f of files) tops.push({ name: f.name, items: [{ rel: f.name, file: f }] });
+      const items = tops.flatMap(t => t.items);
+      const total = items.reduce((n, x) => n + (x.file?.size || 0), 0);
+      if (!items.length) return prog.done("Nada para copiar");
+      if (total > MAX_DROP) throw new Error(`Grande demais para soltar aqui (${Math.round(total / 1048576)} MB, o limite é ${MAX_DROP / 1048576} MB) — copie pelo ${fileManagerName()}`);
+      const nFiles = items.filter(x => x.file).length;
+      let sent = 0;
+      const landedPaths: string[] = [], dirs = new Set<string>();
+      for (const t of tops) {
+        const { path: top } = await post<{ path: string }>("ws/fs/free", { repoId, taskId, dest, name: t.name }, { quiet: true });
+        landedPaths.push(top);
+        for (const it of t.items) {
+          const rel = top + it.rel.slice(t.name.length);
+          if (it.dir) { if (rel === top) dirs.add(top); await post("ws/fs/upload", { repoId, taskId, path: rel, folder: true }, { quiet: true }); ghosts = [...ghosts, rel + "/"]; continue; }
+          const f = it.file!;
+          let off = 0;
+          do {
+            const data = b64(await f.slice(off, off + CHUNK).arrayBuffer());
+            await post("ws/fs/upload", { repoId, taskId, path: rel, data, offset: off }, { quiet: true });
+            off += CHUNK; sent += Math.min(CHUNK, f.size - (off - CHUNK));
+            prog.update(`Copiando ${nFiles} arquivo${nFiles === 1 ? "" : "s"}… ${total ? Math.round((sent / total) * 100) : 100}%`);
+          } while (off < f.size);
+        }
+      }
+      await landed(landedPaths, dirs);
+      prog.done(`${nFiles} arquivo${nFiles === 1 ? "" : "s"} copiado${nFiles === 1 ? "" : "s"} para ${dest ? base(dest) : "a raiz do projeto"}`);
+    } catch (e) { prog.fail(e); await load(true); }
+  }
+  // soltar arquivo fora da árvore não pode abrir o arquivo no lugar do app (a WebView navegaria para ele)
+  $effect(() => {
+    const guard = (e: DragEvent) => { if (!e.defaultPrevented && e.dataTransfer && [...e.dataTransfer.types].includes("Files")) { e.preventDefault(); if (e.type === "dragover") e.dataTransfer.dropEffect = "none"; } };
+    window.addEventListener("dragover", guard);
+    window.addEventListener("drop", guard);
+    return () => { window.removeEventListener("dragover", guard); window.removeEventListener("drop", guard); };
+  });
+
   const abs = (p: string) => (root.replace(/[\\/]$/, "") + "/" + p.replace(/\/$/, "")).replace(/\//g, root.includes("\\") ? "\\" : "/");
   async function copy(t: string, msg: string) { try { await navigator.clipboard.writeText(t); ui.toast(msg); } catch (e) { ui.error(e); } }
+  const delKbd = () => (isMac() ? kbd("mod+backspace") : "Del");
   function rowMenu(r: Row) {
-    const at = dirOf(r.path, r.dir), d = decor.get(r.path);
+    if (!sel.includes(r.path)) pick(r.path);
+    const at = dirOf(r.path, r.dir), d = decor.get(r.path), ts = targets(r.path), many = ts.length > 1;
     return [
-      ...(!r.dir ? [{ label: "Abrir", onclick: () => onopen(r.path, undefined, { preview: false }) }] : []),
-      ...(!r.dir && d && ondiff ? [{ label: "Abrir alterações", icon: GitCompareArrows, onclick: () => ondiff!(r.path) }] : []),
+      ...(!r.dir && !many ? [{ label: "Abrir", onclick: () => onopen(r.path, undefined, { preview: false }) }] : []),
+      ...(!r.dir && !many && d && ondiff ? [{ label: "Abrir alterações", icon: GitCompareArrows, onclick: () => ondiff!(r.path) }] : []),
       { separator: true },
       { label: "Novo arquivo…", icon: FilePlus2, onclick: () => startNew("file", at) },
       { label: "Nova pasta…", icon: FolderPlus, onclick: () => startNew("folder", at) },
       { separator: true },
-      { label: "Renomear…", icon: Pencil, kbd: "F2", onclick: () => startRename(r.path, r.dir) },
-      { label: "Excluir", icon: Trash2, danger: true, onclick: () => remove(r.path, r.dir) },
+      { label: "Recortar", icon: Scissors, kbd: kbd("mod+x"), onclick: () => toClip(ts, true) },
+      { label: "Copiar", icon: Copy, kbd: kbd("mod+c"), onclick: () => toClip(ts, false) },
+      { label: clip && clip.paths.length > 1 ? `Colar ${clip.paths.length} itens` : "Colar", icon: ClipboardPaste, kbd: kbd("mod+v"), disabled: !clip?.paths.length, onclick: () => paste(at) },
+      { label: "Duplicar", icon: CopyPlus, onclick: () => duplicate(ts) },
       { separator: true },
-      { label: "Copiar caminho", icon: Copy, onclick: () => copy(abs(r.path), "Caminho copiado") },
-      { label: "Copiar caminho relativo", icon: Copy, onclick: () => copy(r.path.replace(/\/$/, ""), "Caminho relativo copiado") },
+      ...(!many ? [{ label: "Renomear…", icon: Pencil, kbd: "F2", onclick: () => startRename(r.path) }] : []),
+      { label: many ? `Excluir ${ts.length} itens` : "Excluir", icon: Trash2, kbd: delKbd(), danger: true, onclick: () => remove(ts) },
+      { separator: true },
+      { label: many ? "Copiar caminhos" : "Copiar caminho", icon: Copy, onclick: () => copy(ts.map(abs).join("\n"), many ? "Caminhos copiados" : "Caminho copiado") },
+      { label: many ? "Copiar caminhos relativos" : "Copiar caminho relativo", icon: Copy, onclick: () => copy(ts.map(strip).join("\n"), "Caminho relativo copiado") },
       { label: `Revelar no ${fileManagerName()}`, icon: FolderOpen, onclick: () => post("open", { path: abs(r.path), target: "files" }).catch(ui.error) },
-      ...(onterminal ? [{ label: "Abrir no terminal integrado", icon: SquareTerminal, onclick: () => onterminal!(at.replace(/\/$/, "")) }] : []),
+      ...(onterminal ? [{ label: "Abrir no terminal integrado", icon: SquareTerminal, onclick: () => onterminal!(strip(at)) }] : []),
     ];
+  }
+  /** Clique direito no vazio da lista: ações na raiz do projeto */
+  function rootMenu(e: MouseEvent) {
+    if ((e.target as HTMLElement).closest("[data-p], input")) return;
+    ui.contextMenu(e, [
+      { label: "Novo arquivo…", icon: FilePlus2, onclick: () => startNew("file", "") },
+      { label: "Nova pasta…", icon: FolderPlus, onclick: () => startNew("folder", "") },
+      { separator: true },
+      { label: "Colar", icon: ClipboardPaste, kbd: kbd("mod+v"), disabled: !clip?.paths.length, onclick: () => paste("") },
+      { separator: true },
+      { label: `Revelar no ${fileManagerName()}`, icon: FolderOpen, onclick: () => post("open", { path: root, target: "files" }).catch(ui.error) },
+    ]);
   }
 
   // ------------------------------------------------------------ busca no conteúdo
@@ -275,10 +586,9 @@
   <div class="n editing" style="--d:{depth}">
     <span class="sp"></span>
     <FileIcon name={edit?.kind === "folder" ? "pasta" : edit?.value || "arquivo"} dir={edit?.kind === "folder"} size={15} />
-    <!-- svelte-ignore a11y_autofocus -->
-    <input class="ren" autofocus bind:value={edit!.value} placeholder={edit?.kind === "folder" ? "nome da pasta" : edit?.kind === "file" ? "nome do arquivo (pode ter pastas/)" : ""}
-      onkeydown={(e) => { if (e.key === "Enter") commitEdit(); else if (e.key === "Escape") edit = null; e.stopPropagation(); }} onblur={commitEdit}
-      onfocus={(e) => { const i = (e.currentTarget as HTMLInputElement); const dot = i.value.lastIndexOf("."); i.setSelectionRange(0, dot > 0 ? dot : i.value.length); }} />
+    <input class="ren" use:grab bind:value={edit!.value} placeholder={edit?.kind === "folder" ? "nome da pasta" : edit?.kind === "file" ? "nome do arquivo (pode ter pastas/)" : ""}
+      onkeydown={(e) => { if (e.key === "Enter" || e.key === "Escape") { if (e.key === "Enter") commitEdit(); else edit = null; listEl?.focus({ preventScroll: true }); } e.stopPropagation(); }}
+      onblur={commitEdit} />
   </div>
 {/snippet}
 
@@ -292,7 +602,8 @@
       <button class="ib" title="Recolher todas as pastas" onclick={() => { open = {}; saveOpen(); }}><ChevronsDownUp size={14} /></button>
     </div>
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-    <div class="list" bind:this={listEl} tabindex="0" role="tree" aria-label="Arquivos" onkeydown={onKey}>
+    <div class="list" class:dz={dropAt === ""} bind:this={listEl} tabindex="0" role="tree" aria-label="Arquivos" aria-multiselectable="true" onkeydown={onKey}
+      oncontextmenu={rootMenu} ondragover={dragOver} ondragleave={dragLeave} ondrop={onDrop}>
       {#if edit && edit.at === "" && edit.kind !== "rename"}{@render editor(0)}{/if}
       {#if loading && !all.length}<div class="none">Carregando…</div>
       {:else if q.trim() && !matches.length}<div class="none">Nenhum arquivo com “{q}”.</div>
@@ -302,17 +613,27 @@
           {@const ft = r.dir ? fdecor.get(r.path) : null}
           {#if edit?.kind === "rename" && edit.path === r.path}{@render editor(r.depth)}
           {:else}
-            <button class="n {d?.tone || ''} {ft ? 'f-' + ft : ''}" class:file={!r.dir} class:on={!r.dir && active === r.path} class:cur={cursor === r.path} class:del={d?.tone === "del"}
-              style="--d:{r.depth}" data-p={r.path} role="treeitem" aria-selected={active === r.path} aria-expanded={r.dir ? !!open[r.path] : undefined}
-              title={r.dir ? r.path : `${r.path}${d ? " · " + d.label : ""}`}
-              onclick={() => { cursor = r.path; if (r.dir) toggleDir(r.path); else onopen(r.path, undefined, { preview: true }); }}
+            <!-- linha é div (não button): o WebKit não arrasta <button>, e o foco fica na lista, que tem o teclado -->
+            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -->
+            <div class="n {d?.tone || ''} {ft ? 'f-' + ft : ''}" class:file={!r.dir} class:on={!r.dir && active === r.path} class:cur={cursor === r.path} class:del={d?.tone === "del"}
+              class:sel={sel.length > 1 && sel.includes(r.path)} class:cutting={clip?.cut && clip.paths.includes(r.path)} class:dz={!!dropAt && r.path.startsWith(dropAt)}
+              class:dragged={dragging?.includes(r.path)}
+              style="--d:{r.depth}" data-p={r.path} role="treeitem" aria-selected={sel.includes(r.path) || active === r.path} aria-expanded={r.dir ? !!open[r.path] : undefined}
+              title={r.dir ? r.path : `${r.path}${d ? " · " + d.label : ""}`} draggable={!edit}
+              ondragstart={(e) => dragStart(e, r)} ondragend={dragEnd}
+              onclick={(e) => {
+                listEl?.focus({ preventScroll: true });
+                if (e.shiftKey || (isMac() ? e.metaKey : e.ctrlKey)) { pick(r.path, e); return; }
+                pick(r.path);
+                if (r.dir) toggleDir(r.path); else onopen(r.path, undefined, { preview: true });
+              }}
               ondblclick={() => { if (!r.dir) onopen(r.path, undefined, { preview: false }); }}
-              oncontextmenu={(e) => { cursor = r.path; ui.contextMenu(e, rowMenu(r)); }}>
+              oncontextmenu={(e) => ui.contextMenu(e, rowMenu(r))}>
               {#if r.dir && !icons.hidesArrows}<ChevronRight size={12} class="chev {open[r.path] ? 'rot' : ''}" />{:else}<span class="sp"></span>{/if}
               <FileIcon name={r.dir ? r.path.slice(0, -1).split("/").pop() || r.name : r.name} dir={r.dir} open={!!open[r.path]} size={15} />
               <span class="nm ell">{#if q.trim()}<b>{r.name}</b> <span class="muted tiny">{r.path.split("/").slice(0, -1).join("/")}</span>{:else}{r.name}{/if}</span>
               {#if d}<span class="gl" title={d.label}>{d.letter}</span>{:else if ft}<span class="gd"></span>{/if}
-            </button>
+            </div>
             {#if r.dir && open[r.path] && edit && edit.at === r.path && edit.kind !== "rename"}{@render editor(r.depth + 1)}{/if}
           {/if}
         {/each}
@@ -361,13 +682,19 @@
   .list { flex: 1; overflow: auto; padding: 0 4px 10px; outline: none; }
   .list:focus-visible .n.cur { box-shadow: inset 0 0 0 1px var(--accent); }
   .n { --d: 0; position: relative; display: flex; align-items: center; gap: 5px; width: 100%; height: 22px; padding: 0 6px 0 calc(4px + var(--d) * 12px); border: 0; border-radius: 5px;
-    background: none; color: var(--text-2); font: 12.5px var(--font); text-align: left; cursor: pointer; }
+    background: none; color: var(--text-2); font: 12.5px var(--font); text-align: left; cursor: pointer; user-select: none; -webkit-user-select: none; outline: none; }
   /* guias de indentação, como no VS Code */
   .n::before { content: ""; position: absolute; top: 0; bottom: 0; left: 10px; width: calc(var(--d) * 12px);
     background: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 12px); pointer-events: none; }
   .n:hover { background: var(--surface-2); color: var(--text); }
   .n.cur { background: var(--surface-2); }
+  .n.sel { background: var(--surface-3); color: var(--text); }
   .n.on { background: var(--accent-soft); color: var(--text); }
+  .n.cutting, .n.dragged { opacity: 0.5; }
+  /* destino de arrastar: a pasta e o que está dentro dela ficam marcados, como no VS Code */
+  .n.dz, .list.dz { background: var(--accent-soft); }
+  .n.dz { border-radius: 0; }
+  .list.dz { box-shadow: inset 0 0 0 1px var(--accent-line); }
   .n :global(.chev) { color: var(--faint); flex: none; transition: transform var(--t) var(--ease); }
   .n :global(.chev.rot) { transform: rotate(90deg); }
   .nm { flex: 1; min-width: 0; }

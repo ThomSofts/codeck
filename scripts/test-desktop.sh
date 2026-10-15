@@ -72,7 +72,7 @@ if "fatal" in r:
     print("✗ erro ao injetar o roteiro:", r["fatal"]); sys.exit(1)
 for x in r["results"]:
     print(("✓" if x["ok"] else "✗"), x["name"], f"({x['ms']} ms)", ("— " + x["detail"]) if x["detail"] else "")
-print(f"\n{r["ok"]}/{r["total"]} etapas OK no {r["platform"]} (janela visível no início/fim: {r.get("visible")})")
+print(f"\n{r['ok']}/{r['total']} etapas OK no {r['platform']} (janela visível no início/fim: {r.get('visible')})")
 if r["jsErrors"]:
     print("erros de JavaScript:", *r["jsErrors"][:10], sep="\n  ")
 sys.exit(0 if r["ok"] == r["total"] else 1)

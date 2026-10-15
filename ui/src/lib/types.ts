@@ -19,6 +19,8 @@ export interface Build {
   status: string; result: string | null; reason: string; requestedFor: string; requestedForId?: string; requestedForAvatar?: string;
   queued: string; started?: string; finished?: string; message: string; prNumber?: number | null; repo?: string; url: string;
   waiting?: boolean; attempt?: number; repoKey?: string | null; quiet?: boolean;
+  /** só em andamento: o que está acontecendo de verdade (timeline do Azure / jobs do GitHub) */
+  phase?: { state: "failing" | "approval" | "check" | "agent" | "running"; label: string; stage?: string | null; job?: string | null; since?: string | null } | null;
 }
 
 export interface Deploy {
@@ -38,6 +40,8 @@ export interface Issue {
   key: string; provider: Provider; org: string; repo: string; number: number; title: string; state: string; type: string;
   updated: string; author: string; labels: { name: string; color: string | null }[]; assignees?: { login: string; avatar: string }[];
   comments: number | null; reason: string; url: string; repoKey?: string | null; account?: string | null;
+  /** repositório (ou projeto do Azure, para work items) que liga/desliga este item no acompanhamento */
+  scopeKey?: string | null;
 }
 
 export interface Activity {

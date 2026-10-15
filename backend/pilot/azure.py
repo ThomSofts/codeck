@@ -19,6 +19,36 @@ API_PREVIEW = "api-version=7.1-preview.1"
 build_cache = {}      # (org, buildId) -> dado imutável do build (mensagem, branch, PR de origem…)
 
 
+def phase_from_records(records):
+    """{"state": failing|approval|check|agent|running, "label", "stage", "job", "since"} a partir da timeline do Azure."""
+    by_type = lambda *t: [r for r in records if r.get("type") in t]
+    stages = sorted(by_type("Stage"), key=lambda r: r.get("order") or 0)
+    running = lambda rs: [r for r in rs if r.get("state") == "inProgress"]
+    last = max((r.get("lastModified") or r.get("startTime") or "" for r in records), default="") or None
+    cur_stage = (running(stages) or [None])[0]
+    cur_job = (running(by_type("Job", "Phase")) or [None])[0]
+    stage_name = cur_stage["name"] if cur_stage else None
+    failed = [r for r in by_type("Stage", "Job", "Task") if r.get("result") in ("failed", "abandoned")]
+    if failed:
+        f = next((r for r in failed if r["type"] == "Task"), failed[0])
+        return {"state": "failing", "label": f"falhou em {f['name']}", "stage": stage_name, "job": f["name"], "since": last}
+    appr = [r for r in by_type("Checkpoint.Approval") if r.get("state") == "inProgress"]
+    if appr:
+        ids = {r.get("id"): r for r in records}
+        chk = ids.get(appr[0].get("parentId")) or {}   # aprovação → checkpoint → stage
+        parent = (ids.get(chk.get("parentId")) or {}).get("name") or stage_name
+        return {"state": "approval", "label": "aguardando aprovação" + (f" · {parent}" if parent else ""), "stage": parent, "job": None, "since": last}
+    checks = [r for r in by_type("Checkpoint") if r.get("state") == "inProgress"]
+    if checks and not cur_job:
+        return {"state": "check", "label": "aguardando verificação" + (f" · {stage_name}" if stage_name else ""), "stage": stage_name, "job": None, "since": last}
+    pending_jobs = [r for r in by_type("Job") if r.get("state") == "pending"]
+    if pending_jobs and not cur_job:
+        return {"state": "agent", "label": "esperando agente", "stage": stage_name, "job": pending_jobs[0]["name"], "since": last}
+    task = (running(by_type("Task")) or [None])[0]
+    label = " › ".join(x for x in (stage_name, cur_job["name"] if cur_job else None, task["name"] if task else None) if x)
+    return {"state": "running", "label": label or "rodando", "stage": stage_name, "job": cur_job["name"] if cur_job else None, "since": last}
+
+
 class Org:
     def __init__(self, cfg):
         self.name = cfg["name"]
@@ -219,6 +249,13 @@ class Org:
             failed.append(item)
         failed.sort(key=lambda f: f["type"] != "Task")
         return {"stages": stages, "failed": failed[:8]}
+
+    def build_phase(self, project, build_id):
+        """O que um build "em andamento" está fazendo de verdade, pela timeline: falhando (uma etapa já falhou e o resto
+        ainda roda ou vai ser pulado), esperando aprovação/verificação, esperando agente, ou a etapa/job atual."""
+        proj = urllib.parse.quote(project)
+        records = (self.req("GET", f"{proj}/_apis/build/builds/{build_id}/timeline?{API}") or {}).get("records") or []
+        return phase_from_records(records)
 
     def build_action(self, b, action):
         proj = urllib.parse.quote(b["project"])

@@ -1,7 +1,13 @@
 <script lang="ts">
-  // Painel de detalhes da PR: ações de voto, descrição, revisores e checks/policies.
-  import { AlertTriangle, Archive, Bot, ExternalLink, GitBranch } from "@lucide/svelte";
+  // Painel de detalhes da PR: ações de voto, descrição, revisores e checks/policies. Atalhos para o histórico: o do app
+  // filtrado nesta PR (votos, aprovações do piloto, comentários — H) e os commits da branch no clone local (C).
+  import { AlertTriangle, Archive, Bot, ExternalLink, GitBranch, GitCommitHorizontal, History } from "@lucide/svelte";
   import { work } from "../../lib/work.svelte";
+  import { repos } from "../../lib/repos.svelte";
+  import { go, router } from "../../lib/router.svelte";
+  import { localClone, openPrCommits, prHistoryPath } from "./history";
+  import { store } from "../../lib/store.svelte";
+  import { ui } from "../../lib/ui.svelte";
   import { archive } from "../../lib/actions";
   import { ago, dateTime } from "../../lib/format";
   import type { PR } from "../../lib/types";
@@ -22,11 +28,37 @@
     });
   }
   async function doArchive() { await archive([pr.key], !pr.archived); }
+
+  // histórico do app desta PR (o do estado traz os últimos 300; a tela de Histórico lê o arquivo inteiro)
+  const events = $derived((store.s?.activity || []).filter(a => a.key === pr.key).length);
+  function openHistory() { go(prHistoryPath(pr.key)); }
+  const local = $derived(localClone(pr.repoKey));
+  $effect(() => { if (!repos.loaded) repos.load(false); });
+  const openCommits = () => openPrCommits(pr);
+  function onKey(e: KeyboardEvent) {
+    if (router.view !== "prs" && router.view !== "inbox") return;   // dentro do projeto o teclado é do terminal/editor
+    if (e.metaKey || e.ctrlKey || e.altKey || e.repeat || ui.dialog || store.hold) return;
+    if ((e.target as HTMLElement)?.closest?.("input, textarea, select, [contenteditable], .xterm, .monaco-editor")) return;
+    const k = e.key.toLowerCase();
+    if (k === "h") { e.preventDefault(); openHistory(); }
+    else if (k === "c" && !e.shiftKey) { e.preventDefault(); openCommits(); }
+  }
   const btn = (v: number) => pr.myVote !== v;
 </script>
 
+<svelte:window onkeydown={onKey} />
+
 <div class="pane-h">
-  <div class="small muted row"><ProviderIcon provider={pr.provider} size={12} />{pr.org} / {pr.repo} · #{pr.prId}</div>
+  <div class="top">
+    <div class="small muted row grow"><ProviderIcon provider={pr.provider} size={12} /><span class="ell">{pr.org} / {pr.repo} · #{pr.prId}</span></div>
+    <div class="hist" role="group" aria-label="Histórico">
+      <button class="hb" onclick={openHistory} title="Histórico desta PR no app: votos, aprovações do piloto, comentários (H)">
+        <History size={13} /> Histórico{#if events}<em>{events}</em>{/if}<kbd>H</kbd></button>
+      <button class="hb" onclick={openCommits} class:off={!local}
+        title={local ? `Commits de ${pr.source} em ${local.path.replace(/^\/Users\/[^/]+/, "~")} (C)` : `${pr.repo} não está clonado nesta máquina`}>
+        <GitCommitHorizontal size={13} /> Commits<kbd>C</kbd></button>
+    </div>
+  </div>
   <h2>{pr.title}</h2>
   <div class="meta">
     <span class="branch"><GitBranch size={11} />{pr.source} → <b>{pr.target}</b></span>
@@ -68,6 +100,17 @@
 
 <style>
   .pane-h { padding: 16px 18px 14px; border-bottom: 1px solid var(--line); }
+  .top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .hist { display: inline-flex; flex: none; border: 1px solid var(--line-2); border-radius: var(--r-sm); overflow: hidden; }
+  .hb { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border: 0; background: none; color: var(--text-2);
+    font: 500 12px/1 var(--font); cursor: pointer; white-space: nowrap; transition: background var(--t-fast), color var(--t-fast); }
+  .hb + .hb { border-left: 1px solid var(--line-2); }
+  .hb:hover { background: var(--surface-2); color: var(--text); }
+  .hb:focus-visible { outline: none; box-shadow: inset var(--ring); }
+  .hb.off { color: var(--muted); }
+  .hb em { font: 600 10.5px/1 var(--font); font-style: normal; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .hb kbd { font: 600 9.5px/1 var(--font); color: var(--muted); border: 1px solid var(--line-2); border-radius: 4px; padding: 2px 4px; margin-left: 1px; }
+  @media (max-width: 560px) { .hb kbd { display: none; } }
   h2 { margin: 6px 0 8px; font-size: 16.5px; line-height: 1.35; letter-spacing: -0.015em; }
   .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
   .pane-b { padding: 6px 18px 18px; }

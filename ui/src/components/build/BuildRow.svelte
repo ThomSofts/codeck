@@ -12,7 +12,7 @@
 </script>
 
 <div class="list-row" class:sel={selected} data-row={b.key} onclick={onselect} role="button" tabindex="-1" onkeydown={(e) => e.key === "Enter" && onselect()}>
-  <span class="st {st.cls}" class:spin-ring={st.label === "rodando"}>{st.icon}</span>
+  <span class="st {st.cls}" class:spin-ring={st.spin}>{st.icon}</span>
   <div class="grow">
     <div class="t"><span class="title ell">{b.pipeline}</span><span class="num">{b.number}</span></div>
     <div class="meta">
@@ -24,7 +24,8 @@
       {#if b.waiting}<span class="pill warn">esperando aprovação</span>{/if}
     </div>
   </div>
-  <div class="right"><span class="pill {st.cls}">{st.icon} {st.label}</span><span class="dur">{fmtDur(b.started, b.finished)}</span></div>
+  <div class="right"><span class="pill {st.cls}">{st.icon} {st.label}</span>
+    {#if st.detail}<span class="ph ell" title={st.detail}>{st.detail}</span>{/if}<span class="dur">{fmtDur(b.started, b.finished)}</span></div>
 </div>
 
 <style>
@@ -33,12 +34,13 @@
   .st.bad { background: var(--bad-soft); color: var(--bad); }
   .st.warn { background: var(--warn-soft); color: var(--warn); }
   .st.neutral { background: var(--surface-2); color: var(--muted); }
-  .spin-ring::after { content: ""; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid transparent; border-top-color: var(--warn); animation: spin 1s linear infinite; }
+  .spin-ring::after { content: ""; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid transparent; border-top-color: currentColor; animation: spin 1s linear infinite; }
   .t { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
   .title { font-weight: 600; }
   .num { color: var(--muted); font-size: 12.5px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
   .faint { color: var(--faint); }
   .msg { font-style: italic; color: var(--muted); max-width: 380px; }
   .right { display: grid; justify-items: end; gap: 4px; }
+  .ph { max-width: 220px; font-size: 11.5px; color: var(--text-2); }
   .dur { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 </style>

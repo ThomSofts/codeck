@@ -6,6 +6,9 @@ tracking.json: {"accounts": {"github:LMThomaz": {"mode": "all" | "selected"}},
   · Conta em "all" (o padrão, como sempre foi): acompanha tudo, menos os repositórios marcados para deixar de acompanhar.
   · Conta em "selected": só os repositórios marcados para acompanhar.
   · Por repositório dá para desligar só uma parte (ex.: acompanhar PRs e builds, mas não issues) e as notificações.
+  · Work item do Azure e release sem build de Git não têm repositório: valem pelo PROJETO ("azure:org/projeto", sem o
+    repo). Uma entrada do projeto com a categoria (ex.: {"issues": false}) decide por ele — acompanhar o deploy de um
+    repositório não obriga a acompanhar os work items do projeto inteiro.
 A chave do repositório é o remoto normalizado (git.normalize_remote): "github:dono/repo" ou "azure:org/projeto/repo",
 em minúsculas — a mesma que casa catálogo, favorito e clone local.
 """
@@ -56,8 +59,11 @@ def set_repo(key, patch):
         d = _load()
         cur = dict(d["repos"].get(key) or {})
         for k in ("track", "notify", *CATEGORIES):
-            if k in patch and patch[k] is not None:
-                cur[k] = bool(patch[k])
+            if k in patch:   # None apaga a escolha: volta ao padrão (da conta ou do projeto)
+                if patch[k] is None:
+                    cur.pop(k, None)
+                else:
+                    cur[k] = bool(patch[k])
         if "note" in patch:
             cur["note"] = str(patch.get("note") or "")[:500]
         if patch.get("reset"):
@@ -117,8 +123,11 @@ def follows(item, category):
         if r is not None and not r.get(category, True):
             return False
         return mode == "all"
-    # sem repositório (work item do Azure, release sem build de Git): vale o projeto — entra se a conta acompanha tudo
-    # ou se algum repositório acompanhado é desse projeto
+    # sem repositório (work item do Azure, release sem build de Git): vale o projeto — a escolha feita para o projeto,
+    # senão entra se a conta acompanha tudo ou se algum repositório acompanhado é desse projeto
+    p = d["repos"].get(proj) if proj else None
+    if p is not None and category in p:
+        return bool(p[category])
     if mode == "all":
         return True
     return bool(proj) and any(k.startswith(proj + "/") and v.get("track") and v.get(category, True) for k, v in d["repos"].items())
@@ -133,8 +142,9 @@ def apply(items, category):
     """Filtra a lista e marca em cada item a chave do repositório (a tela casa os itens com o repositório por ela)."""
     out = []
     for it in items:
-        key, _ = item_key(it)
+        key, proj = item_key(it)
         it["repoKey"] = key
+        it["scopeKey"] = key or proj   # o que a tela liga/desliga para este item (repositório ou projeto do Azure)
         if follows(it, category):
             if quiet(it):
                 it["quiet"] = True

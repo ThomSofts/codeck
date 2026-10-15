@@ -164,6 +164,47 @@ def notify(title, subtitle, message, target=None):
         pass
 
 
+# ---------------------------------------------------------------- cópia dos dados ao trocar de versão
+BACKUPS_DIR = os.path.join(DATA, "backups")
+BACKUPS_KEEP = 5
+
+
+def backup_on_upgrade():
+    """Primeira execução de uma versão nova: copia os arquivos de dados (contas, quadro, projetos, regras, histórico…)
+    para backups/<anterior>-para-<nova>-<data>/ ANTES de qualquer migração. Se uma versão estragar algo, os registros
+    voltam dali. Guarda as 5 últimas cópias. Pastas (anexos do quadro, atualizações) não entram: nada migra nelas."""
+    if APP_VERSION == "dev":
+        return None
+    marker = os.path.join(DATA, ".version")
+    cur = f"{APP_VERSION}+{APP_BUILD}"
+    try:
+        with open(marker, encoding="utf-8") as f:
+            prev = f.read().strip()
+    except FileNotFoundError:
+        prev = "anterior"
+    if prev == cur:
+        return None
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest = os.path.join(BACKUPS_DIR, f"{prev}-para-{cur}-{stamp}".replace("+", "_"))
+    try:
+        os.makedirs(dest, exist_ok=True)
+        for name in os.listdir(DATA):
+            src = os.path.join(DATA, name)
+            if os.path.isfile(src) and not name.endswith(".tmp") and name not in ("codeck.log", ".version"):
+                shutil.copy2(src, os.path.join(dest, name))
+        old = sorted((os.path.join(BACKUPS_DIR, d) for d in os.listdir(BACKUPS_DIR)), key=os.path.getmtime)
+        old = [d for d in old if os.path.isdir(d)]
+        for d in old[:-BACKUPS_KEEP]:
+            shutil.rmtree(d, ignore_errors=True)
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(cur)
+        print(f"Dados copiados para {dest} (versão {prev} → {cur})", flush=True)
+        return dest
+    except OSError as e:   # sem a cópia o app ainda abre; o marcador fica para tentar de novo na próxima
+        print(f"Não consegui copiar os dados antes de atualizar: {e}", flush=True)
+        return None
+
+
 # ---------------------------------------------------------------- histórico (activity.jsonl)
 def append_activity(entry):
     entry = {"ts": now_iso(), **entry}

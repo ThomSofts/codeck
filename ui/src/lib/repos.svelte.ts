@@ -2,7 +2,7 @@ import { get, post } from "./api";
 import type { AccountColl, Catalog, FavRepo, LocalRepo, RemoteRepo, Tag } from "./types";
 
 export type TrackCat = "prs" | "builds" | "deploys" | "issues";
-export interface TrackRepo { track?: boolean; prs?: boolean; builds?: boolean; deploys?: boolean; issues?: boolean; notify?: boolean; note?: string }
+export interface TrackRepo { track?: boolean; prs?: boolean; builds?: boolean; deploys?: boolean; issues?: boolean | null; notify?: boolean; note?: string }
 export interface Tracking { accounts: Record<string, { mode: "all" | "selected" }>; repos: Record<string, TrackRepo> }
 /** Acompanhamento efetivo de um repositório (modo da conta + o que foi marcado nele). */
 export interface TrackState { on: boolean; explicit: boolean; mode: "all" | "selected"; prs: boolean; builds: boolean; deploys: boolean; issues: boolean; notify: boolean; note: string }
@@ -19,6 +19,8 @@ class Repos {
   tracking = $state<Tracking>({ accounts: {}, repos: {} });
   /** pedido para abrir o "Criar PR" ao entrar na tela do repositório (vem da tarefa) */
   prIntent = $state<string | null>(null);
+  /** pedido para destacar uma branch no graph ao abrir a aba Git (vem da PR: "Commits da branch") */
+  branchIntent = $state<{ repoId: string; branch: string } | null>(null);
   private inflight: Promise<void> | null = null;
 
   get pinned() { return this.local.filter(r => r.pinned); }

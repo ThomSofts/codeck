@@ -766,6 +766,244 @@ def clone(url, dest, auth=None):
     return job
 
 
+# ---------------------------------------------------------------- limpar branches locais (recomendação pela principal)
+# Nunca entram: a atual, a principal, as de longa vida (abaixo) e as abertas em outro worktree. Recomendadas (já
+# marcadas): mergeadas em origin/<principal> (merge/fast-forward → `branch -d`), squash/rebase detectados (o conteúdo
+# já está na principal → `-D` depois de confirmar) e remoto apagado com todos os commits ainda no servidor. Parada há
+# muito tempo ou remoto apagado com commits só aqui: aparecem desmarcadas. Não mergeada e ativa: só informa.
+PROTECTED_BRANCHES = {"main", "master", "develop", "development", "dev", "trunk", "staging", "stage", "production", "prod",
+                      "release", "qa", "homolog", "homologacao", "hml", "gh-pages"}
+STALE_DAYS = 90
+
+
+def _rc(path, *args, timeout=30):
+    """Só o código de saída (merge-base --is-ancestor, rev-parse --verify…)."""
+    flags = 0x08000000 if os.name == "nt" else 0
+    return subprocess.run([git_bin(), *args], cwd=path, capture_output=True, timeout=timeout, env=_env(), creationflags=flags).returncode
+
+
+def _main_remote(path):
+    rs = run(path, "remote", timeout=10).split()
+    return "origin" if "origin" in rs else (rs[0] if rs else None)
+
+
+def main_branch(path, remote=None):
+    """(nome, ref de comparação): a que o <remoto>/HEAD aponta; senão main; senão master. develop é integração, não a
+    principal — só vale se não houver main/master. A comparação é com a remota (o que já está no servidor)."""
+    remote = remote if remote is not None else _main_remote(path)
+    head = None
+    if remote:
+        try:
+            head = run(path, "symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD", timeout=10).strip().split("/", 1)[1]
+        except (GitError, IndexError):
+            head = None
+    order = ([head] if head and head not in ("develop", "development", "dev") else []) + ["main", "master"] + ([head] if head else [])
+    for name in dict.fromkeys(order):
+        for ref in ([f"{remote}/{name}"] if remote else []) + [name]:
+            if _rc(path, "rev-parse", "--verify", "--quiet", ref + "^{commit}") == 0:
+                return name, ref
+    return None, None
+
+
+def _patch_ids(path, *log_args, input=None):
+    """patch-id estável de cada commit (git log -p) ou de um diff (input); vazio se o Git não souber."""
+    try:
+        patch = input if input is not None else run(path, "log", "-p", "--no-merges", "--format=commit %H", *log_args, timeout=60, raw=True)
+        if not patch.strip():
+            return []
+        out = run(path, "patch-id", "--stable", input=patch, timeout=60)
+        return [ln.split()[0] for ln in out.splitlines() if ln.strip()]
+    except (GitError, subprocess.TimeoutExpired):
+        return []
+
+
+def _fresh(path, name):
+    """A branch só tem o registro de criação no reflog (nunca recebeu commit, merge nem pull)."""
+    try:
+        log = run(path, "reflog", "show", "--format=%gs", f"refs/heads/{name}", "--", timeout=10).splitlines()
+    except GitError:
+        return False
+    return len(log) == 1 and log[0].startswith("branch: Created from")
+
+
+def _ago_label(days):
+    return f"{days} dias" if days < 60 else f"{days // 30} meses" if days < 730 else f"{days // 365} anos"
+
+
+def branch_cleanup_plan(path, do_fetch=True, auth=None, stale_days=STALE_DAYS):
+    remote = _main_remote(path)
+    fetched, fetch_error, pruned = False, None, []
+    if do_fetch and remote:
+        before = set(run(path, "for-each-ref", "--format=%(refname:short)", "refs/remotes", timeout=30).split())
+        try:
+            run(path, "fetch", "--all", "--prune", timeout=300, auth=auth)
+            fetched = True
+        except (GitError, subprocess.TimeoutExpired) as e:
+            fetch_error = str(e) or "não consegui falar com o servidor"
+        after = set(run(path, "for-each-ref", "--format=%(refname:short)", "refs/remotes", timeout=30).split())
+        pruned = sorted(before - after)
+    main, base = main_branch(path, remote)
+    try:
+        current = run(path, "symbolic-ref", "--short", "-q", "HEAD", timeout=10).strip() or None
+    except GitError:
+        current = None
+    worktrees, wt_path = {}, None
+    for ln in run(path, "worktree", "list", "--porcelain", timeout=15).splitlines():
+        if ln.startswith("worktree "):
+            wt_path = ln[9:]
+        elif ln.startswith("branch refs/heads/"):
+            worktrees[ln[18:]] = wt_path
+    here = os.path.realpath(path)
+    merged = set(run(path, "branch", "--format=%(refname:short)", "--merged", base, timeout=30).split()) if base else set()
+    remote_merged = set(run(path, "branch", "-r", "--format=%(refname:short)", "--merged", base, timeout=30).split()) if base else set()
+    remote_refs = set(run(path, "for-each-ref", "--format=%(refname:short)", "refs/remotes", timeout=30).split())
+    fmt = FIELD.join(["%(refname:short)", "%(objectname)", "%(upstream:short)", "%(upstream:track)", "%(committerdate:unix)", "%(subject)"])
+    now = time.time()
+    items, pending = [], []
+    for ln in run(path, "for-each-ref", f"--format={fmt}", "refs/heads", timeout=30).splitlines():
+        f = ln.split(FIELD)
+        if len(f) < 6:
+            continue
+        name, sha, up, track, ts, subject = f
+        days = int((now - int(ts or now)) // 86400)
+        it = {"name": name, "sha": sha, "upstream": up or None, "gone": "gone" in track, "days": days, "subject": subject,
+              "kind": "keep", "reason": "", "detail": "", "recommended": False, "selectable": False, "force": False, "remote": None}
+        wt = worktrees.get(name)
+        if name == current:
+            it["reason"] = "branch atual"
+        elif name == main:
+            it["reason"] = "branch principal"
+        elif name.lower() in PROTECTED_BRANCHES:
+            it["reason"] = "branch de longa vida"
+        elif wt and os.path.realpath(wt) != here:
+            it["reason"], it["detail"] = "aberta em outro worktree", home_path(wt)
+        elif not base:
+            it["reason"] = "sem branch principal para comparar"
+        elif name in merged:
+            it.update(kind="merged", reason=f"mergeada em {main}", recommended=True, selectable=True)
+            if not up and _fresh(path, name):   # recém-criada, ainda sem commits: "mergeada" só no papel
+                it.update(recommended=False, reason="sem commits próprios", detail=f"aponta para um commit de {main}")
+        else:
+            pending.append(it)
+        if (it["kind"] == "merged" and up and not it["gone"] and up in remote_refs and up in remote_merged
+                and up.split("/", 1)[-1] != main and up.split("/", 1)[-1].lower() not in PROTECTED_BRANCHES):
+            it["remote"] = up   # continua no servidor, já mergeada: dá para apagar lá também (opcional)
+        items.append(it)
+
+    # o que não é ancestral da principal: squash/rebase (conteúdo já lá), remoto apagado, parada, ativa
+    if pending:
+        mbs = {}
+        for it in pending:
+            try:
+                mbs[it["name"]] = run(path, "merge-base", base, it["sha"], timeout=15).strip()
+            except GitError:
+                mbs[it["name"]] = None
+        oldest = min((int(run(path, "log", "-1", "--format=%ct", mb, timeout=10).strip() or 0) for mb in mbs.values() if mb), default=None)
+        base_ids = set(_patch_ids(path, "--max-count=4000", f"--since={oldest - 86400}", base)) if oldest else set()
+        for it in pending:
+            mb, sha = mbs.get(it["name"]), it["sha"]
+            ahead = int(run(path, "rev-list", "--count", f"{base}..{sha}", timeout=30).strip() or 0)
+            local_only = int(run(path, "rev-list", "--count", sha, "--not", "--remotes", timeout=30).strip() or 0)
+            how = None
+            if mb and base_ids:
+                own = _patch_ids(path, f"{mb}..{sha}")
+                if own and all(p in base_ids for p in own):
+                    how = "rebase"
+                elif (whole := _patch_ids(path, input=run(path, "diff", mb, sha, timeout=60, raw=True))) and whole[0] in base_ids:
+                    how = "squash"
+            if not how and mb:
+                # squash com ajuste no merge: os arquivos que a branch mexeu estão iguais na principal
+                files = set(run(path, "diff", "--name-only", mb, sha, timeout=60).splitlines())
+                if files and not (files & set(run(path, "diff", "--name-only", base, sha, timeout=60).splitlines())):
+                    how = "conteúdo"
+            only = f"{local_only} commit(s) só nesta máquina" if local_only else ""
+            if how:
+                it.update(kind="squash", recommended=True, selectable=True, force=True,
+                          reason=f"squash-mergeada em {main}" if how == "squash" else f"rebase em {main}" if how == "rebase" else f"conteúdo já está em {main}",
+                          detail=f"{ahead} commit(s) com outro SHA na principal")
+            elif it["gone"] and not local_only:
+                where = next(iter(run(path, "branch", "-r", "--contains", sha, "--format=%(refname:short)", timeout=30).split()), "")
+                it.update(kind="gone", recommended=True, selectable=True, force=True, reason="remoto apagado",
+                          detail=f"os commits continuam em {where}" if where else "os commits continuam no servidor")
+            elif it["gone"]:
+                it.update(kind="gone", selectable=True, force=True, reason="remoto apagado", detail=only)
+            elif it["days"] >= stale_days:
+                it.update(kind="stale", selectable=True, force=True, reason=f"parada há {_ago_label(it['days'])}",
+                          detail=only or ("está no servidor" if it["upstream"] else f"{ahead} commit(s) fora de {main}"))
+            else:
+                it.update(kind="unmerged", reason=f"não mergeada em {main}",
+                          detail=f"{ahead} commit(s) à frente" + (f" · {local_only} só nesta máquina" if local_only else ""))
+    order = {"merged": 0, "squash": 1, "gone": 2, "stale": 3, "unmerged": 4, "keep": 5}
+    items.sort(key=lambda x: (order[x["kind"]], not x["recommended"], x["days"]))
+    return {"main": main, "base": base, "remote": remote, "current": current, "fetched": fetched, "fetchError": fetch_error,
+            "pruned": pruned, "staleDays": stale_days, "branches": items}
+
+
+def home_path(p):
+    return re.sub(r"^/Users/[^/]+|^C:\\Users\\[^\\]+", "~", p or "", flags=re.I)
+
+
+def cleanup_plan(repo_id, do_fetch=True):
+    r = get_repo(repo_id)
+    plan = branch_cleanup_plan(r["path"], do_fetch, auth_for(r))
+    _done(repo_id)
+    return plan
+
+
+def cleanup_branches(repo_id, branches, remote_too=False):
+    """Apaga o que a tela confirmou. Reanalisa (sem fetch) e só apaga o que continua apagável e no mesmo commit;
+    `-D` só para quem o plano marca como forçar (squash/rebase, remoto apagado, parada) e a tela mandou force."""
+    r = get_repo(repo_id)
+    res = delete_branches(r["path"], branches, remote_too, auth_for(r))
+    _done(repo_id)
+    if res["deleted"]:
+        log_git("branch-cleanup", r, ", ".join(res["deleted"]) + (f" (+{len(res['remoteDeleted'])} no servidor)" if res["remoteDeleted"] else ""))
+    return res
+
+
+def delete_branches(path, branches, remote_too=False, auth=None):
+    plan = {b["name"]: b for b in branch_cleanup_plan(path, do_fetch=False)["branches"]}
+    deleted, failed, remotes = [], [], []
+    for req in branches or []:
+        name = _check_branch(req.get("name"))
+        it = plan.get(name)
+        if not it or not it["selectable"]:
+            failed.append({"name": name, "error": it["reason"] if it else "não existe mais"})
+            continue
+        if req.get("sha") and req["sha"] != it["sha"]:
+            failed.append({"name": name, "error": "ganhou commits desde a análise"})
+            continue
+        if it["force"] and not req.get("force"):
+            failed.append({"name": name, "error": "precisa confirmar (não é ancestral da principal)"})
+            continue
+        try:
+            if it["kind"] == "merged":
+                try:
+                    run(path, "branch", "-d", name)
+                except GitError:
+                    # -d compara com a upstream/HEAD; a análise já confirmou que está em origin/<principal>
+                    run(path, "branch", "-D", name)
+            else:
+                run(path, "branch", "-D", name)
+            deleted.append(name)
+            if remote_too and it.get("remote"):
+                remotes.append(it["remote"])
+        except GitError as e:
+            failed.append({"name": name, "error": str(e)})
+    remote_deleted = []
+    by_remote = {}
+    for ref in remotes:
+        rem, br = ref.split("/", 1)
+        by_remote.setdefault(rem, []).append(_check_branch(br))
+    for rem, names in by_remote.items():
+        try:
+            run(path, "push", _check_ref(rem), "--delete", *names, timeout=180, auth=auth)
+            remote_deleted += [f"{rem}/{n}" for n in names]
+        except GitError as e:
+            failed.append({"name": f"{rem} (servidor)", "error": str(e)})
+    return {"deleted": deleted, "remoteDeleted": remote_deleted, "failed": failed}
+
+
 # ---------------------------------------------------------------- limpar local (Lixeira) com travas
 def clean_blockers(repo_id):
     """O que impede apagar a cópia local sem perder trabalho. Vazio = seguro."""
@@ -804,8 +1042,9 @@ def clean_local(repo_id):
 def move_to_trash(path):
     path = os.path.abspath(path)
     if sys.platform == "darwin":
-        script = f'tell application "Finder" to delete (POSIX file "{path}" as alias)'
-        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=120)
+        # o caminho vai como argumento (argv), nunca dentro do texto do script: nome com aspas não vira comando
+        script = 'on run argv\ntell application "Finder" to delete (POSIX file (item 1 of argv) as alias)\nend run'
+        r = subprocess.run(["osascript", "-e", script, path], capture_output=True, text=True, timeout=120)
         if r.returncode != 0:
             # sem permissão de automação do Finder: move para ~/.Trash direto
             trash = os.path.expanduser("~/.Trash")

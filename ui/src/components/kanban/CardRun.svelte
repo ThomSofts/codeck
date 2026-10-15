@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Pedir à IA um cartão do quadro: escolhe o fluxo (planejar / planejar e implementar / implementar), a conta, em qual
+  // Pedir à IA um cartão do quadro (automação opcional): escolhe o fluxo (planejar / planejar e implementar / implementar), a conta, em qual
   // projeto a IA trabalha e quais outros ela também altera (worktree na mesma branch) ou só consulta.
   import { ClipboardList, Hammer, Lightbulb, Star } from "@lucide/svelte";
   import { untrack } from "svelte";
@@ -75,7 +75,7 @@
     {#if missing.length}<p class="small bad">Clone {missing.map(id => repos.byId(id)?.name || "o projeto").join(", ")} antes — o projeto não está nesta máquina.</p>{/if}
   </div>
   {#snippet footer()}
-    <span class="small muted">{change.length > 1 ? `${change.length} worktrees na mesma branch` : "1 worktree"}{refs.length ? ` · ${refs.length} de consulta` : ""}</span>
+    <span class="small muted">{change.length > 1 ? `${change.length} worktrees na mesma branch` : "1 worktree"}{refs.length ? ` · ${refs.length} de consulta` : ""}{c.files?.length ? ` · ${c.files.length} anexo(s) no contexto` : ""}</span>
     <span class="spacer"></span>
     <button class="btn" onclick={onclose}>Cancelar</button>
     <button class="btn primary" disabled={busy || !account || !primary || missing.includes(primary)} onclick={go}>{busy ? "Enviando…" : FLOWS[flow].short}</button>

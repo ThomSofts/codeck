@@ -46,12 +46,27 @@ def default_shell(override=None):
     return os.environ.get("SHELL") or ("/bin/zsh" if sys.platform == "darwin" else "/bin/bash")
 
 
-def shell_argv(command=None, shell=None):
+# PowerShell no Windows: saída em UTF-8 (sem isto o 5.1 usa a página OEM 850 e os acentos de git/dotnet/node viram lixo)
+PS_UTF8 = "try { [Console]::OutputEncoding = $OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch {}"
+
+
+def shell_argv(command=None, shell=None, win=None):
     """Shell de login (PATH do usuário, nvm, etc.). Com `command`, roda o comando e, quando ele sai, fica no shell."""
+    win = IS_WIN if win is None else win
     sh = default_shell(shell)
-    if IS_WIN or os.path.basename(sh).lower().startswith(("pwsh", "powershell")):
+    name = os.path.basename(sh.replace("\\", "/")).lower()
+    if name.startswith(("pwsh", "powershell")):
         base = [sh, "-NoLogo"]
+        if win:
+            # o Windows PowerShell 5.1 vem com a política "Restricted": o npm.ps1/claude.ps1/pnpm.ps1 das CLIs instaladas
+            # pelo npm não rodavam ("a execução de scripts foi desabilitada"). Só para este processo — não muda a máquina.
+            base += ["-ExecutionPolicy", "Bypass"]
+            return base + ["-NoExit", "-Command", PS_UTF8 + (f"; {command}" if command else "")]
         return base + (["-NoExit", "-Command", command] if command else [])
+    if win and name in ("cmd", "cmd.exe"):
+        return [sh] + (["/K", command] if command else [])
+    if win:   # bash do Git/WSL etc. escolhido nos ajustes
+        return [sh] + (["-l", "-c", f"{command}; exec {shlex.quote(sh)} -l"] if command else ["-l"])
     if not command:
         return [sh, "-l"]
     return [sh, "-l", "-c", f"{command}; exec {shlex.quote(sh)} -l"]

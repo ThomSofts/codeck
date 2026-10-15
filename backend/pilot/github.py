@@ -408,6 +408,25 @@ class GitHub:
             failed.append(item)
         return {"stages": stages, "failed": failed[:8]}
 
+    def run_phase(self, full, run_id):
+        """O que um run "em andamento" está fazendo de verdade: falhando (um job já falhou), esperando runner, ou o
+        job/passo atual."""
+        jobs = self.req("GET", f"repos/{full}/actions/runs/{run_id}/jobs?per_page=50", etag=True).get("jobs", [])
+        last = max((j.get("completed_at") or j.get("started_at") or "" for j in jobs), default="") or None
+        bad = [j for j in jobs if j.get("conclusion") in ("failure", "timed_out", "startup_failure")]
+        if bad:
+            step = next((s["name"] for s in bad[0].get("steps", []) if s.get("conclusion") in ("failure", "timed_out")), None)
+            return {"state": "failing", "label": f"falhou em {bad[0]['name']}" + (f" › {step}" if step else ""), "stage": None,
+                    "job": bad[0]["name"], "since": last}
+        cur = next((j for j in jobs if j.get("status") == "in_progress"), None)
+        if not cur:
+            queued = [j for j in jobs if j.get("status") in ("queued", "waiting", "pending", "requested")]
+            if queued:
+                return {"state": "agent", "label": "esperando runner", "stage": None, "job": queued[0]["name"], "since": last}
+            return {"state": "running", "label": "rodando", "stage": None, "job": None, "since": last}
+        step = next((s["name"] for s in cur.get("steps", []) if s.get("status") == "in_progress"), None)
+        return {"state": "running", "label": cur["name"] + (f" › {step}" if step else ""), "stage": None, "job": cur["name"], "since": last}
+
     def run_action(self, b, action):
         full, run_id = b["project"], b["id"]
         path = {"retry": "rerun-failed-jobs", "rerun": "rerun", "cancel": "cancel"}.get(action)

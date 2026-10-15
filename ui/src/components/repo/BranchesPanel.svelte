@@ -1,15 +1,18 @@
 <script lang="ts">
   // Branches locais (↑/↓, sem remota), remotas, tags e stashes. Nomes com "/" viram pastas recolhíveis (feature/, fix/…),
-  // como no GitKraken. Cada linha tem as ações no "⋯" e no clique direito; duplo clique faz checkout.
+  // como no GitKraken. Cada linha tem as ações no "⋯" e no clique direito; duplo clique faz checkout. "Limpar" abre a
+  // análise pela principal (mergeadas, squash, remoto apagado) — ver BranchCleanup.
   import { ArrowDown, ArrowUp, Archive, ChevronRight, Cloud, CloudOff, Copy, Download, Folder, FolderOpen, GitBranch, GitBranchPlus, GitMerge,
     GitPullRequestCreate, Pencil, Search, Sparkles, Tag, Trash2, Upload, Shuffle, X } from "@lucide/svelte";
   import { ago } from "../../lib/format";
   import type { Refs } from "../../lib/types";
   import { ui } from "../../lib/ui.svelte";
   import Menu, { type MenuItem } from "../Menu.svelte";
+  import BranchCleanup from "./BranchCleanup.svelte";
 
-  let { refs, onaction, onfocus, focused = null, canPr = true }:
-    { refs: Refs; onaction: (action: string, arg: any) => void; onfocus: (name: string | null) => void; focused?: string | null; canPr?: boolean } = $props();
+  let { refs, onaction, onfocus, focused = null, canPr = true, repoId = undefined }:
+    { refs: Refs; onaction: (action: string, arg: any) => void; onfocus: (name: string | null) => void; focused?: string | null; canPr?: boolean; repoId?: string } = $props();
+  let cleaning = $state(false);
   let sec = $state<Record<string, boolean>>({ local: true, remote: false, tags: false, stashes: true });
   let shut = $state<Record<string, boolean>>({});   // pastas fechadas à mão (chave = seção:caminho)
   let q = $state("");
@@ -152,9 +155,9 @@
   <div class="scroll">
     <div class="sech">
       <button class="sec" onclick={() => (sec.local = !sec.local)}><ChevronRight size={13} class="chev {sec.local ? 'rot' : ''}" /> Locais <em>{refs.local.length}</em></button>
-      {#if gone.length}
-        <button class="tidy" title="Apagar as branches locais cuja remota já foi apagada (só as já mescladas)" onclick={() => onaction("tidy", gone.map(b => b.name))}>
-          <Sparkles size={12} /> Limpar {gone.length}</button>
+      {#if repoId && refs.local.length > 1}
+        <button class="tidy" class:has={gone.length > 0} title={`Recomenda o que apagar comparando com ${refs.default ? "origin/" + refs.default : "a principal"}: mergeadas, squash e remoto apagado${gone.length ? ` · ${gone.length} com o remoto apagado` : ""}`}
+          onclick={() => (cleaning = true)}><Sparkles size={12} /> Limpar{#if gone.length}<em>{gone.length}</em>{/if}</button>
       {/if}
     </div>
     {#if sec.local}{@render nodes(local, "local", 0, "local")}{#if !local.length}<div class="none">{q ? "Nada com esse filtro." : "Nenhuma branch local."}</div>{/if}{/if}
@@ -192,6 +195,7 @@
     {/if}
   </div>
 </div>
+{#if cleaning && repoId}<BranchCleanup {repoId} onclose={() => (cleaning = false)} ondone={() => onaction("tidy", null)} />{/if}
 
 <style>
   .panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
@@ -221,8 +225,11 @@
   .now { font: 650 9.5px/1 var(--font); text-transform: uppercase; letter-spacing: 0.05em; padding: 3px 5px; border-radius: 5px; background: var(--good-soft); color: var(--good); }
   .when { color: var(--faint); white-space: nowrap; }
   .sech { display: flex; align-items: center; padding-right: 8px; }
-  .tidy { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; border: 0; background: var(--accent-soft); color: var(--accent);
-    font: 600 11px/1 var(--font); padding: 4px 7px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+  .tidy { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; color: var(--muted);
+    font: 600 11px/1 var(--font); padding: 4px 7px; border-radius: 6px; cursor: pointer; white-space: nowrap; transition: background var(--t-fast), color var(--t-fast); }
+  .tidy:hover { background: var(--surface-2); color: var(--text); }
+  .tidy.has { background: var(--accent-soft); color: var(--accent); }
+  .tidy em { font-style: normal; font-variant-numeric: tabular-nums; }
   .gone { color: var(--faint); display: inline-grid; }
   .ab { display: inline-flex; align-items: center; gap: 2px; font: 650 10.5px/1 var(--font); }
   .ab.up { color: var(--accent); }

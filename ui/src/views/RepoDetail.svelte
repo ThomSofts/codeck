@@ -89,6 +89,16 @@
       diff = { title: f.path, text: d.diff, binary: d.binary, truncated: d.truncated };
     } catch (e) { ui.error(e); }
   }
+  // veio da PR ("Commits da branch"): destaca a branch dela no graph assim que as refs chegam
+  $effect(() => {
+    const bi = repos.branchIntent;
+    if (bi && bi.repoId === id && refs) untrack(() => {
+      const has = refs!.local.some(b => b.name === bi.branch) || refs!.remote.some(b => b.name.split("/").slice(1).join("/") === bi.branch);
+      if (has) focusBranch = bi.branch;
+      else ui.toast(`${bi.branch} ainda não está nesta cópia — faça um fetch`, "info");
+      repos.branchIntent = null;
+    });
+  });
   // veio de uma tarefa com "Criar PR": abre o formulário assim que souber a branch
   $effect(() => {
     if (repos.prIntent === id && status?.branch) { prFrom = status.branch; repos.prIntent = null; }
@@ -139,14 +149,7 @@
       return;
     }
     if (a.startsWith("stash-")) return run("stash", "stash", { action: a.slice(6), ref: name }, "Stash aplicado");
-    if (a === "tidy") {
-      const names = name as unknown as string[];
-      if (!(await ui.ask({ title: `Apagar ${names.length} branch(es) sem remota?`, detail: names.slice(0, 12), message: "Só as que o Git confirmar que já foram mescladas; as outras ficam.", confirm: "Limpar" }))) return;
-      let ok = 0;
-      for (const n of names) { try { await post("repo/branch-delete", { id, name: n }); ok++; } catch { /* não mesclada: fica */ } }
-      ui.toast(`${ok} de ${names.length} branch(es) apagada(s)${ok < names.length ? " — as outras têm commits que não estão em outra branch" : ""}`);
-      return loadAll();
-    }
+    if (a === "tidy") { repos.load(); return loadAll(); }   // a limpeza (BranchCleanup) já apagou: só relê
   }
   function contextCommit(c: Commit, e: MouseEvent) {
     sel = c.sha;
@@ -226,7 +229,7 @@
     {#if error}<div class="err">{error}</div>{/if}
 
     <div class="cols">
-      <aside class="card side">{#if refs}<BranchesPanel {refs} canPr={!!repo?.provider} onaction={branchAction} onfocus={(n) => (focusBranch = n)} focused={focusBranch} />{:else}<div class="sk"><i class="shim"></i><i class="shim"></i><i class="shim"></i></div>{/if}</aside>
+      <aside class="card side">{#if refs}<BranchesPanel {refs} repoId={id} canPr={!!repo?.provider} onaction={branchAction} onfocus={(n) => (focusBranch = n)} focused={focusBranch} />{:else}<div class="sk"><i class="shim"></i><i class="shim"></i><i class="shim"></i></div>{/if}</aside>
 
       <div class="card center">
         {#if diff}

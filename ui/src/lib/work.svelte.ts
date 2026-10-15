@@ -19,7 +19,7 @@ export interface AiActivity {
 }
 export interface TermInfo {
   id: string; title: string; kind: "shell" | "agent" | "setup" | "run"; cwd: string; alive: boolean; exit: number | null; created: number; lastOutput: number;
-  meta: { project?: string; task?: string; account?: string; provider?: Provider; sid?: string; run?: string };
+  meta: { project?: string; task?: string; account?: string; provider?: Provider; sid?: string; run?: string; bypass?: boolean };
 }
 export interface Session {
   account: string; provider: Provider; status: "starting" | "idle" | "working" | "done" | "needs-you" | "compacting"; started: number;
@@ -35,7 +35,9 @@ export interface Task {
 export interface Group { id: string; name: string; color: string; collapsed: boolean; repoIds: string[]; description?: string }
 export interface Project {
   id: string; name: string; path: string; provider?: string | null; slug?: string | null; webUrl?: string | null;
-  settings: { copy: string[]; setup: string; worktreeRoot: string; shell?: string; addDirs?: string[] }; tasks: Task[]; terms: TermInfo[]; resumable?: Resumable[];
+  /** bypass = abrir os agentes deste projeto sem pedir permissão; account = a conta de IA do projeto (a última usada) */
+  settings: { copy: string[]; setup: string; worktreeRoot: string; shell?: string; addDirs?: string[]; bypass?: boolean; account?: string | null };
+  tasks: Task[]; terms: TermInfo[]; resumable?: Resumable[];
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -56,6 +58,8 @@ class Work {
   pendingTask = $state<{ projectId: string; preset: any } | null>(null);
   /** "Pedir à IA" pedido de outra tela (issue, PR…): a tela do projeto abre o diálogo já preenchido */
   pendingAsk = $state<{ projectId: string; preset: any } | null>(null);
+  /** ⌘⇧I / "Pedir à IA": o painel do agente do projeto põe o cursor no campo de pedido (e consome o pedido) */
+  composeFocus = $state<{ projectId: string; at: number } | null>(null);
   /** abrir um projeto já numa aba (ex.: a Git), vindo de um link de repositório */
   focusRequest = $state<{ projectId: string; scope: string | null; tab: "git" | "review" | "code"; termId?: string | null } | null>(null);
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -234,21 +238,49 @@ class Work {
   }
 
   /** Pede para a IA planejar e/ou implementar. Em worktree (tarefa nova: branch + worktree + agente) ou no checkout
-   *  atual/na tarefa aberta. `linked` = outros projetos que a tarefa atravessa (um worktree em cada, mesma branch). */
+   *  atual/na tarefa aberta. `linked` = outros projetos que a tarefa atravessa (um worktree em cada, mesma branch).
+   *  `raw` = o pedido vai do jeito que foi escrito (sem a instrução do fluxo na frente) — o "Pedir à IA" do painel.
+   *  Pular permissões é do projeto (ajustes): o servidor põe a flag em todo agente aberto nele. */
   async askAi(o: { projectId: string; title: string; text: string; flow: Flow; accountId: string | null; worktree: boolean; linked?: string[];
-    refs?: string[]; workItem?: any; context?: string; kind?: string; taskId?: string | null; card?: string | null }) {
+    refs?: string[]; workItem?: any; context?: string; kind?: string; taskId?: string | null; card?: string | null; raw?: boolean }) {
     const f = FLOWS[o.flow];
-    const prompt = f.prefix + o.text.trim() + (o.context ? "\n\n" + o.context.trim() : "");
+    const prompt = (o.raw ? "" : f.prefix) + o.text.trim() + (o.context ? "\n\n" + o.context.trim() : "");
     if (!o.accountId) throw new Error("Escolha a conta de IA");
     if (o.worktree) {
-      const t = await post<Task>("ws/task", { repoId: o.projectId, title: o.title.trim(), kind: o.kind || (o.flow === "plan" ? "plan" : "feature"), prompt,
+      const t = await post<Task>("ws/task", { repoId: o.projectId, title: o.title.trim() || o.text.trim().split("\n")[0].slice(0, 70), kind: o.kind || (o.flow === "plan" ? "plan" : "feature"), prompt,
         agents: [o.accountId], mode: f.mode, linked: o.linked || [], refs: o.refs || [], workItem: o.workItem || null, card: o.card || null });
       await this.load();
       return { projectId: o.projectId, taskId: t.id };
     }
-    const t = await post<TermInfo>("ws/agent", { repoId: o.projectId, taskId: o.taskId || null, accountId: o.accountId, prompt, mode: f.mode, title: o.title.slice(0, 40) || undefined });
+    const t = await post<TermInfo>("ws/agent", { repoId: o.projectId, taskId: o.taskId || null, accountId: o.accountId, prompt, mode: f.mode, title: o.title.slice(0, 40) || undefined, card: o.card || null });
+    this.rememberAccount(o.projectId, o.accountId);
     await this.load();
     return { projectId: o.projectId, taskId: o.taskId || null, termId: t.id };
+  }
+  /** Abre um agente sem pedido (só a sessão), na conta indicada ou na do projeto. */
+  async openAgent(projectId: string, taskId: string | null, accountId?: string | null) {
+    const p = this.projects.find(x => x.id === projectId);
+    const acc = accountId || this.defaultAccount(p);
+    if (!acc) throw new Error("Nenhuma conta de IA — configure em Contas e ajustes → IA");
+    const t = await post<TermInfo>("ws/agent", { repoId: projectId, taskId, accountId: acc });
+    this.rememberAccount(projectId, acc);
+    await this.load();
+    return { projectId, taskId, termId: t.id };
+  }
+  /** Manda um pedido para um agente já aberto (como se fosse colado no terminal dele e Enter). */
+  sendToAgent(termId: string, text: string) { return post("ws/agent/input", { termId, text }); }
+  /** A conta de IA do projeto: o servidor já grava a última usada ao abrir um agente; trocar no chip grava na hora. */
+  rememberAccount(projectId: string, accountId: string) {
+    const p = this.projects.find(x => x.id === projectId);
+    if (p && p.settings.account !== accountId) this.projects = this.projects.map(x => (x === p ? { ...x, settings: { ...x.settings, account: accountId } } : x));
+  }
+  async setAccount(projectId: string, accountId: string) {
+    this.rememberAccount(projectId, accountId);
+    try { await post("ws/settings", { repoId: projectId, account: accountId }); } catch (e) { ui.error(e); }
+  }
+  focusComposer(projectId?: string | null) {
+    const id = projectId || this.active;
+    if (id) this.composeFocus = { projectId: id, at: Date.now() };
   }
   /** Abre o projeto já numa tarefa/aba (vindo do quadro, das issues…). */
   focus(projectId: string, scope: string | null, termId?: string | null) {
@@ -256,8 +288,11 @@ class Work {
     go("/work/" + projectId);
   }
 
-  /** Conta sugerida para um projeto: a padrão do dono (org) do repositório, senão a geral, senão a 1ª instalada. */
+  /** Conta sugerida para um projeto: a dele (a última usada nele), senão a padrão do dono (org) do repositório, senão a
+   *  geral, senão a 1ª instalada. */
   defaultAccount(p?: Project | null) {
+    const own = p?.settings?.account;
+    if (own && this.ai.some(a => a.id === own && a.installed)) return own;
     const scope = p?.provider && p.slug ? `${p.provider}:${p.slug.split("/")[0]}` : "";
     return this.defaults[scope] || this.defaults["*"] || this.ai.find(a => a.installed && a.provider === "claude")?.id || this.ai.find(a => a.installed)?.id || null;
   }

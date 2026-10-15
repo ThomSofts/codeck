@@ -127,7 +127,7 @@
     { sec: "notifications", id: "nDone", kind: "pref-switch", key: "notify.agentDone", label: "Agente terminou", desc: "A tarefa ficou pronta para revisar.", kw: "ia claude" },
     { sec: "notifications", id: "nNeeds", kind: "pref-switch", key: "notify.agentNeedsYou", label: "Agente precisa de você", desc: "Pediu permissão ou fez uma pergunta.", kw: "ia claude permissão" },
     // leitura e automação
-    { sec: "network", id: "poll", kind: "poll", label: "Intervalo de leitura", desc: "De quanto em quanto tempo o piloto consulta Azure e GitHub (15 s a 1 h). Sem internet, tenta a cada 10 s.", kw: "polling atualizar" },
+    { sec: "network", id: "poll", kind: "poll", label: "Intervalo de leitura", desc: "De quanto em quanto tempo o piloto consulta Azure e GitHub e roda as regras automáticas (15 s a 10 min). Sem internet, tenta a cada 10 s.", kw: "polling atualizar" },
     { sec: "network", id: "auto", kind: "auto", label: "Automação ativa", desc: "Desligada, nenhuma regra aprova ou arquiva nada sozinha — a tela continua igual.", kw: "pausar regras piloto" },
     { sec: "network", id: "resurface", kind: "rule-switch", key: "resurfaceOnPush", label: "PR arquivada volta com push novo", desc: "Se a PR que você arquivou receber commits, ela volta para a fila.", kw: "arquivar" },
     // dados
@@ -314,7 +314,7 @@
     </select>
   {:else if r.kind === "poll"}
     <select class="input" value={String(cfg?.pollSeconds)} onchange={(e) => savePrefs({ pollSeconds: Number((e.target as HTMLSelectElement).value) })}>
-      {#each [15, 30, 60, 120, 300, 600, 1800, 3600] as s (s)}<option value={String(s)}>{s < 60 ? `${s} s` : s < 3600 ? `${s / 60} min` : "1 h"}</option>{/each}
+      {#each [15, 30, 60, 120, 300, 600] as s (s)}<option value={String(s)}>{s < 60 ? `${s} s` : `${s / 60} min`}</option>{/each}
     </select>
   {:else if r.kind === "data-dir"}
     <button class="btn sm" onclick={openData} disabled={!cfg?.dataDir}><FolderOpen size={14} /> Abrir pasta</button>

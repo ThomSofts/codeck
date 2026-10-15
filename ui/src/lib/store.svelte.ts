@@ -9,8 +9,15 @@ import type { AppState, PR, Source } from "./types";
 class Store {
   s = $state<AppState | null>(null);
   error = $state<string | null>(null);
-  /** contador de "não redesenhe agora" (menu aberto, diálogo, edição) */
+  /** contador de "não redesenhe agora" (menu aberto, paleta de comandos) — vale por pouco tempo: ver `held` */
   hold = $state(0);
+  private heldSince = 0;
+  /** segura a releitura enquanto houver menu aberto, mas nunca mais que 20 s: a lista não pode congelar */
+  private get held() {
+    if (!this.hold) { this.heldSince = 0; return false; }
+    if (!this.heldSince) this.heldSince = Date.now();
+    return Date.now() - this.heldSince < 20000;
+  }
   /** "Atualizar" pedido à mão: fica true até o backend terminar a leitura que o pedido disparou */
   refreshing = $state(false);
   /** fase de cada voto em andamento, por PR: enviando → feito → saindo (a linha anima em cada uma) */
@@ -57,7 +64,9 @@ class Store {
 
   async load() {
     try {
-      const s = await get<AppState>("state");
+      // uma resposta presa não pode parar o ciclo da tela: desiste em 20 s e tenta de novo no próximo
+      const s = await Promise.race([get<AppState>("state"),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error("o backend demorou para responder")), 20000))]);
       this.s = s;
       this.error = null;
       syncTheme(s.theme);
@@ -72,7 +81,7 @@ class Store {
     window.addEventListener("offline", () => (this.netDown = true));
     window.addEventListener("online", () => { this.netDown = false; this.refresh(); });
     const tick = async () => {
-      if (!this.hold) await this.load();
+      if (!this.held) await this.load();
       // relê rápido até chegar o 1º dado e enquanto o backend estiver no meio de uma leitura (o indicador some na hora certa)
       // lendo alguma fonte: relê rápido (os dados de cada uma aparecem assim que ela termina); parado: a cada 6 s
       const fast = !this.s || !this.s.lastPoll || !this.s.lastBuildPoll || !this.s.lastDeployPoll || this.anyLoading;

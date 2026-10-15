@@ -229,6 +229,10 @@ def save_settings(repo_id, body):
         s["shell"] = str(body.get("shell") or "").strip()[:300]
     if isinstance(body.get("addDirs"), list):
         s["addDirs"] = [os.path.abspath(os.path.expanduser(str(x))) for x in body["addDirs"] if str(x).strip()][:20]
+    if "bypass" in body:   # pular as permissões em TODO agente aberto neste projeto (desligado por padrão)
+        s["bypass"] = bool(body.get("bypass"))
+    if "account" in body:   # a conta de IA deste projeto (a última usada; trocar no painel do agente também grava aqui)
+        s["account"] = str(body.get("account") or "")[:40] or None
     _save(d)
     return s
 
@@ -476,7 +480,7 @@ def start_shell(repo_id, task_id=None, title=None, command=None):
                             shell=_settings(repo_id).get("shell") or None).info()
 
 
-def start_agent(repo_id, task_id, account_id, prompt=None, mode=None, title=None, resume_sid=None):
+def start_agent(repo_id, task_id, account_id, prompt=None, mode=None, title=None, resume_sid=None, card=None):
     a = agents.get_account(account_id)
     resume = None
     if resume_sid:   # retomar a conversa de uma sessão anterior (o app foi fechado): mesma sessão da CLI
@@ -489,9 +493,20 @@ def start_agent(repo_id, task_id, account_id, prompt=None, mode=None, title=None
     if task_id:
         t_ = _task(_load(), repo_id, task_id)
         extra += [x["path"] for x in (t_.get("linked") or []) + (t_.get("refs") or [])]   # tarefa em vários repos + consulta
-    command, env = agents.launch_spec(account_id, prompt, mode, sid, extra_dirs=extra, resume=resume)
+        card = card or t_.get("card")
+    if card:   # anexos do cartão do quadro: o agente lê sem pedir permissão (pasta extra, como as de consulta)
+        files = os.path.join(DATA, "kanban-files", os.path.basename(str(card)))
+        if os.path.isdir(files):
+            extra.append(files)
+    d = _load()
+    st = _proj(d, repo_id)["settings"]
+    bypass = bool(st.get("bypass"))
+    command, env = agents.launch_spec(account_id, prompt, mode, sid, extra_dirs=extra, resume=resume, bypass=bypass)
+    if st.get("account") != account_id:   # lembra a conta do projeto: a próxima vez já abre nela
+        st["account"] = account_id
+        _save(d)
     meta = {"project": repo_id, "account": account_id, "provider": a["provider"], "sid": sid,
-            **({"task": task_id} if task_id else {})}
+            **({"task": task_id} if task_id else {}), **({"bypass": True} if bypass else {})}
     label = title or f"{agents.PROVIDERS[a['provider']]['label']} · {a['name']}"
     t = terminals.create(_cwd(repo_id, task_id), label, command, "agent", meta, env)
     agents.set_title(sid, label)
@@ -499,6 +514,24 @@ def start_agent(repo_id, task_id, account_id, prompt=None, mode=None, title=None
     agents.remember(sid, account=account_id, provider=a["provider"], project=repo_id, task=task_id, title=label,
                     cliSession=resume, started=now_iso())
     return t.info()
+
+
+def send_input(term_id, text, submit=True):
+    """Manda um texto para um agente aberto, como se fosse colado: colagem delimitada (o agente recebe o bloco inteiro,
+    com as quebras de linha) e, um instante depois, o Enter sozinho — junto, o Enter virava quebra de linha."""
+    import threading
+    t = terminals.get(term_id)
+    if t.kind != "agent":
+        raise ValueError("Só dá para mandar pedidos para um agente")
+    if not t.alive:
+        raise ValueError("Esta sessão já terminou — abra uma nova")
+    text = (text or "").replace("\r\n", "\n").replace("\0", "")
+    if not text.strip():
+        raise ValueError("Escreva o que mandar")
+    t.write(("\x1b[200~" + text + "\x1b[201~").encode("utf-8"))
+    if submit:
+        threading.Timer(0.3, lambda: t.write(b"\r")).start()
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- arquivos
@@ -657,9 +690,30 @@ def _vars(s, root):
 
 
 def _q(x):
+    """Um argumento para o shell do terminal. No Windows o shell é o PowerShell: aspas simples (dentro delas nada é
+    interpretado — $, crase, ;). As aspas duplas do cmd (list2cmdline) expandiam $ e, no começo da linha, viravam
+    uma expressão em vez de um comando."""
     import shlex
-    import subprocess as sp
-    return sp.list2cmdline([x]) if os.name == "nt" else shlex.quote(x)
+    if os.name != "nt":
+        return shlex.quote(x)
+    return x if x and re.fullmatch(r"[\w%+=:./\\-]+", x) else agents._ps_lit(x)
+
+
+def _join(parts):
+    """Linha de comando: no PowerShell um comando entre aspas precisa do & para ser executado."""
+    cmd = " ".join(_q(p) for p in parts)
+    return "& " + cmd if os.name == "nt" and cmd.startswith("'") else cmd
+
+
+def _and(*cmds):
+    """Encadeia comandos que só seguem se o anterior deu certo. O Windows PowerShell 5.1 não tem && (só o 7 tem)."""
+    cmds = [c for c in cmds if c]
+    if os.name != "nt":
+        return " && ".join(cmds)
+    out = cmds[-1]
+    for c in reversed(cmds[:-1]):
+        out = f"{c}; if ($?) {{ {out} }}"
+    return out
 
 
 def run_configs(repo_id, task_id=None):
@@ -721,16 +775,16 @@ def _run_configs(repo_id, task_id=None):
                 if c.get("program"):
                     parts.append(_vars(c["program"], root))
                 parts += [_vars(a, root) for a in c.get("args") or []]
-                cmd = " ".join(_q(p) for p in parts)
+                cmd = _join(parts)
             elif t in ("debugpy", "python"):
                 if c.get("module"):
-                    cmd = " ".join(_q(p) for p in ["python3" if os.name != "nt" else "python", "-m", c["module"]] + [_vars(a, root) for a in c.get("args") or []])
+                    cmd = _join(["python3" if os.name != "nt" else "python", "-m", c["module"]] + [_vars(a, root) for a in c.get("args") or []])
                 elif c.get("program"):
-                    cmd = " ".join(_q(p) for p in ["python3" if os.name != "nt" else "python", _vars(c["program"], root)] + [_vars(a, root) for a in c.get("args") or []])
+                    cmd = _join(["python3" if os.name != "nt" else "python", _vars(c["program"], root)] + [_vars(a, root) for a in c.get("args") or []])
             elif t in ("coreclr", "dotnet"):
                 if c.get("program", "").endswith(".exe") or c.get("program", "").endswith(".dll"):
                     prog = _vars(c["program"], root)
-                    cmd = ("dotnet " + _q(prog) if prog.endswith(".dll") else _q(prog)) + "".join(" " + _q(_vars(a, root)) for a in c.get("args") or [])
+                    cmd = _join((["dotnet", prog] if prog.endswith(".dll") else [prog]) + [_vars(a, root) for a in c.get("args") or []])
                 elif c.get("projectPath"):
                     cmd = "dotnet run --project " + _q(_vars(c["projectPath"], root))
             elif t == "go":
@@ -741,7 +795,7 @@ def _run_configs(repo_id, task_id=None):
                     # o "build" do C# costuma vir da extensão do VS Code (sem tasks.json): compila o projeto do programa
                     pre = "dotnet build " + _q(_vars(c["program"], root).replace("\\", "/").split("/bin/")[0])
                 if pre:
-                    cmd = f"{pre} && {cmd}" if os.name != "nt" else f"{pre}; if ($?) {{ {cmd} }}"
+                    cmd = _and(pre, cmd)
             if cmd:
                 item = {"id": "launch:" + c.get("name", ""), "label": c.get("name", "?"), "group": "launch.json", "command": cmd,
                         "cwd": cwd, "env": env, "envFile": _vars(c.get("envFile"), root) or None}
@@ -806,15 +860,15 @@ def _vscode_tasks(root):
             continue
         parts = [_vars(t["command"], root)] + [_vars(a if isinstance(a, str) else a.get("value", ""), root) for a in t.get("args") or []]
         cwd = _vars((t.get("options") or {}).get("cwd"), root)
-        cmd = " ".join(_q(x) if t.get("type") == "process" else x for x in parts)
-        out[t.get("label") or t["command"]] = (f"cd {_q(cwd)} && {cmd}" if cwd else cmd)
+        cmd = _join(parts) if t.get("type") == "process" else " ".join(parts)
+        out[t.get("label") or t["command"]] = _and(f"cd {_q(cwd)}", cmd) if cwd else cmd
     for t in data.get("tasks") or []:
         deps = t.get("dependsOn")
         if deps and t.get("label"):
             deps = [deps] if isinstance(deps, str) else deps
             chain = [out[d] for d in deps if d in out] + ([out[t["label"]]] if t["label"] in out else [])
             if chain:
-                out[t["label"]] = " && ".join(chain)
+                out[t["label"]] = _and(*chain)
     return out
 
 

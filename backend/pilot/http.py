@@ -381,6 +381,23 @@ def get_repo_clean_check(qs, body):
     return {"blockers": git.clean_blockers(q1(qs, "id"))}
 
 
+@route("GET", "/api/activity")
+def get_activity(qs, body):
+    """Histórico de uma PR (o arquivo inteiro, não só os 300 do estado): pela chave, mais builds/deploys com o número dela."""
+    key, num, org = q1(qs, "key"), q1(qs, "prId") or "", q1(qs, "org")
+    items = read_activity()
+    if key:
+        n = int(num) if num.isdigit() else None
+        items = [e for e in items if e.get("key") == key or (n and e.get("prNumber") == n and (not org or e.get("org") == org))]
+    return {"activity": items[:2000]}
+
+
+@route("GET", "/api/repo/branch-cleanup")
+def get_repo_branch_cleanup(qs, body):
+    """Plano de limpeza das branches locais: busca no servidor (com prune) e classifica pela principal."""
+    return git.cleanup_plan(q1(qs, "id"), q1(qs, "fetch", "1") == "1")
+
+
 REPO_ACTIONS = {
     "stage": lambda b: git.stage(b["id"], b.get("paths")),
     "stage-all": lambda b: git.stage_all(b["id"]),
@@ -408,6 +425,7 @@ REPO_ACTIONS = {
     "abort": lambda b: git.abort_operation(b["id"]),
     "continue": lambda b: git.continue_operation(b["id"]),
     "clean": lambda b: git.clean_local(b["id"]),
+    "branch-cleanup": lambda b: git.cleanup_branches(b["id"], b.get("branches"), bool(b.get("remote"))),
 }
 for _name, _fn in REPO_ACTIONS.items():
     POST[f"/api/repo/{_name}"] = (lambda fn: lambda qs, body: fn(body) or {"ok": True})(_fn)
@@ -530,6 +548,32 @@ def post_kanban_link(qs, body):
 @route("GET", "/api/kanban/context")
 def get_kanban_context(qs, body):
     return {"text": kanban.context(q1(qs, "id"))}
+
+
+@route("POST", "/api/kanban/unlink")
+def post_kanban_unlink(qs, body):
+    return kanban.unlink_task(body.get("id"), body.get("taskId"))
+
+
+# anexos do cartão: sobem em base64 (a API só fala JSON); a tela lê com fetch (a chave vai no cabeçalho) → blob URL
+@route("POST", "/api/kanban/file")
+def post_kanban_file(qs, body):
+    return kanban.add_file(body.get("id"), body.get("name"), body.get("data"), body.get("type"))
+
+
+@route("GET", "/api/kanban/file")
+def get_kanban_file(qs, body):
+    return kanban.get_file(q1(qs, "id"), q1(qs, "f"))
+
+
+@route("POST", "/api/kanban/file/delete")
+def post_kanban_file_delete(qs, body):
+    return kanban.remove_file(body.get("id"), body.get("f"))
+
+
+@route("POST", "/api/kanban/file/open")
+def post_kanban_file_open(qs, body):
+    return kanban.open_file(body.get("id"), body.get("f"), bool(body.get("reveal")))
 
 
 # ---------------------------------------------------------------- quais repositórios acompanhar
@@ -709,7 +753,12 @@ def post_ws_shell(qs, body):
 def post_ws_agent(qs, body):
     terminals.hint_size(body.get("cols"), body.get("rows"))
     return workspace.start_agent(body.get("repoId"), body.get("taskId"), body.get("accountId"), body.get("prompt"),
-                                 body.get("mode"), body.get("title"), body.get("resume"))
+                                 body.get("mode"), body.get("title"), body.get("resume"), body.get("card"))
+
+
+@route("POST", "/api/ws/agent/input")
+def post_ws_agent_input(qs, body):
+    return workspace.send_input(body.get("termId"), body.get("text"), body.get("submit", True) is not False)
 
 
 @route("GET", "/api/ws/run-configs")
@@ -725,7 +774,10 @@ def post_ws_run(qs, body):
 
 @route("GET", "/api/ws/files")
 def get_ws_files(qs, body):
-    return workspace.files(q1(qs, "repoId"), q1(qs, "taskId"))
+    r = workspace.files(q1(qs, "repoId"), q1(qs, "taskId"))
+    if q1(qs, "dirs") == "1":   # o explorador também mostra as pastas vazias
+        r["dirs"] = editor.empty_dirs(q1(qs, "repoId"), q1(qs, "taskId"), r["files"])
+    return r
 
 
 @route("GET", "/api/ws/file")
@@ -761,7 +813,27 @@ def post_ws_fs_rename(qs, body):
 
 @route("POST", "/api/ws/fs/delete")
 def post_ws_fs_delete(qs, body):
-    return editor.delete(body.get("repoId"), body.get("path"), body.get("taskId"))
+    return editor.delete(body.get("repoId"), body.get("path"), body.get("taskId"), body.get("paths"))
+
+
+@route("POST", "/api/ws/fs/move")
+def post_ws_fs_move(qs, body):
+    return editor.move(body.get("repoId"), body.get("paths"), body.get("dest"), body.get("taskId"), bool(body.get("overwrite")))
+
+
+@route("POST", "/api/ws/fs/copy")
+def post_ws_fs_copy(qs, body):
+    return editor.copy(body.get("repoId"), body.get("paths"), body.get("dest"), body.get("taskId"))
+
+
+@route("POST", "/api/ws/fs/free")
+def post_ws_fs_free(qs, body):
+    return editor.free_name(body.get("repoId"), body.get("dest"), body.get("name"), body.get("taskId"))
+
+
+@route("POST", "/api/ws/fs/upload")
+def post_ws_fs_upload(qs, body):
+    return editor.upload(body.get("repoId"), body.get("path"), body.get("data"), body.get("offset"), body.get("taskId"), bool(body.get("folder")))
 
 
 # ---------------------------------------------------------------- .NET como no Visual Studio
@@ -1138,6 +1210,8 @@ def _watch_parent(parent):
 
 
 def main():
+    from .core import backup_on_upgrade
+    backup_on_upgrade()   # antes de tudo: nenhuma migração roda sem a cópia dos dados da versão anterior
     if not os.path.exists(RULES_FILE):
         save_json(RULES_FILE, rules.DEFAULT_RULES)
     port = int(os.environ.get("CODECK_PORT") or load_json(CONFIG_FILE, {}).get("port") or DEFAULT_PORT)

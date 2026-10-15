@@ -1,10 +1,10 @@
 <script lang="ts">
-  // Uso de IA: as contas agora (limite, contagem para o reset, onde estão atuando) e quanto cada projeto consome —
-  // tempo do agente trabalhando, seu tempo com o projeto na tela, custo informado pela CLI, linhas alteradas e quanto
-  // de cada limite (5 h / semanal) cada projeto gastou.
-  import { Bot, Clock3, Coins, Gauge, GitCompareArrows, Hash, Layers, RefreshCw, Timer } from "@lucide/svelte";
+  // Uso de IA: as contas agora numa tabela alinhada (cada limite com o quanto usou, quem gastou por projeto e quando
+  // reseta; onde está atuando) e quanto cada projeto consome — tempo do agente trabalhando, seu tempo com o projeto na
+  // tela, custo informado pela CLI, linhas alteradas e quanto de cada limite (5 h / semanal) cada projeto gastou.
+  import { Gauge, RefreshCw } from "@lucide/svelte";
   import { work } from "../lib/work.svelte";
-  import AiAccountCard from "../components/settings/AiAccountCard.svelte";
+  import AccountRow from "../components/ai/AccountRow.svelte";
   import { untrack } from "svelte";
   import { get } from "../lib/api";
   import { go, soft } from "../lib/router.svelte";
@@ -13,8 +13,7 @@
   import Page from "../components/Page.svelte";
   import Segmented from "../components/Segmented.svelte";
   import Skeleton from "../components/Skeleton.svelte";
-  import Stat from "../components/ai/Stat.svelte";
-  import { clock, headroom, resetLabel, stateRank, tone } from "../components/ai/limits.svelte";
+  import { clock, headroom, stateRank } from "../components/ai/limits.svelte";
 
   type G = { cost: number; sessions: number; tokens: number; workMs: number; added: number; removed: number; focusS: number; limits: Record<string, number>; name?: string };
   type Cur = { account: string; accountName: string; provider: string; window: string; used: number; resetsAt: string | null; projects: Record<string, { name: string; used: number }> };
@@ -26,7 +25,6 @@
   $effect(() => { const v = sortAcc; try { localStorage.setItem("codeck.ai.sort", v); } catch { /* sem armazenamento */ } });
   let A = $state<R | { error: string } | null>(null);
   let tip = $state<{ x: number; y: number; text: string } | null>(null);
-  let hover = $state<string | null>(null);
   async function load() {
     try { const r = await get<R>("ai/usage", { days }); soft(() => { A = r; }); }
     catch (e: any) { A = { error: e.message }; }
@@ -71,6 +69,13 @@
     if (sortAcc === "tight") return list.sort((x, y) => (h(x.id) < 0 ? 999 : h(x.id)) - (h(y.id) < 0 ? 999 : h(y.id)));
     return list.sort((x, y) => stateRank(work.activity[x.id]?.state) - stateRank(work.activity[y.id]?.state) || h(y.id) - h(x.id));
   });
+  // quanto cada projeto gastou de cada janela, por conta (a leitura de uso; os limites ao vivo vêm de work.ai)
+  const breakdown = $derived.by(() => {
+    const m: Record<string, Record<string, Record<string, { name: string; used: number }>>> = {};
+    for (const c of R?.current || []) (m[c.account] ||= {})[c.window] = c.projects;
+    return m;
+  });
+  const lines = $derived(R ? R.totals.added + R.totals.removed : 0);
   const dayTip = (d: G & { day: string }) => `${wday(d.day)} ${fmtD(d.day)}${d.day === today ? " (hoje)" : ""}\nAgente trabalhando: ${dur(d.workMs)}\nSeu tempo: ${dur(d.focusS * 1000)}\nCusto: ${money(d.cost)}\nSessões: ${d.sessions}`;
 </script>
 
@@ -81,15 +86,15 @@
   {/snippet}
   <div class="scroll">
     {#if work.ai.length}
-      <div class="sech">
-        <h3>Contas agora</h3><span class="small muted">limite, quando reseta, onde estão atuando</span>
-        <span class="grow"></span>
-        <Segmented size="sm" bind:value={sortAcc} options={[{ value: "state", label: "Atividade" }, { value: "free", label: "Mais folga" }, { value: "tight", label: "Perto do limite" }]} />
-      </div>
-      <div class="accgrid">
-        {#each accounts as a (a.id)}
-          <AiAccountCard {a} compact />
-        {/each}
+      <div class="card accts">
+        <div class="card-h"><h3>Contas</h3><span class="muted small hide-n">limites, quando resetam e onde estão atuando</span><span class="grow"></span>
+          <Segmented size="sm" bind:value={sortAcc} options={[{ value: "state", label: "Atividade" }, { value: "free", label: "Mais folga" }, { value: "tight", label: "Perto do limite" }]} /></div>
+        <div class="alist">
+          <div class="ahead" aria-hidden="true"><span>Conta</span><span>Limites · usado por projeto e reset</span><span>Atuando em</span><span></span></div>
+          {#each accounts as a, i (a.id)}
+            <AccountRow {a} index={i} breakdown={breakdown[a.id]} {colorOf} ontip={(t) => (tip = t)} />
+          {/each}
+        </div>
       </div>
     {/if}
 
@@ -100,42 +105,15 @@
     {#if !A}<Skeleton kpis={6} rows={4} avatar={false} />
     {:else if "error" in A}<div class="err">{A.error}</div>
     {:else if R}
-      <div class="kpis">
-        <Stat index={0} icon={Bot} label="Agente trabalhando" value={R.totals.workMs} fmt={dur} sub="da pergunta até a resposta" />
-        <Stat index={1} icon={Timer} label="Seu tempo nos projetos" value={R.totals.focusS * 1000} fmt={dur} sub="projeto aberto e à vista" tone="muted" />
-        <Stat index={2} icon={Layers} label="Sessões de agente" value={R.sessions} sub={`${Object.keys(R.projects).length} projeto(s)`} tone="muted" />
-        <Stat index={3} icon={GitCompareArrows} label="Linhas alteradas" value={R.totals.added + R.totals.removed} fmt={(n) => (n >= 1 ? `+${Math.round((R!.totals.added * n) / Math.max(1, R!.totals.added + R!.totals.removed))} −${Math.round((R!.totals.removed * n) / Math.max(1, R!.totals.added + R!.totals.removed))}` : "—")} sub="pelos agentes" tone="good" />
-        <Stat index={4} icon={Coins} label="Custo informado" value={R.totals.cost} fmt={money} sub="equivalente API (referência)" tone="warn" />
-        <Stat index={5} icon={Hash} label="Tokens" value={R.totals.tokens} fmt={tok} sub="quando a CLI informa" tone="muted" />
+      <div class="card kpis">
+        <div class="kpi"><span class="kl">Agente trabalhando</span><b>{dur(R.totals.workMs)}</b><span class="ks">da pergunta até a resposta</span></div>
+        <div class="kpi"><span class="kl">Seu tempo nos projetos</span><b>{dur(R.totals.focusS * 1000)}</b><span class="ks">projeto aberto e à vista</span></div>
+        <div class="kpi"><span class="kl">Sessões de agente</span><b>{R.sessions || "—"}</b><span class="ks">{Object.keys(R.projects).length} projeto(s)</span></div>
+        <div class="kpi"><span class="kl">Linhas alteradas</span><b>{#if lines}<span class="add">+{R.totals.added}</span> <span class="del">−{R.totals.removed}</span>{:else}—{/if}</b><span class="ks">pelos agentes</span></div>
+        <div class="kpi"><span class="kl">Custo informado</span><b>{money(R.totals.cost)}</b><span class="ks">equivalente API (referência)</span></div>
+        <div class="kpi"><span class="kl">Tokens</span><b>{tok(R.totals.tokens)}</b><span class="ks">quando a CLI informa</span></div>
       </div>
-
-      <div class="card lim">
-        <div class="card-h"><h3>Limites agora</h3><span class="muted small">quanto da janela atual cada projeto gastou</span></div>
-        <div class="card-b">
-          {#each R.current as c, ci (c.account + c.window)}
-            {@const parts = Object.entries(c.projects).sort((a, b) => b[1].used - a[1].used)}
-            {@const mine = parts.reduce((s, [, p]) => s + p.used, 0)}
-            {@const other = Math.max(0, (c.used || 0) - mine)}
-            <div class="lw" style="--i:{ci}">
-              <div class="lh"><AgentIcon provider={c.provider} size={14} /><b>{c.accountName}</b><span class="muted">· {c.window}</span>
-                <span class="grow"></span><b class="num {tone(c.used)}">{pct(c.used || 0)}</b><span class="tiny muted cd"><Clock3 size={10} /> {resetLabel(c.resetsAt, clock.now)}</span></div>
-              <div class="track" role="img" aria-label={`${c.accountName} ${c.window}: ${pct(c.used || 0)} usado`}>
-                {#each parts as [id, p] (id)}
-                  <i role="presentation" class:dim={hover && hover !== id} style="width:{p.used}%;background:{colorOf(id)}" onmousemove={(e) => { hover = id; tip = { x: e.clientX, y: e.clientY, text: `${p.name}: ${pct(p.used)} desta janela` }; }} onmouseleave={() => { tip = null; hover = null; }}></i>
-                {/each}
-                {#if other > 0.05}<i role="presentation" class="rest" class:dim={hover && hover !== "~"} style="width:{other}%" onmousemove={(e) => { hover = "~"; tip = { x: e.clientX, y: e.clientY, text: `Fora do app ou antes da 1ª leitura: ${pct(other)}` }; }} onmouseleave={() => { tip = null; hover = null; }}></i>{/if}
-                {#if (c.used || 0) < 100}<span class="free" style="width:{100 - (c.used || 0)}%"></span>{/if}
-              </div>
-              {#if parts.length || other > 0.05}
-                <div class="legend">
-                  {#each parts as [id, p] (id)}<span role="presentation" class:dim={hover && hover !== id} onmouseenter={() => (hover = id)} onmouseleave={() => (hover = null)}><i style="background:{colorOf(id)}"></i>{p.name} <b>{pct(p.used)}</b></span>{/each}
-                  {#if other > 0.05}<span class:dim={hover && hover !== "~"}><i class="rest"></i>fora do app <b>{pct(other)}</b></span>{/if}
-                </div>
-              {/if}
-            </div>
-          {:else}<div class="small muted">Nenhuma leitura de limite ainda — ela chega quando um agente Claude ou Codex responde em Projetos.</div>{/each}
-        </div>
-      </div>
+      {#if !R.current.length}<div class="small muted note">Nenhuma leitura de limite ainda — ela chega quando um agente Claude ou Codex responde em Projetos.</div>{/if}
 
       <div class="card">
         <div class="card-h"><h3>Por dia</h3><span class="muted small">média {fmtV(avgV)}/dia</span><span class="grow"></span>
@@ -191,30 +169,26 @@
 {#if tip}<div class="tip" style="left:{tip.x + 12}px;top:{tip.y + 14}px">{tip.text}</div>{/if}
 
 <style>
-  .scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding-right: 2px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-content: start; padding-bottom: 20px; }
+  .scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding-right: 2px; display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; gap: 14px; align-content: start; padding-bottom: 20px; }
   .sech { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 2px 2px -2px; }
   .sech h3 { margin: 0; font-size: 14px; font-weight: 650; }
   .sech.period { margin-top: 10px; }
-  .accgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
-  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 10px; }
+  /* contas: a lista é o container das linhas (AccountRow muda o arranjo por container query) */
+  .accts { overflow: hidden; }
+  .accts .card-h { padding-block: 8px; row-gap: 8px; }
+  .alist { container: accts / inline-size; }
+  .ahead { display: grid; grid-template-columns: minmax(180px, 0.95fr) minmax(320px, 2.3fr) minmax(170px, 1fr) 60px; column-gap: 22px; padding: 9px 16px 7px;
+    font: 600 11px/1.2 var(--font); color: var(--muted); }
+  @container accts (max-width: 860px) { .ahead { display: none; } }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line); overflow: hidden; }
+  .kpi { display: grid; gap: 3px; align-content: start; padding: 12px 16px 13px; background: var(--surface); min-width: 0; }
+  .kpi .kl { font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kpi b { font-size: 20px; font-weight: 680; letter-spacing: -0.025em; font-variant-numeric: tabular-nums; line-height: 1.25; white-space: nowrap; }
+  .kpi .ks { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .note { margin: -4px 2px 0; }
   .err { color: var(--bad); }
   .grow { flex: 1; }
-  .lim .card-b { display: grid; gap: 18px; }
-  .lw { display: grid; gap: 7px; animation: rise 0.35s var(--ease-out) both; animation-delay: calc(var(--i) * 50ms); }
-  .lh { display: flex; align-items: center; gap: 7px; font-size: 13px; }
-  .lh .num { font-variant-numeric: tabular-nums; }
-  .lh .num.good { color: var(--text); } .lh .num.warn { color: var(--warn); } .lh .num.bad { color: var(--bad); }
-  .cd { display: inline-flex; align-items: center; gap: 3px; font-variant-numeric: tabular-nums; min-width: 92px; justify-content: flex-end; }
-  .track { display: flex; gap: 2px; height: 14px; overflow: hidden; border-radius: 4px; }
-  .track i { height: 100%; min-width: 3px; animation: grow-x 0.7s var(--ease-out) both; transform-origin: left; transition: opacity var(--t); }
-  .track i:first-child { border-radius: 4px 0 0 4px; }
-  .track .free { flex: none; height: 100%; border-radius: 0 4px 4px 0; background: var(--surface-3); }
-  .track i.dim, .legend .dim { opacity: 0.35; }
-  .rest { background: repeating-linear-gradient(135deg, var(--line-3) 0 3px, transparent 3px 6px); }
-  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-2); }
-  .legend span { display: inline-flex; align-items: center; gap: 6px; transition: opacity var(--t); cursor: default; }
-  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
-  .legend b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  @media (max-width: 720px) { .hide-n { display: none; } }
   .chart { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; }
   .yl { display: flex; flex-direction: column; justify-content: space-between; height: 170px; font-size: 10.5px; color: var(--faint); text-align: right; font-variant-numeric: tabular-nums;
     margin-top: -6px; margin-bottom: -6px; }
@@ -252,5 +226,5 @@
   .tip { position: fixed; z-index: 70; pointer-events: none; white-space: pre; background: var(--text); color: var(--bg); font-size: 12px; padding: 6px 9px; border-radius: 7px; box-shadow: var(--shadow-2); }
   @keyframes grow { from { transform: scaleY(0); } }
   @keyframes grow-x { from { transform: scaleX(0); } }
-  @media (prefers-reduced-motion: reduce) { .seg, .track i, .bar span, .lw, tbody tr { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .seg, .bar span, tbody tr { animation: none; } }
 </style>

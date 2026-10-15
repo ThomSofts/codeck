@@ -1,7 +1,7 @@
 <script lang="ts">
   // Nova tarefa: branch + worktree próprio + (opcional) um ou mais agentes já com o prompt.
   // Vários agentes = fan-out: cada um no SEU worktree, para comparar e ficar com o melhor.
-  import { GitBranch, Rocket, Sparkles } from "@lucide/svelte";
+  import { GitBranch, Rocket, ShieldOff, Sparkles } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { get, post } from "../../lib/api";
   import { store } from "../../lib/store.svelte";
@@ -121,6 +121,7 @@
       <span class="small muted">Modo</span>
       <Segmented size="sm" bind:value={mode} options={[{ value: "default", label: "Pergunta antes" }, { value: "acceptEdits", label: "Aceita edições" }, { value: "plan", label: "Só planejar" }]} />
     </div>
+    {#if project.settings.bypass}<p class="small byp"><ShieldOff size={12} /> Pular permissões está ligado neste projeto: o agente não pergunta nada{mode === "plan" ? " depois que você aprovar o plano" : ""} (Ajustes do projeto).</p>{/if}
   </div>
   {#snippet footer()}
     <span class="small muted">{chosen.length ? `${chosen.length} agente(s)` : "sem agente — só o worktree"}</span>
@@ -152,4 +153,6 @@
   .spacer { flex: 1; }
   .limwarn { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 9px; background: var(--warn-soft); color: var(--text-2); }
   .limwarn .btn { margin-left: auto; }
+  .byp { display: flex; align-items: center; gap: 6px; margin: 0; padding: 7px 10px; border-radius: 9px; background: var(--warn-soft); color: var(--text-2); }
+  .byp :global(svg) { color: var(--warn); flex: none; }
 </style>

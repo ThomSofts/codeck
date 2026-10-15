@@ -148,46 +148,188 @@ _usage = load_json(USAGE_FILE, {})   # conta -> {rateLimits, updated, source, pl
 _lock = threading.Lock()
 
 
-def _hook_cmd(sid, secret):
+def _hook_cmd(sid, secret, nt=None):
+    """POST da linha de status/hook no servidor local. A resposta vai para o nulo: no SessionStart/UserPromptSubmit o
+    que o hook imprime entra no CONTEXTO do agente (antes o {"ok": true} ia parar na conversa)."""
+    nt = os.name == "nt" if nt is None else nt
     url = f"http://127.0.0.1:{getattr(ctx, 'port', None) or DEFAULT_PORT}/hook/{sid}/{secret}"
-    return f"curl -s -m 2 -X POST -H 'Content-Type: application/json' --data-binary @- {url}" if os.name != "nt" else \
-        f"curl.exe -s -m 2 -X POST -H \"Content-Type: application/json\" --data-binary @- {url}"
+    return f"curl -s -m 2 -o /dev/null -X POST -H 'Content-Type: application/json' --data-binary @- {url}" if not nt else \
+        f"curl.exe -s -m 2 -o NUL -X POST -H \"Content-Type: application/json\" --data-binary @- {url}"
 
 
-def launch_spec(aid, prompt=None, mode=None, sid=None, extra_dirs=None, resume=None):
-    """Comando + variáveis de ambiente para abrir o agente desta conta. `sid` = id da sessão (para a telemetria)."""
-    a = get_account(aid)
-    prov, spec = a["provider"], PROVIDERS[a["provider"]]
-    env = {}
-    if spec["env"] and os.path.normpath(a["dir"]) != os.path.join(HOME, spec["home"]):
-        env[spec["env"]] = a["dir"]   # a pasta padrão (~/.claude, ~/.codex) é a que a CLI já usa sem variável
-    exe = which_all().get(spec["bin"])
-    args = [exe if exe and os.name != "nt" else spec["bin"]]
-    secret = pysecrets.token_urlsafe(18)
+# Pular as permissões (por projeto, desligado por padrão). O OpenCode não tem flag de linha de comando para isso — as
+# permissões dele ficam no opencode.json ("permission") — então lá não muda nada.
+BYPASS = {"claude": ["--dangerously-skip-permissions"], "codex": ["--dangerously-bypass-approvals-and-sandbox"],
+          "gemini": ["--yolo"], "cursor": ["--force"]}
+PROMPT_MAX = {"posix": 100_000, "nt": 24_000}   # acima disso o pedido vai num arquivo (limite de 32.767 da linha no Windows)
+PROMPT_DIR = os.path.join(DATA, "prompts")
+
+
+def agent_argv(prov, exe, prompt=None, mode=None, settings=None, extra_dirs=(), resume=None, bypass=False):
+    """argv do agente (sem shell) — puro, para dar para testar. `exe` = executável (ou só o nome)."""
+    args = [exe]
     if prov == "claude":
-        post = _hook_cmd(sid, secret)
-        status_cmd = (f"{post} >/dev/null 2>&1; echo 'Codeck'" if os.name != "nt" else f"{post} >NUL 2>&1 & echo Codeck")
-        settings = {"statusLine": {"type": "command", "command": status_cmd, "padding": 0},
-                    "hooks": {ev: [{"hooks": [{"type": "command", "command": post}]}]
-                              for ev in ("UserPromptSubmit", "Stop", "Notification", "SubagentStop", "SessionStart", "PreCompact")}}
-        args += ["--settings", json.dumps(settings)]
-        if mode in ("plan", "acceptEdits", "default"):
+        if settings is not None:
+            # dict vai como JSON; str é o caminho de um arquivo com ele (quando o cmd.exe estragaria as aspas e o &&)
+            args += ["--settings", settings if isinstance(settings, str) else json.dumps(settings, ensure_ascii=False)]
+        if bypass and mode == "plan":
+            # planeja primeiro (modo plano); ao aprovar o plano dá para seguir sem pedir permissão
+            args += ["--allow-dangerously-skip-permissions", "--permission-mode", "plan"]
+        elif bypass:
+            args += BYPASS["claude"]
+        elif mode in ("plan", "acceptEdits", "default"):
             args += ["--permission-mode", mode]
-        for d in extra_dirs or []:
-            if os.path.isdir(d):
-                args += ["--add-dir", d]
-    elif prov == "codex" and mode in ("readonly", "plan"):
-        args += ["--sandbox", "read-only"]
+        for d in extra_dirs or ():
+            args += ["--add-dir", d]
+    elif prov == "codex":
+        if mode in ("readonly", "plan"):
+            args += ["--sandbox", "read-only"]   # planejar não mexe em nada: sem bypass
+        elif bypass:
+            args += BYPASS["codex"]
+    elif bypass and prov in BYPASS:
+        args += BYPASS[prov]
     if resume and prov == "claude":
         args += ["--resume", resume]
     elif resume and prov == "codex":
-        args = [args[0], "resume", resume]
+        args = args + ["resume", resume]   # as opções (bypass/sandbox) valem antes do subcomando
     if prompt and not resume:
-        args.append(prompt)
-    command = " ".join(shlex.quote(x) for x in args) if os.name != "nt" else subprocess.list2cmdline(args)
+        # o pedido inicial: Claude/Codex/cursor-agent aceitam como argumento (sessão interativa). O Gemini sem -i roda uma
+        # vez e sai; o OpenCode trata o argumento solto como a PASTA do projeto — os dois pedem a flag.
+        args += (["-i", prompt] if prov == "gemini" else ["--prompt", prompt] if prov == "opencode" else [prompt])
+    return args
+
+
+# ---------------------------------------------------------------- Windows: abrir o agente pelo PowerShell sem quebrar o pedido
+# O jeito antigo (`claude --settings "{\"…\"}" "pedido"` dentro do -Command do PowerShell) quebrava de várias formas:
+#   · o PowerShell não entende \" — o JSON das configurações e qualquer pedido com aspas viravam outros argumentos;
+#   · $variável, `crase` e aspas “curvas” do pedido eram interpretados pelo PowerShell;
+#   · o Windows PowerShell 5.1 não escapa aspas ao chamar programas (bug antigo) e bloqueia o claude.ps1 do npm
+#     ("execução de scripts foi desabilitada");
+#   · o claude.cmd do npm passa pelo cmd.exe, que CORTA o argumento na 1ª quebra de linha e mexe em %, ^, &, |, <, >.
+# Agora: o executável de verdade (claude.exe, ou node + o .js que o .cmd do npm chamaria) é aberto pelo .NET
+# (ProcessStartInfo) com a linha de comando montada aqui no padrão do Windows (list2cmdline), dentro de um script
+# lido de arquivo — o PowerShell só vê textos entre aspas simples, sem interpretar nada do pedido.
+def _ps_lit(s):
+    """Texto literal do PowerShell (aspas simples). As aspas simples "curvas" (‘ ’ ‚ ‛) também fecham a string no
+    PowerShell — dobradas como a reta."""
+    return "'" + re.sub(r"(['‘’‚‛])", r"\1\1", s.replace("\0", "")) + "'"
+
+
+def win_resolve(path):
+    """Executável real por trás de uma CLI no Windows: (programa, argumentos antes dos do usuário, passa_pelo_cmd).
+    .exe → ele mesmo; .cmd/.bat do npm (cmd-shim) → o .exe/.js que ele chamaria (node + script); senão o próprio .cmd."""
+    low = (path or "").lower()
+    if not low.endswith((".cmd", ".bat")):
+        return path, [], False
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return path, [], True
+    # a linha que repassa os argumentos (%*): o último caminho relativo a %dp0% nela é o alvo (o 1º costuma ser o node.exe)
+    hits = [h for line in text.splitlines() if "%*" in line
+            for h in re.findall(r'"%~?dp0%?\\([^"%]+?\.(?:exe|js|cjs|mjs))"', line, re.I)]
+    if not hits:
+        return path, [], True
+    base = os.path.dirname(path)
+    target = os.path.normpath(os.path.join(base, hits[-1].replace("\\", os.sep)))
+    if not os.path.isfile(target):
+        return path, [], True
+    if target.lower().endswith(".exe"):
+        return target, [], False
+    node = os.path.join(base, "node.exe")
+    node = node if os.path.isfile(node) else userpath.which("node")
+    return (node, [target], False) if node else (path, [], True)
+
+
+def win_launcher(argv, script_path):
+    """(texto do script .ps1, comando curto para o -Command do PowerShell). argv[0] já resolvido (win_resolve)."""
+    exe, rest = argv[0], argv[1:]
+    lines = [
+        "try { [Console]::OutputEncoding = $OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch {}",
+        f"Remove-Item -LiteralPath {_ps_lit(script_path)} -ErrorAction SilentlyContinue",
+        "$psi = New-Object System.Diagnostics.ProcessStartInfo",
+        f"$psi.FileName = {_ps_lit(exe)}",
+        f"$psi.Arguments = {_ps_lit(subprocess.list2cmdline(rest))}",
+        "$psi.UseShellExecute = $false",
+        "$psi.WorkingDirectory = (Get-Location).ProviderPath",
+        "try { $p = [System.Diagnostics.Process]::Start($psi); $p.WaitForExit() }",
+        f"catch {{ Write-Host ('Codeck: não abriu ' + {_ps_lit(os.path.basename(exe))} + ' — ' + $_.Exception.Message) -ForegroundColor Red }}",
+    ]
+    command = f"& ([scriptblock]::Create([IO.File]::ReadAllText({_ps_lit(script_path)})))"
+    return "\r\n".join(lines) + "\r\n", command
+
+
+def _sweep_prompts():
+    os.makedirs(PROMPT_DIR, exist_ok=True)
+    cutoff = time.time() - 7 * 86400
+    for f in glob.glob(os.path.join(PROMPT_DIR, "*")):   # faxina: pedidos/lançadores de mais de 7 dias
+        try:
+            if os.path.getmtime(f) < cutoff:
+                os.remove(f)
+        except OSError:
+            pass
+
+
+def _prompt_to_file(sid, prompt):
+    """Pedido grande demais para a linha de comando (ou que o cmd.exe estragaria): vai num arquivo e o agente lê."""
+    _sweep_prompts()
+    path = os.path.join(PROMPT_DIR, f"{sid}.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(prompt)
+    return path, f"Leia o pedido completo no arquivo {path} e siga-o."
+
+
+def launch_spec(aid, prompt=None, mode=None, sid=None, extra_dirs=None, resume=None, bypass=False):
+    """Comando + variáveis de ambiente para abrir o agente desta conta. `sid` = id da sessão (para a telemetria)."""
+    a = get_account(aid)
+    prov, spec = a["provider"], PROVIDERS[a["provider"]]
+    nt = os.name == "nt"
+    env = {}
+    if spec["env"] and os.path.normpath(a["dir"]) != os.path.join(HOME, spec["home"]):
+        env[spec["env"]] = a["dir"]   # a pasta padrão (~/.claude, ~/.codex) é a que a CLI já usa sem variável
+    exe = which_all().get(spec["bin"]) or spec["bin"]
+    via_cmd = False
+    pre = []
+    if nt:
+        exe, pre, via_cmd = win_resolve(exe)
+    secret = pysecrets.token_urlsafe(18)
+    settings = None
+    dirs = [d for d in extra_dirs or [] if os.path.isdir(d)]
+    if prov == "claude":
+        post = _hook_cmd(sid, secret)
+        # a linha de status pode rodar no sh (macOS/Linux), no cmd ou no Git Bash (Windows): "a && b || b" vale nos três
+        status_cmd = (f"{post} >/dev/null 2>&1; echo 'Codeck'" if not nt else f"{post} && echo Codeck || echo Codeck")
+        settings = {"statusLine": {"type": "command", "command": status_cmd, "padding": 0},
+                    "hooks": {ev: [{"hooks": [{"type": "command", "command": post}]}]
+                              for ev in ("UserPromptSubmit", "Stop", "Notification", "SubagentStop", "SessionStart", "PreCompact")}}
+    if prompt and not resume:
+        prompt = prompt.replace("\r\n", "\n").replace("\0", "")
+        # pelo cmd.exe (sem achar o .exe/.js por trás do .cmd) o argumento não pode ter quebra de linha nem %^&|<>!"
+        if len(prompt) > PROMPT_MAX["nt" if nt else "posix"] or (via_cmd and re.search(r'[\n%^&|<>!"]', prompt)):
+            ppath, prompt = _prompt_to_file(sid, prompt)
+            if prov == "claude":
+                dirs.append(os.path.dirname(ppath))
+    if settings is not None and via_cmd:
+        # pelo cmd.exe as aspas do JSON e o "&&" da linha de status virariam outros comandos: vai num arquivo
+        _sweep_prompts()
+        spath = os.path.join(PROMPT_DIR, f"settings-{sid}.json")
+        with open(spath, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False)
+        settings = spath
+    argv = agent_argv(prov, exe, prompt, mode, settings, dirs, resume, bypass)
+    args = argv[:1] + pre + argv[1:]   # node + script.js do .cmd do npm, quando é o caso
+    if not nt:
+        command = " ".join(shlex.quote(x) for x in args)
+    else:
+        _sweep_prompts()
+        script = os.path.join(PROMPT_DIR, f"launch-{sid}.ps1")
+        text, command = win_launcher(args, script)
+        with open(script, "w", encoding="utf-8-sig") as f:   # com BOM: o ReadAllText e o PowerShell 5.1 leem UTF-8 certo
+            f.write(text)
     with _lock:
         _sessions[sid] = {"account": aid, "provider": prov, "secret": secret, "status": "starting", "started": time.time(),
-                          "statusline": None, "events": [], "context": None, "model": None, "cost": None}
+                          "statusline": None, "events": [], "context": None, "model": None, "cost": None, "bypass": bool(bypass)}
     return command, env
 
 

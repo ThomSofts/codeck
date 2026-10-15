@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArchiveRestore } from "@lucide/svelte";
+  import { ArchiveRestore, History } from "@lucide/svelte";
   import { archive } from "../lib/actions";
   import { go, router, soft } from "../lib/router.svelte";
   import { store } from "../lib/store.svelte";
@@ -51,6 +51,8 @@
           { value: "all", label: "Abertas", count: store.open.length }, { value: "archived", label: "Arquivadas", count: store.archived.length }]} />
       {/snippet}
       <SourceFilter bind:value={org} items={base} />
+      <button class="btn ghost hist" onclick={() => go("/history/prs")} title="Histórico de PRs: votos, aprovações do piloto, comentários (H no painel: só a PR aberta)">
+        <History size={14} /> Histórico</button>
     </Toolbar>
     <Split paneKey={selKey} onclose={() => go(`/prs/${tab}`, "soft")}>
       {#snippet list()}
@@ -72,5 +74,6 @@
 </Page>
 
 <style>
+  .hist { flex: none; }
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 14px; flex: none; }
 </style>

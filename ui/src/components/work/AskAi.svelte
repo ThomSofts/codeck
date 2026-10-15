@@ -1,7 +1,8 @@
 <script lang="ts">
-  // "Pedir à IA": o jeito simples de mandar a IA planejar e/ou implementar. Escreva o pedido (ou escolha uma issue/work
-  // item), escolha o fluxo e pronto — vira uma tarefa (branch + worktree + agente) ou roda aqui mesmo no checkout.
-  import { ClipboardList, GitBranch, Hammer, Lightbulb, Sparkles } from "@lucide/svelte";
+  // "Pedir à IA" completo (o rápido é o campo no painel da direita): escreva o pedido (ou escolha uma issue/work item),
+  // escolha o fluxo e pronto — roda aqui mesmo no checkout/tarefa ou vira uma tarefa (branch + worktree + agente).
+  // A conta vem a do projeto (a última usada nele); pular permissões é dos ajustes do projeto.
+  import { ClipboardList, GitBranch, Hammer, Lightbulb, ShieldOff, Sparkles } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { kbd } from "../../lib/keys";
   import { prefs } from "../../lib/prefs.svelte";
@@ -21,8 +22,10 @@
   let title = $state(untrack(() => preset?.title || ""));
   let workItem = $state<any>(untrack(() => preset?.workItem || null));
   let flow = $state<Flow>(untrack(() => preset?.flow || prefs.get("ai.defaultFlow")));
-  // dentro de uma tarefa: roda nela; no checkout principal: o padrão é uma tarefa nova (não mexe no seu checkout)
-  let worktree = $state(untrack(() => !task));
+  // o padrão é rodar onde você está (checkout ou tarefa aberta); "tarefa nova" fica lembrado para a próxima vez
+  const WT = "codeck.ask.worktree";
+  let worktree = $state(untrack(() => { try { return localStorage.getItem(WT) === "1"; } catch { return false; } }));
+  $effect(() => { const w = worktree; try { localStorage.setItem(WT, w ? "1" : "0"); } catch { /* sem armazenamento */ } });
   let account = $state<string | null>(untrack(() => work.defaultAccount(project)));
   let busy = $state(false);
   let q = $state("");
@@ -86,6 +89,7 @@
       </div>
       <Switch bind:checked={worktree} label={task ? "Em uma tarefa nova (worktree próprio)" : "Em uma tarefa nova (branch + worktree)"}
         hint={worktree ? "Não mexe no seu checkout; dá para revisar e criar a PR depois" : task ? "Roda dentro desta tarefa" : "Roda direto no checkout principal"} />
+      {#if project.settings.bypass}<p class="small byp"><ShieldOff size={12} /> Pular permissões está ligado neste projeto — o agente edita e roda comandos sem perguntar.</p>{/if}
     </div>
 
     <div class="flows">
@@ -134,5 +138,7 @@
   .flow:disabled { opacity: 0.55; cursor: default; }
   .br { display: flex; align-items: center; gap: 5px; font-family: var(--mono); margin: -4px 0 0; }
   .spacer { flex: 1; }
+  .byp { display: flex; align-items: center; gap: 6px; margin: 0; padding: 7px 10px; border-radius: var(--r-sm); background: var(--warn-soft); color: var(--text-2); }
+  .byp :global(svg) { color: var(--warn); flex: none; }
   @media (max-width: 640px) { .flows { grid-template-columns: 1fr; } }
 </style>

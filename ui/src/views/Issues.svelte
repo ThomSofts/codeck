@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { Bot, ExternalLink, KanbanSquare, MessageSquare, Sparkles } from "@lucide/svelte";
+  import { Bot, Eye, EyeOff, ExternalLink, KanbanSquare, MessageSquare, Sparkles } from "@lucide/svelte";
+  import { untrack } from "svelte";
+  import { repos } from "../lib/repos.svelte";
   import { kanban } from "../lib/kanban.svelte";
   import { go } from "../lib/router.svelte";
   import { ui } from "../lib/ui.svelte";
@@ -22,6 +24,21 @@
   const list = $derived((s?.issues || []).filter(i => (!reason || i.reason === reason) && (!org || i.org === org)
     && (!q || `${i.number} ${i.title} ${i.repo} ${i.labels.map(l => l.name).join(" ")} ${i.type}`.toLowerCase().includes(q.toLowerCase()))));
   const count = (r: string) => (s?.issues || []).filter(i => i.reason === r).length;
+  $effect(() => { if (!repos.loaded) untrack(() => repos.load(false)); });
+
+  // Parar de acompanhar as issues de um repositório (ou os work items de um projeto do Azure) sem mexer em PRs,
+  // builds e deploys dele. Some da lista na hora; a próxima leitura confirma.
+  let hiding = $state<string[]>([]);
+  const scopeName = (k: string) => k.replace(/^(github|azure):/, "");
+  async function setIssues(k: string, on: boolean) {
+    if (!on) hiding = [...hiding, k];
+    // voltar a acompanhar = apagar a escolha (não marcar "sim"): volta ao que era antes de ocultar
+    try { await repos.setTrack(k, { issues: on ? null : false }); store.refreshSource("issues"); }
+    catch (e) { hiding = hiding.filter(x => x !== k); ui.error(e); }
+  }
+  const hidden = $derived(Object.entries(repos.tracking.repos).filter(([, v]) => v.issues === false).map(([k]) => k));
+  const shown = $derived(list.filter(i => !i.scopeKey || !hiding.includes(i.scopeKey)));
+  $effect(() => { void s?.lastIssuePoll; untrack(() => (hiding = [])); });
   const REASON: Record<string, string> = { assigned: "atribuída a você", created: "criada por você", mentioned: "menciona você" };
   /** Work item do Azure não tem repositório: abre no projeto ativo. Issue do GitHub abre no clone do repo dela. */
   function startTask(i: any) {
@@ -53,7 +70,7 @@
       <SourceFilter bind:value={org} items={s.issues} />
     </Toolbar>
     <div class="card scroll">
-      {#each list as i (i.key)}
+      {#each shown as i (i.key)}
         <a class="list-row" href={i.url} target="_blank" rel="noopener">
           <span class="ic" class:wi={i.provider === "azure"}><ProviderIcon provider={i.provider} size={15} /></span>
           <div class="grow">
@@ -75,6 +92,8 @@
               { separator: true },
               { label: "Começar tarefa (formulário completo)", icon: Bot, onclick: () => startTask(i) },
               { label: "Adicionar ao quadro", icon: KanbanSquare, onclick: () => toBoard(i) },
+              ...(i.scopeKey ? [{ separator: true }, { label: i.provider === "azure" ? `Não acompanhar work items de ${i.repo}` : `Não acompanhar issues de ${i.repo}`,
+                hint: "PRs, builds e deploys continuam", icon: EyeOff, onclick: () => setIssues(i.scopeKey!, false) }] : []),
             ]} />
           </span>
           <ExternalLink size={14} class="muted" />
@@ -83,6 +102,11 @@
         <Empty done={!q && !reason && !org} title={q || reason || org ? "Nada com esses filtros" : "Nenhuma issue aberta com você"} />
       {/each}
     </div>
+    {#if hidden.length}
+      <div class="hidden small muted"><EyeOff size={13} /> Sem issues de:
+        {#each hidden as k (k)}<button class="hchip" title="Voltar a acompanhar" onclick={() => setIssues(k, true)}>{scopeName(k)} <Eye size={11} /></button>{/each}
+      </div>
+    {/if}
     {#if Object.keys(s.issueErrors || {}).length}
       <p class="small muted note">Algumas origens não responderam: {Object.entries(s.issueErrors).map(([k, v]) => `${k} (${v.slice(0, 80)})`).join("; ")}</p>
     {/if}
@@ -101,4 +125,8 @@
   .label-chip { font: 600 11px/1 var(--font); padding: 4px 8px; border-radius: 99px; color: var(--c); background: color-mix(in srgb, var(--c) 14%, transparent);
     border: 1px solid color-mix(in srgb, var(--c) 30%, transparent); }
   .note { margin: 10px 2px 0; flex: none; }
+  .hidden { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 2px 0; flex: none; }
+  .hchip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 99px; border: 1px solid var(--line-2);
+    background: none; color: var(--text-2); font: 11.5px var(--font); cursor: pointer; }
+  .hchip:hover { border-color: var(--line-3); color: var(--text); }
 </style>

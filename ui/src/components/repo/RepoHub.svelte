@@ -39,13 +39,25 @@
   const prs = $derived(mine([...(store.s?.myPrs || []), ...(store.s?.prs || []).filter(p => !p.archived)]));
   const builds = $derived(mine(store.s?.builds).slice(0, 6));
   const deploys = $derived(mine(store.s?.deploys));
-  const issues = $derived(mine(store.s?.issues));
-  const CATS: { id: TrackCat; label: string; icon: any; n: () => number; route: string }[] = [
+  // work item do Azure não tem repositório: vale o projeto ("azure:org/projeto") — desligar aqui não mexe no resto
+  const projKey = $derived(provider === "azure" && key ? key.split("/").slice(0, -1).join("/") : null);
+  const projIssues = $derived(projKey ? repos.tracking.repos[projKey]?.issues !== false : true);
+  const issues = $derived(projKey ? (store.s?.issues || []).filter(i => (i.scopeKey || "").toLowerCase() === projKey) : mine(store.s?.issues));
+  const CATS: { id: TrackCat; label: string; icon: any; n: () => number; route: string }[] = $derived([
     { id: "prs", label: "PRs", icon: GitPullRequest, n: () => prs.length, route: "/prs/all" },
     { id: "builds", label: "Builds", icon: Hammer, n: () => builds.filter(b => b.status !== "completed").length, route: "/builds" },
     { id: "deploys", label: "Deploys", icon: Rocket, n: () => deploys.length, route: "/deploys" },
-    { id: "issues", label: "Issues", icon: CircleDot, n: () => issues.length, route: "/issues" },
-  ];
+    { id: "issues", label: provider === "azure" ? "Work items" : "Issues", icon: CircleDot, n: () => issues.length, route: "/issues" },
+  ]);
+  /** Azure: "Work items" liga/desliga os do PROJETO (independe de acompanhar o repositório). */
+  const catOn = (id: TrackCat) => (id === "issues" && projKey ? projIssues : t.on && t[id]);
+  async function toggleCat(id: TrackCat) {
+    if (id === "issues" && projKey) {
+      try { await repos.setTrack(projKey, { issues: !projIssues }); store.refreshSource("issues"); } catch (e) { ui.error(e); }
+      return;
+    }
+    return t.on ? setTrack({ [id]: !t[id] }) : setTrack({ track: true, [id]: true });
+  }
   async function setTrack(patch: Record<string, any>) {
     try { await repos.setTrack(key!, patch); store.refreshSoon(2500); } catch (e) { ui.error(e); }
   }
@@ -131,8 +143,8 @@
         </div>
         <div class="cats">
           {#each CATS as c (c.id)}
-            {@const on = t.on && t[c.id]}
-            <button class="cat" class:on onclick={() => (t.on ? setTrack({ [c.id]: !t[c.id] }) : setTrack({ track: true, [c.id]: true }))} title={on ? `Parar de acompanhar ${c.label.toLowerCase()}` : `Acompanhar ${c.label.toLowerCase()}`}>
+            {@const on = catOn(c.id)}
+            <button class="cat" class:on onclick={() => toggleCat(c.id)} title={c.id === "issues" && projKey ? `${on ? "Parar de acompanhar" : "Acompanhar"} os work items do projeto ${projKey.split("/").pop()} (vale para o projeto todo, não só este repositório)` : on ? `Parar de acompanhar ${c.label.toLowerCase()}` : `Acompanhar ${c.label.toLowerCase()}`}>
               <c.icon size={16} /><span class="cl">{c.label}</span><b class="cn">{on ? c.n() : "—"}</b>
               <span class="cs tiny">{on ? "acompanhando" : "desligado"}</span>
             </button>
