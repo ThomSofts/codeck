@@ -252,12 +252,23 @@ jobs:
           Set-Content util.ts "export function soma(a: number, b: number): number {`n  return a + b;`n}"
           Set-Content main.ts "import { soma } from `"./util`";`n`nconst total: string = soma(1, 2);`nconsole.log(total);"
           Set-Content tsconfig.json '{"compilerOptions":{"strict":true,"target":"es2020","module":"commonjs"}}'
-          Set-Content .gitignore 'workspace.local.json'
+          # ignorados: o explorador mostra (apagados) — inclusive um repositório inteiro dentro deste (pasta "workspace")
+          Set-Content .gitignore "workspace.local.json`n/nested-repo/`nbin/"
           Set-Content package.json '{"name":"demo","scripts":{"ola":"echo script-ok"}}'
           New-Item -ItemType Directory -Force .vscode | Out-Null
           Set-Content .vscode/launch.json "{`n  // comentário como no VS Code`n  `"version`": `"0.2.0`",`n  `"configurations`": [`n    { `"name`": `"Rodar demo`", `"type`": `"node-terminal`", `"request`": `"launch`", `"command`": `"echo launch-ok`" },`n  ],`n}"
           git add -A; git commit -qm inicial; git push -q -u origin main
           Set-Content workspace.local.json '{"segredo":"local"}'
+          New-Item -ItemType Directory -Force bin | Out-Null; Set-Content bin/out.txt 'saida'
+          # repositório aninhado (ignorado pelo de fora) com uma solução .NET: Gerenciador de Soluções e explorador entram nele
+          New-Item -ItemType Directory -Force nested-repo/App/bin/Debug | Out-Null
+          Push-Location nested-repo; git init -q -b main
+          Set-Content nested.txt 'aninhado'
+          Set-Content App.sln "Microsoft Visual Studio Solution File, Format Version 12.00`nProject(`"{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}`") = `"App`", `"App\App.csproj`", `"{11111111-1111-1111-1111-111111111111}`"`nEndProject"
+          Set-Content App/App.csproj "<Project Sdk=`"Microsoft.NET.Sdk`">`n  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup>`n</Project>"
+          Set-Content App/Program.cs 'System.Console.WriteLine("oi");'
+          Set-Content App/bin/Debug/App.dll 'x'
+          Pop-Location
           Pop-Location
           git clone -q "$fx/origin.git" "$fx/demo-web" 2>$null
           # servidor de linguagem do TypeScript (só para o teste)
