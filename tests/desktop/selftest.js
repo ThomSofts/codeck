@@ -233,16 +233,21 @@
     if (!termText().includes("desktop-ok-42")) throw new Error("histórico sumiu");
   });
   await step("Executar: launch.json e scripts do package.json", async () => {
-    click($(".runbtn .caret").closest("button"));
+    // a barra de executar: a seta lista o que dá para iniciar (escolher seleciona); Ctrl+F5 (▷|) executa sem depurar
+    click($(".rb .caret"));
     await waitFor(() => byText(".items .it", "Rodar demo"));
     const items = $$(".items .it").map(txt);
     if (!items.some(i => i.includes("ola"))) throw new Error("script do package.json não apareceu: " + items.join(" | "));
     click(byText(".items .it", "Rodar demo"));
+    await waitFor(() => txt($(".rb .gob")).includes("Rodar demo"), 3000);
+    click($(".rb .nodbg"));
     await waitFor(() => byText(".tab.on", "Rodar demo"), 8000);
     await waitFor(() => termText().includes("launch-ok"), 15000);
-    click($(".runbtn .caret").closest("button")); click(await waitFor(() => byText(".items .it", "ola")));
+    click($(".rb .caret")); click(await waitFor(() => byText(".items .it", "ola")));
+    await waitFor(() => txt($(".rb .gob")).includes("ola"), 3000);
+    click($(".rb .nodbg"));
     await waitFor(() => termText().includes("script-ok"), 30000);
-    if (!txt($(".runbtn .good-run")).includes("ola")) throw new Error("não lembrou a última execução");
+    if (!txt($(".rb .gob")).includes("ola")) throw new Error("não lembrou a última escolhida");
     await shot("05a-executar");
     return "launch.json (com comentários) e npm run ola executaram";
   });

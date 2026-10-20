@@ -150,19 +150,31 @@ def _public(c, live):
     return {**{k: v for k, v in c.items() if not k.startswith("_")}, "live": live}
 
 
-def view():
+def _tick():
+    """Lê o estado dos agentes de cada cartão e aplica o movimento automático. Chame com _lock."""
     from . import workspace
+    d = _load()
+    wsd = workspace._load()
+    ws_tasks = {(rid, t["id"]): t for rid, p in wsd["projects"].items() for t in p.get("tasks", [])}
+    changed = False
+    lives = {}
+    for c in d["cards"]:
+        lives[c["id"]] = live = _live(c, ws_tasks)
+        changed = _automate(d, c, live) or changed
+    if changed:
+        _save(d)
+    return d, lives
+
+
+def automate():
+    """O movimento automático sem a tela aberta (power.kanban_loop): o quadro anda mesmo com a janela escondida."""
     with _lock:
-        d = _load()
-        wsd = workspace._load()
-        ws_tasks = {(rid, t["id"]): t for rid, p in wsd["projects"].items() for t in p.get("tasks", [])}
-        changed = False
-        lives = {}
-        for c in d["cards"]:
-            lives[c["id"]] = live = _live(c, ws_tasks)
-            changed = _automate(d, c, live) or changed
-        if changed:
-            _save(d)
+        _tick()
+
+
+def view():
+    with _lock:
+        d, lives = _tick()
         return {"columns": d["columns"], "cards": [_public(c, lives[c["id"]]) for c in d["cards"]], "autoMove": d.get("autoMove", True)}
 
 

@@ -1,19 +1,17 @@
 <script lang="ts">
-  // Uso de IA: as contas agora numa tabela alinhada (cada limite com o quanto usou, quem gastou por projeto e quando
-  // reseta; onde está atuando) e quanto cada projeto consome — tempo do agente trabalhando, seu tempo com o projeto na
-  // tela, custo informado pela CLI, linhas alteradas e quanto de cada limite (5 h / semanal) cada projeto gastou.
-  import { Gauge, RefreshCw } from "@lucide/svelte";
-  import { work } from "../lib/work.svelte";
-  import AccountRow from "../components/ai/AccountRow.svelte";
+  // Uso de IA: primeiro "Agora" — qual conta usar (a com mais fôlego) e o fôlego de cada uma; depois o consumo do
+  // período — tempo do agente trabalhando, seu tempo com o projeto na tela, linhas alteradas, custo informado pela CLI e
+  // quanto de cada limite (5 h / semanal) cada projeto gastou.
+  import { RefreshCw } from "@lucide/svelte";
+  import AccountsNow from "../components/ai/AccountsNow.svelte";
   import { untrack } from "svelte";
   import { get } from "../lib/api";
   import { go, soft } from "../lib/router.svelte";
   import { repos } from "../lib/repos.svelte";
-  import AgentIcon from "../components/work/AgentIcon.svelte";
   import Page from "../components/Page.svelte";
   import Segmented from "../components/Segmented.svelte";
   import Skeleton from "../components/Skeleton.svelte";
-  import { clock, headroom, stateRank } from "../components/ai/limits.svelte";
+  import { work } from "../lib/work.svelte";
 
   type G = { cost: number; sessions: number; tokens: number; workMs: number; added: number; removed: number; focusS: number; limits: Record<string, number>; name?: string };
   type Cur = { account: string; accountName: string; provider: string; window: string; used: number; resetsAt: string | null; projects: Record<string, { name: string; used: number }> };
@@ -21,8 +19,6 @@
 
   let days = $state("7");
   let metric = $state("work");
-  let sortAcc = $state((() => { try { return localStorage.getItem("codeck.ai.sort") || "state"; } catch { return "state"; } })());
-  $effect(() => { const v = sortAcc; try { localStorage.setItem("codeck.ai.sort", v); } catch { /* sem armazenamento */ } });
   let A = $state<R | { error: string } | null>(null);
   let tip = $state<{ x: number; y: number; text: string } | null>(null);
   async function load() {
@@ -46,74 +42,39 @@
   const maxWork = $derived(Math.max(1, ...rows.map(r => r.workMs)));
   const maxFocus = $derived(Math.max(1, ...rows.map(r => r.focusS)));
   const isOpen = (id: string) => repos.local.some(r => r.id === id);   // registros antigos guardavam só o nome
-  const accName = (k: string) => R?.accountInfo[k.split("|")[0]]?.name || k.split("|")[0];
-
-  // cor por projeto: segue o projeto (ordem alfabética entre os que aparecem nos limites), nunca a posição na barra.
-  // Paleta categórica validada (6 cores, CVD e contraste) nos dois temas — tokens --cat1..6 no app.css.
-  const SLOTS = 6;
-  const colorOf = $derived.by(() => {
-    const names = [...new Set((R?.current || []).flatMap(c => Object.keys(c.projects)))].sort((a, b) => a.localeCompare(b));
-    return (id: string) => { const i = names.indexOf(id); return i >= 0 && i < SLOTS ? `var(--cat${i + 1})` : "var(--cat-other)"; };
-  });
+  // o apelido de hoje (a conta pode ter sido renomeada depois do registro)
+  const accName = (k: string) => { const id = k.split("|")[0]; return work.account(id)?.name || R?.accountInfo[id]?.name || id; };
+  const limitsOf = (r: G) => Object.entries(r.limits).sort((a, b) => b[1] - a[1]);
 
   const series = $derived(R ? R.days.map(d => ({ day: d.day, v: metric === "work" ? d.workMs / 6e4 : metric === "focus" ? d.focusS / 60 : d.cost, d })) : []);
   const maxV = $derived(Math.max(1e-6, ...series.map(s => s.v)));
   const fmtV = (v: number) => (metric === "cost" ? money(v) : dur(v * 6e4));
   const avgV = $derived(series.length ? series.reduce((n, s) => n + s.v, 0) / series.length : 0);
   const labelEvery = $derived(series.length <= 7 ? 1 : series.length <= 31 ? 5 : 15);
-  // contas: quem precisa de você/está trabalhando primeiro, ou por folga
-  const accounts = $derived.by(() => {
-    const list = [...work.ai].filter(a => a.installed || a.usage);
-    const h = (id: string) => headroom(work.ai.find(x => x.id === id)!, clock.now) ?? -1;
-    if (sortAcc === "free") return list.sort((x, y) => h(y.id) - h(x.id));
-    if (sortAcc === "tight") return list.sort((x, y) => (h(x.id) < 0 ? 999 : h(x.id)) - (h(y.id) < 0 ? 999 : h(y.id)));
-    return list.sort((x, y) => stateRank(work.activity[x.id]?.state) - stateRank(work.activity[y.id]?.state) || h(y.id) - h(x.id));
-  });
-  // quanto cada projeto gastou de cada janela, por conta (a leitura de uso; os limites ao vivo vêm de work.ai)
-  const breakdown = $derived.by(() => {
-    const m: Record<string, Record<string, Record<string, { name: string; used: number }>>> = {};
-    for (const c of R?.current || []) (m[c.account] ||= {})[c.window] = c.projects;
-    return m;
-  });
   const lines = $derived(R ? R.totals.added + R.totals.removed : 0);
   const dayTip = (d: G & { day: string }) => `${wday(d.day)} ${fmtD(d.day)}${d.day === today ? " (hoje)" : ""}\nAgente trabalhando: ${dur(d.workMs)}\nSeu tempo: ${dur(d.focusS * 1000)}\nCusto: ${money(d.cost)}\nSessões: ${d.sessions}`;
 </script>
 
 <Page title="Uso de IA" sub="Contas, limites e o que cada projeto consome">
   {#snippet actions()}
-    {#if work.ai.some(a => a.provider === "claude" && a.installed)}<button class="btn sm" disabled={Object.keys(work.probing).length > 0} onclick={() => work.probe()}><Gauge size={14} class={Object.keys(work.probing).length ? "spin" : ""} /> Ler limites</button>{/if}
-    <button class="btn sm ghost" onclick={load}><RefreshCw size={14} /> Recarregar</button>
+    <button class="btn sm ghost" onclick={() => { load(); work.loadAi(); work.loadActivity(); }}><RefreshCw size={14} /> Recarregar</button>
   {/snippet}
   <div class="scroll">
-    {#if work.ai.length}
-      <div class="card accts">
-        <div class="card-h"><h3>Contas</h3><span class="muted small hide-n">limites, quando resetam e onde estão atuando</span><span class="grow"></span>
-          <Segmented size="sm" bind:value={sortAcc} options={[{ value: "state", label: "Atividade" }, { value: "free", label: "Mais folga" }, { value: "tight", label: "Perto do limite" }]} /></div>
-        <div class="alist">
-          <div class="ahead" aria-hidden="true"><span>Conta</span><span>Limites · usado por projeto e reset</span><span>Atuando em</span><span></span></div>
-          {#each accounts as a, i (a.id)}
-            <AccountRow {a} index={i} breakdown={breakdown[a.id]} {colorOf} ontip={(t) => (tip = t)} />
-          {/each}
-        </div>
-      </div>
-    {/if}
+    {#if work.ai.length}<AccountsNow />{/if}
 
     <div class="sech period">
-      <h3>Consumo</h3><span class="small muted">tempo, custo e limites por projeto</span><span class="grow"></span>
+      <h3>Consumo</h3><span class="grow"></span>
       <Segmented size="sm" bind:value={days} options={[{ value: "1", label: "Hoje" }, { value: "7", label: "7 dias" }, { value: "30", label: "30 dias" }, { value: "90", label: "90 dias" }]} />
     </div>
-    {#if !A}<Skeleton kpis={6} rows={4} avatar={false} />
+    {#if !A}<Skeleton kpis={4} rows={4} avatar={false} />
     {:else if "error" in A}<div class="err">{A.error}</div>
     {:else if R}
       <div class="card kpis">
-        <div class="kpi"><span class="kl">Agente trabalhando</span><b>{dur(R.totals.workMs)}</b><span class="ks">da pergunta até a resposta</span></div>
+        <div class="kpi"><span class="kl">Agente trabalhando</span><b>{dur(R.totals.workMs)}</b><span class="ks">{R.sessions || 0} sessões em {Object.keys(R.projects).length} projeto(s)</span></div>
         <div class="kpi"><span class="kl">Seu tempo nos projetos</span><b>{dur(R.totals.focusS * 1000)}</b><span class="ks">projeto aberto e à vista</span></div>
-        <div class="kpi"><span class="kl">Sessões de agente</span><b>{R.sessions || "—"}</b><span class="ks">{Object.keys(R.projects).length} projeto(s)</span></div>
         <div class="kpi"><span class="kl">Linhas alteradas</span><b>{#if lines}<span class="add">+{R.totals.added}</span> <span class="del">−{R.totals.removed}</span>{:else}—{/if}</b><span class="ks">pelos agentes</span></div>
-        <div class="kpi"><span class="kl">Custo informado</span><b>{money(R.totals.cost)}</b><span class="ks">equivalente API (referência)</span></div>
-        <div class="kpi"><span class="kl">Tokens</span><b>{tok(R.totals.tokens)}</b><span class="ks">quando a CLI informa</span></div>
+        <div class="kpi" title="O que a CLI informa como custo equivalente da API — com assinatura, é só referência"><span class="kl">Custo informado</span><b>{money(R.totals.cost)}</b><span class="ks">{tok(R.totals.tokens)} tokens · referência</span></div>
       </div>
-      {#if !R.current.length}<div class="small muted note">Nenhuma leitura de limite ainda — ela chega quando um agente Claude ou Codex responde em Projetos.</div>{/if}
 
       <div class="card">
         <div class="card-h"><h3>Por dia</h3><span class="muted small">média {fmtV(avgV)}/dia</span><span class="grow"></span>
@@ -143,22 +104,21 @@
       </div>
 
       <div class="card">
-        <div class="card-h"><h3>Por projeto</h3><span class="muted small">limite = soma do que o projeto gastou em cada janela no período</span></div>
+        <div class="card-h"><h3>Por projeto</h3></div>
         <div class="tw">
           <table>
-            <thead><tr><th>Projeto</th><th style="width:22%">Agente trabalhando</th><th style="width:16%">Seu tempo</th><th class="num">Sessões</th><th class="num">Linhas</th><th class="num">Custo</th><th>Limites gastos</th></tr></thead>
+            <thead><tr><th>Projeto</th><th style="width:24%">Agente trabalhando</th><th style="width:18%">Seu tempo</th><th class="num">Linhas</th><th class="num">Custo</th><th title="Soma do que o projeto gastou de cada janela no período">Mais gastou de</th></tr></thead>
             <tbody>
               {#each rows as r, ri (r.id)}
                 <tr class:link={isOpen(r.id)} style="--i:{ri}" onclick={() => isOpen(r.id) && go("/work/" + r.id)}>
                   <td><b>{r.name}</b></td>
                   <td><div class="bar">{#if r.workMs}<span style="width:{(80 * r.workMs) / maxWork}%"></span>{/if}<b>{dur(r.workMs)}</b></div></td>
                   <td><div class="bar you">{#if r.focusS}<span style="width:{(80 * r.focusS) / maxFocus}%"></span>{/if}<b>{dur(r.focusS * 1000)}</b></div></td>
-                  <td class="num">{r.sessions || "—"}</td>
                   <td class="num">{#if r.added + r.removed}<span class="add">+{r.added}</span> <span class="del">−{r.removed}</span>{:else}—{/if}</td>
                   <td class="num">{money(r.cost)}</td>
-                  <td class="small">{#each Object.entries(r.limits).sort((a, b) => b[1] - a[1]) as [k, v] (k)}<span class="lt">{accName(k)} <span class="muted">{k.split("|")[1]}</span> <b>{pct(v)}</b></span>{:else}<span class="muted">—</span>{/each}</td>
+                  <td class="small" title={limitsOf(r).map(([k, v]) => `${accName(k)} · ${k.split("|")[1]}: ${pct(v)}`).join("\n")}>{#each limitsOf(r).slice(0, 1) as [k, v] (k)}<span class="lt">{accName(k)} <span class="muted">{k.split("|")[1]}</span> <b>{pct(v)}</b></span>{#if limitsOf(r).length > 1}<span class="muted">+{limitsOf(r).length - 1}</span>{/if}{:else}<span class="muted">—</span>{/each}</td>
                 </tr>
-              {:else}<tr><td colspan="7" class="muted small">Nada no período. O uso aparece quando você trabalha com agentes em Projetos.</td></tr>{/each}
+              {:else}<tr><td colspan="6" class="muted small">Nada no período. O uso aparece quando você trabalha com agentes em Projetos.</td></tr>{/each}
             </tbody>
           </table>
         </div>
@@ -173,22 +133,13 @@
   .sech { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 2px 2px -2px; }
   .sech h3 { margin: 0; font-size: 14px; font-weight: 650; }
   .sech.period { margin-top: 10px; }
-  /* contas: a lista é o container das linhas (AccountRow muda o arranjo por container query) */
-  .accts { overflow: hidden; }
-  .accts .card-h { padding-block: 8px; row-gap: 8px; }
-  .alist { container: accts / inline-size; }
-  .ahead { display: grid; grid-template-columns: minmax(180px, 0.95fr) minmax(320px, 2.3fr) minmax(170px, 1fr) 60px; column-gap: 22px; padding: 9px 16px 7px;
-    font: 600 11px/1.2 var(--font); color: var(--muted); }
-  @container accts (max-width: 860px) { .ahead { display: none; } }
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line); overflow: hidden; }
   .kpi { display: grid; gap: 3px; align-content: start; padding: 12px 16px 13px; background: var(--surface); min-width: 0; }
   .kpi .kl { font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .kpi b { font-size: 20px; font-weight: 680; letter-spacing: -0.025em; font-variant-numeric: tabular-nums; line-height: 1.25; white-space: nowrap; }
   .kpi .ks { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .note { margin: -4px 2px 0; }
   .err { color: var(--bad); }
   .grow { flex: 1; }
-  @media (max-width: 720px) { .hide-n { display: none; } }
   .chart { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; }
   .yl { display: flex; flex-direction: column; justify-content: space-between; height: 170px; font-size: 10.5px; color: var(--faint); text-align: right; font-variant-numeric: tabular-nums;
     margin-top: -6px; margin-bottom: -6px; }

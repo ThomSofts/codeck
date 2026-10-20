@@ -250,8 +250,13 @@ def language_configs(key):
 
 
 # ---------------------------------------------------------------- configurações do VS Code (para usar a mesma aparência)
-def vscode_settings():
-    """Tema, ícones e fonte das configurações do VS Code/Cursor desta máquina (só as chaves de aparência)."""
+VSCODE_KEYS = ("workbench.colorTheme", "workbench.iconTheme", "editor.fontFamily", "editor.fontSize", "editor.fontLigatures", "editor.tabSize",
+               "editor.minimap.enabled", "editor.wordWrap", "editor.renderWhitespace", "editor.cursorStyle", "editor.cursorBlinking",
+               "editor.stickyScroll.enabled", "editor.bracketPairColorization.enabled", "editor.formatOnSave", "files.autoSave", "terminal.integrated.fontSize",
+               "editor.lineNumbers", "editor.detectIndentation")
+
+
+def _vscode_bases():
     if sys.platform == "darwin":
         bases = [("VS Code", _home("Library", "Application Support", "Code", "User")), ("Cursor", _home("Library", "Application Support", "Cursor", "User"))]
     elif os.name == "nt":
@@ -259,11 +264,14 @@ def vscode_settings():
         bases = [("VS Code", os.path.join(ad, "Code", "User")), ("Cursor", os.path.join(ad, "Cursor", "User"))]
     else:
         bases = [("VS Code", _home(".config", "Code", "User")), ("Cursor", _home(".config", "Cursor", "User"))]
-    keys = ("workbench.colorTheme", "workbench.iconTheme", "editor.fontFamily", "editor.fontSize", "editor.fontLigatures", "editor.tabSize",
-            "editor.minimap.enabled", "editor.wordWrap", "editor.renderWhitespace", "editor.cursorStyle", "editor.cursorBlinking",
-            "editor.stickyScroll.enabled", "editor.bracketPairColorization.enabled", "editor.formatOnSave", "files.autoSave", "terminal.integrated.fontSize")
+    return bases
+
+
+def vscode_settings():
+    """Tema, ícones e fonte das configurações do VS Code/Cursor desta máquina (só as chaves de aparência)."""
+    keys = VSCODE_KEYS
     out = []
-    for label, base in bases:
+    for label, base in _vscode_bases():
         f = os.path.join(base, "settings.json")
         if not os.path.isfile(f):
             continue
@@ -272,9 +280,39 @@ def vscode_settings():
         except Exception:  # noqa: BLE001
             continue
         vals = {k: j[k] for k in keys if k in j and isinstance(j[k], (str, int, float, bool))}
-        if vals:
-            out.append({"app": label, "settings": vals})
+        out.append({"app": label, "settings": vals, "mtime": os.path.getmtime(f)})
     return out
+
+
+def write_vscode_settings(app, values):
+    """Leva os ajustes do editor do Codeck para o settings.json do VS Code/Cursor: só as chaves de aparência/editor,
+    as outras ficam como estão. Comentários do arquivo não sobrevivem (o JSON é regravado) — a tela avisa."""
+    base = dict(_vscode_bases()).get(app)
+    if not base:
+        raise ValueError("Editor desconhecido")
+    f = os.path.join(base, "settings.json")
+    data, comments = {}, False
+    if os.path.isfile(f):
+        text = open(f, encoding="utf-8-sig").read()
+        comments = bool(re.search(r"(^|[^:\"])//|/\*", text))
+        try:
+            data = _jsonc(text)
+        except Exception:  # noqa: BLE001
+            raise ValueError("O settings.json do " + app + " está inválido — corrija no editor antes") from None
+    changed = {}
+    for k, v in (values or {}).items():
+        if k in VSCODE_KEYS and isinstance(v, (str, int, float, bool)) and data.get(k) != v:
+            data[k] = changed[k] = v
+    if changed:
+        os.makedirs(base, exist_ok=True)
+        if os.path.isfile(f) and comments:
+            shutil.copy2(f, f + ".codeck.bak")   # tinha comentários: guarda o original ao lado
+        tmp = f + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=4)
+            fh.write("\n")
+        os.replace(tmp, f)
+    return {"changed": sorted(changed), "backup": bool(changed and comments)}
 
 
 # ---------------------------------------------------------------- Open VSX: buscar, instalar, remover

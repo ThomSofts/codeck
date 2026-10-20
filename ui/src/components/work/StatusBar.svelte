@@ -8,8 +8,8 @@
   import { scm } from "../../lib/scm.svelte";
   import { ui } from "../../lib/ui.svelte";
 
-  let { gitRepo, fileShown = false, building = null, running = 0, onbranch, onproblems, onrunning }:
-    { gitRepo: string; fileShown?: boolean; building?: { done: boolean; ok: boolean; errors: number; action: string } | null; running?: number;
+  let { gitRepo, fileShown = false, building = null, running = 0, debugging = false, onbranch, onproblems, onrunning }:
+    { gitRepo: string; fileShown?: boolean; building?: { done: boolean; ok: boolean; errors: number; action: string } | null; running?: number; debugging?: boolean;
       onbranch?: () => void; onproblems?: () => void; onrunning?: (e: MouseEvent) => void } = $props();
   const st = $derived(scm.status[gitRepo] || null);
   let syncing = $state(false);
@@ -49,7 +49,7 @@
   }
 </script>
 
-<div class="sb" class:busy={building && !building.done}>
+<div class="sb" class:busy={building && !building.done} class:debugging>
   <button class="it" title={st?.upstream ? `${st.branch} ↔ ${st.upstream}` : "Branch (abre o Git)"} onclick={onbranch}><GitBranch size={12} /> {st?.detached ? (st.head || "").slice(0, 8) : st?.branch || "…"}{st?.dirty ? "*" : ""}</button>
   {#if st}
     <button class="it" title={st.upstream ? `Sincronizar: ${st.behind} para baixar, ${st.ahead} para enviar` : "Publicar a branch"} onclick={sync}>
@@ -76,6 +76,9 @@
 </div>
 
 <style>
+  /* depurando: a barra fica laranja, como no VS Code */
+  .sb.debugging { background: color-mix(in srgb, #cc6633 85%, var(--bg-2)) !important; }
+  .sb.debugging :global(*) { color: #fff; }
   .sb { display: flex; align-items: center; gap: 1px; height: 24px; padding: 0 6px; flex: none; border-top: 1px solid var(--line); background: var(--bg-2);
     font: 500 11.5px var(--font); color: var(--text-2); overflow: hidden; white-space: nowrap; transition: background var(--t); }
   .sb.busy { background: color-mix(in srgb, var(--accent) 14%, var(--bg-2)); }

@@ -10,7 +10,7 @@ import time
 import uuid
 from datetime import timedelta
 
-from . import azure, catalogs, git, github, secrets, tracking
+from . import azure, catalogs, git, github, power, secrets, tracking
 from .analytics import analytics_cache
 from .core import (ARCHIVE_FILE, CONFIG_FILE, NOTIFIED_FILE, ctx, load_json, lock, log_activity, log_deploy, notify,
                    is_network_error, now, now_iso, parse_dt, pr_summary, save_json, state, wake)
@@ -485,6 +485,11 @@ POLL_STEP = {"poll_prs": "pull requests", "poll_builds": "builds", "poll_deploys
 SOURCES = {"prs": (poll_prs, 1, 0), "builds": (poll_builds, 1, 2), "deploys": (poll_deploys, 1, 4), "issues": (poll_issues, 3, 6)}
 _wakes = {k: threading.Event() for k in SOURCES}
 _offline = {}
+# laço de cada fonte: geração (o vigia troca um laço travado por um novo; o antigo, se um dia voltar, só sai) e
+# desde quando (monotônico: não conta o tempo dormindo) a leitura atual está rodando
+_gen = {k: 0 for k in SOURCES}
+_busy_since = {}
+STUCK = 240   # uma leitura leva segundos; 4 min acordado lendo = presa (DNS/socket morto depois de suspender)
 
 
 def refresh(source=None):
@@ -501,19 +506,27 @@ def _fast_builds():
                    and (parse_dt(b.get("started") or b.get("queued")) or recent) > recent for b in state["builds"])
 
 
-def _source_loop(key):
+def _source_loop(key, gen=0):
     fn, mult, delay = SOURCES[key]
-    time.sleep(delay)   # não sai tudo junto na abertura
-    while True:
+    time.sleep(delay if gen == 0 else 0)   # não sai tudo junto na abertura
+    while _gen[key] == gen:
+        if power.paused():   # tela bloqueada/protetor/suspenso com "Pausar a automação": nada de ler nem aprovar
+            power.wait_resume(60)
+            _wakes[key].clear()
+            continue
         _net.update(down=False, ok=False)
         with lock:
             state["loading"][key] = now_iso()
             state["polling"] = POLL_STEP[fn.__name__]   # compatível: "lendo <etapa>…" na barra lateral
+        _busy_since[key] = time.monotonic()
         try:
             fn()
         except Exception as e:  # noqa: BLE001
             with lock:
                 state["errors"]["_geral"] = f"{fn.__name__}: {e}"
+        if _gen[key] != gen:
+            return   # o vigia já pôs outro laço no lugar deste (que ficou preso)
+        _busy_since.pop(key, None)
         offline = _net["down"] and not _net["ok"]
         with lock:
             state["loading"][key] = None
@@ -532,6 +545,22 @@ def _source_loop(key):
         _wakes[key].clear()
 
 
+def _watchdog():
+    """Uma leitura presa (requisição que nunca volta depois de o Mac suspender: DNS sem resposta, socket morto) parava
+    a fonte inteira — e com ela as regras automáticas. Passou do limite: um laço novo assume e relê na hora."""
+    while True:
+        time.sleep(15)
+        for key, since in list(_busy_since.items()):
+            if time.monotonic() - since < STUCK:
+                continue
+            _busy_since.pop(key, None)
+            _gen[key] += 1
+            print(f"[engine] leitura de {key} presa há {int(time.monotonic() - since)} s — recomeçando", flush=True)
+            with lock:
+                state["loading"][key] = None
+            threading.Thread(target=_source_loop, args=(key, _gen[key]), daemon=True, name=f"poll-{key}-{_gen[key]}").start()
+
+
 def _wake_relay():
     """O `wake` global (Atualizar, conta nova, regra mudou) acorda todas as fontes."""
     while True:
@@ -543,6 +572,8 @@ def _wake_relay():
 def poll_loop():
     for k in SOURCES:
         threading.Thread(target=_source_loop, args=(k,), daemon=True, name=f"poll-{k}").start()
+    threading.Thread(target=_watchdog, daemon=True, name="poll-watchdog").start()
+    threading.Thread(target=power.clock_loop, daemon=True, name="power-clock").start()
     _wake_relay()
 
 
@@ -556,3 +587,4 @@ def start():
     if os.environ.get("CODECK_NO_POLL") != "1":
         import threading
         threading.Thread(target=poll_loop, daemon=True).start()
+        threading.Thread(target=power.kanban_loop, daemon=True, name="kanban-auto").start()

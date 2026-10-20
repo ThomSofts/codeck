@@ -8,6 +8,8 @@ import { ui } from "./ui.svelte";
 export type Provider = "claude" | "codex" | "cursor" | "gemini" | "opencode";
 export interface AiAccount {
   id: string; provider: Provider; dir: string; name: string; email?: string | null; color?: string | null; label: string;
+  /** o cliente/contexto da conta (Dematec, Pessoal…): a recomendação de um projeto fica entre as do mesmo grupo */
+  group?: string | null;
   installed: boolean; telemetry: "hooks" | "log" | null; bin?: string | null;
   usage?: { rateLimits: { window: string; used: number | null; resetsAt: string | null }[]; updated: string; source: string; plan?: string } | null;
 }
@@ -19,7 +21,7 @@ export interface AiActivity {
 }
 export interface TermInfo {
   id: string; title: string; kind: "shell" | "agent" | "setup" | "run"; cwd: string; alive: boolean; exit: number | null; created: number; lastOutput: number;
-  meta: { project?: string; task?: string; account?: string; provider?: Provider; sid?: string; run?: string; bypass?: boolean };
+  meta: { project?: string; task?: string; account?: string; provider?: Provider; sid?: string; run?: string; debug?: string; bypass?: boolean };
 }
 export interface Session {
   account: string; provider: Provider; status: "starting" | "idle" | "working" | "done" | "needs-you" | "compacting"; started: number;
@@ -273,6 +275,11 @@ class Work {
   rememberAccount(projectId: string, accountId: string) {
     const p = this.projects.find(x => x.id === projectId);
     if (p && p.settings.account !== accountId) this.projects = this.projects.map(x => (x === p ? { ...x, settings: { ...x.settings, account: accountId } } : x));
+  }
+  /** Apelido, grupo e cor da conta (o que vier). */
+  async updateAccount(id: string, patch: { name?: string; group?: string | null; color?: string | null }) {
+    await post("ai/update", { id, ...patch });
+    this.ai = this.ai.map(a => (a.id === id ? { ...a, ...patch } : a));
   }
   async setAccount(projectId: string, accountId: string) {
     this.rememberAccount(projectId, accountId);

@@ -64,6 +64,8 @@ sealed class MainForm : Form
     bool quitting, loaded, hintShown;
     int lastSeq = -1;
     string? lastTarget;
+    bool? holdAwake;          // segurando o PC acordado (Configurações → Geral → "Com a tela bloqueada…")
+    bool screensaverOn;
 
     public MainForm(EventWaitHandle showSignal)
     {
@@ -100,6 +102,9 @@ sealed class MainForm : Form
         tray.BalloonTipClicked += async (_, _) => { ShowMain(); if (lastTarget != null) await OpenTarget(lastTarget); };
 
         timer.Tick += async (_, _) => await Poll();
+        SetHold(true);   // até o backend dizer o modo: o padrão é continuar trabalhando
+        SystemEvents.PowerModeChanged += OnPowerMode;
+        SystemEvents.SessionSwitch += OnSessionSwitch;
         new Thread(() => { while (showSignal.WaitOne()) BeginInvoke(ShowMain); }) { IsBackground = true }.Start();
         Load += async (_, _) => await Start();
     }
@@ -209,8 +214,11 @@ sealed class MainForm : Form
     {
         try
         {
+            // sem estrangular a tela em segundo plano (janela escondida, protetor de tela): os timers seguem no ritmo
+            var opts = new CoreWebView2EnvironmentOptions
+            { AdditionalBrowserArguments = "--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows" };
             envWv = await CoreWebView2Environment.CreateAsync(null, Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Codeck", "WebView2"));
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Codeck", "WebView2"), opts);
             await web.EnsureCoreWebView2Async(envWv);
         }
         catch (WebView2RuntimeNotFoundException)
@@ -275,6 +283,9 @@ sealed class MainForm : Form
     {
         quitting = true;
         timer.Stop();
+        SystemEvents.PowerModeChanged -= OnPowerMode;   // eventos estáticos: soltar antes de sair
+        SystemEvents.SessionSwitch -= OnSessionSwitch;
+        SetHold(false);
         tray.Visible = false;
         try { if (backend is { HasExited: false }) backend.Kill(true); } catch { }
         Application.Exit();
@@ -310,6 +321,9 @@ sealed class MainForm : Form
         Text = total > 0 ? $"({total}) Codeck" : "Codeck";
         tray.Text = code != 200 ? "Codeck — backend fora do ar" : total > 0 ? $"Codeck — {total} pendente(s)" : "Codeck — nada pendente";
         SetBadge(total);
+        if (code == 200 && json?.TryGetProperty("power", out var pw) == true && pw.TryGetProperty("hold", out var h))
+            SetHold(h.ValueKind != JsonValueKind.False);
+        CheckScreensaver();
         if (code != 200 || json?.TryGetProperty("notifySeq", out var s) != true) return;
         var seq = s.GetInt32();
         if (lastSeq < 0) { lastSeq = seq; return; } // ao abrir, não repete o que já passou
@@ -324,6 +338,50 @@ sealed class MainForm : Form
                 tray.ShowBalloonTip(8000, title, body.Length > 250 ? body[..250] : body, ToolTipIcon.Info);
             }
         lastSeq = list?.TryGetProperty("seq", out var ns) == true ? ns.GetInt32() : seq;
+    }
+
+    // ------------------------------------------------------------------ tela bloqueada, protetor de tela, suspensão
+
+    // "Continuar trabalhando": o Windows não suspende por ociosidade enquanto o app pedir (o monitor pode apagar).
+    // ES_CONTINUOUS vale para a thread que chamou até a próxima chamada — aqui é sempre a thread da janela.
+    void SetHold(bool hold)
+    {
+        if (holdAwake == hold) return;
+        holdAwake = hold;
+        Native.SetThreadExecutionState(hold ? Native.EsContinuous | Native.EsSystemRequired : Native.EsContinuous);
+    }
+
+    void OnPowerMode(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Suspend) _ = PowerEvent("sleep");
+        else if (e.Mode == PowerModes.Resume) BeginInvoke(async () => { await PowerEvent("wake"); await Poll(); });
+    }
+
+    void OnSessionSwitch(object? sender, SessionSwitchEventArgs e)
+    {
+        if (e.Reason == SessionSwitchReason.SessionLock) _ = PowerEvent("lock");
+        else if (e.Reason == SessionSwitchReason.SessionUnlock) BeginInvoke(async () => { await PowerEvent("unlock"); await Poll(); });
+    }
+
+    // O Windows não avisa quando o protetor de tela começa: confere a cada leitura do contador (15 s)
+    void CheckScreensaver()
+    {
+        var running = false;
+        if (!Native.SystemParametersInfo(Native.SpiGetScreenSaverRunning, 0, ref running, 0) || running == screensaverOn) return;
+        screensaverOn = running;
+        _ = PowerEvent(running ? "screensaver-start" : "screensaver-stop");
+    }
+
+    async Task PowerEvent(string name)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, baseUrl + "api/power/event")
+            { Content = new StringContent(JsonSerializer.Serialize(new { @event = name }), System.Text.Encoding.UTF8, "application/json") };
+            req.Headers.Add("X-Codeck", "1");
+            await http.SendAsync(req);
+        }
+        catch { }
     }
 
     int lastBadge = -1;
@@ -401,6 +459,7 @@ sealed class MainForm : Form
             if (type != null && type.StartsWith("selftest-")) { _ = SelfTest(type, msg); return; }
             if (type == "pickFolder") { PickFolder(msg.GetProperty("id").GetString() ?? "", msg.TryGetProperty("title", out var t) ? t.GetString() : null); return; }
             if (type == "theme") { ApplyTheme(msg.TryGetProperty("mode", out var m) && m.GetString() == "light"); return; }
+            if (type == "power") { _ = Poll(); return; }   // mudou o modo em Configurações: aplica já
             if (type == "openWindow" && envWv != null)
             {
                 var hash = msg.GetProperty("hash").GetString() ?? "";
@@ -608,6 +667,10 @@ static class Job
 
 static class Native
 {
+    public const uint EsContinuous = 0x80000000, EsSystemRequired = 0x00000001;
+    public const uint SpiGetScreenSaverRunning = 0x0072;
+    [DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint flags);
+    [DllImport("user32.dll", SetLastError = true)] public static extern bool SystemParametersInfo(uint action, uint param, ref bool value, uint winIni);
     [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
     [DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);
 }

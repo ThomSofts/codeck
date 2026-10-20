@@ -17,8 +17,9 @@
   import { kbd } from "../../lib/keys";
   import AccountAvatar from "../ai/AccountAvatar.svelte";
   import LimitRing from "../ai/LimitRing.svelte";
+  import Fuel from "../ai/Fuel.svelte";
   import AgentIcon from "./AgentIcon.svelte";
-  import { binding, clock, effUsed, resetLabel, stateRank, tone } from "../ai/limits.svelte";
+  import { clock, rank, tone, type Rec } from "../ai/limits.svelte";
 
   type Started = { projectId: string; taskId: string | null; termId?: string };
   let { project, task = null, term = null, onremoved, onreview, onstarted, onmore }:
@@ -107,12 +108,15 @@
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); }
     else if (e.key === "Escape" && text) { e.preventDefault(); text = ""; }
   }
-  const maxUsed = (a: AiAccount) => Math.max(0, ...(a.usage?.rateLimits || []).map(w => w.used || 0));
+  const freeHint = (r: Rec) => r.free == null ? r.a.label : r.blocked ? "no limite" : `${Math.round(r.free)}% livre`;
   function pickAccount(e: MouseEvent) {
+    const others = rank(installed.filter(a => !pool.some(p => p.id === a.id)), clock.now);
+    const item = (r: Rec) => ({ label: `${r.a.id === accountId ? "● " : ""}${r.a.name}${r.a.id === rec?.a.id ? " ★" : ""}`, icon: Bot,
+      hint: freeHint(r), onclick: () => work.setAccount(project.id, r.a.id) });
     ui.contextMenu(e, [
-      { heading: `Conta de ${project.name}` },
-      ...installed.map(a => ({ label: `${a.id === accountId ? "● " : ""}${a.name} · ${a.label}${maxUsed(a) ? ` · ${Math.round(maxUsed(a))}%` : ""}`,
-        icon: Bot, hint: a.email || undefined, onclick: () => work.setAccount(project.id, a.id) })),
+      { heading: `Conta de ${project.name}${group ? ` · ${group}` : ""}` },
+      ...ranked.map(item),
+      ...(others.length ? [{ heading: group ? "Outros grupos" : "Outras" }, ...others.map(item)] : []),
       ...(installed.length ? [] : [{ label: "Nenhuma CLI de IA instalada", disabled: true }]),
       { separator: true },
       { label: "Abrir agente sem pedido", icon: Bot, onclick: () => openAgent() },
@@ -165,13 +169,20 @@
   const now = $derived(clock.now);
   // agente terminou: os limites da conta acabaram de chegar pela linha de status — relê sem esperar o ciclo de 30 s
   $effect(() => { if (s?.status === "done" || s?.status === "needs-you") setTimeout(() => work.loadAi(), 1500); });
-  // contas: a do agente aberto primeiro, depois a do projeto e as que trabalham nele, depois quem está ativo
-  const accounts = $derived.by(() => {
-    const used = new Set(work.agents.filter(a => a.project.id === project.id).map(a => a.term.meta.account));
-    let list = work.ai.filter(a => a.installed && (used.has(a.id) || a.usage?.rateLimits?.length || a.id === acc?.id || a.id === accountId));
-    if (!list.length) list = installed.slice(0, 4);
-    const r = (a: AiAccount) => (a.id === acc?.id ? -3 : a.id === accountId ? -2 : used.has(a.id) ? -1 : 0);
-    return [...list].sort((x, y) => r(x) - r(y) || stateRank(work.activity[x.id]?.state) - stateRank(work.activity[y.id]?.state));
+  // fôlego: as contas do grupo da conta do projeto (o cliente), da mais livre para a mais apertada; a recomendada é a
+  // primeira que não está no limite. A da sessão aberta entra mesmo se for de outro grupo.
+  const group = $derived(account?.group || null);
+  const pool = $derived(installed.filter(a => !group || a.group === group));
+  const ranked = $derived(rank(pool, now));
+  const rec = $derived(ranked.find(r => r.free != null && !r.blocked) || null);
+  const mine = $derived(ranked.find(r => r.a.id === accountId) || null);
+  /** vale sugerir a troca: a do projeto está no limite / sem leitura, ou a recomendada tem bem mais fôlego */
+  // só com grupo: sem ele não dá para saber se a outra conta é do mesmo cliente
+  const nudge = $derived(group && rec && account && rec.a.id !== accountId && (!mine || mine.free == null || mine.blocked || rec.free! - mine.free >= 15) ? rec : null);
+  const shown = $derived.by(() => {
+    const l = ranked.filter(r => r.free != null || r.a.id === accountId || r.a.id === acc?.id);
+    const extra = acc && !l.some(r => r.a.id === acc.id) ? rank([acc], now) : [];
+    return [...extra, ...l];
   });
 
   const EV: Record<string, string> = { UserPromptSubmit: "pedido recebido", Stop: "terminou", SessionStart: "sessão aberta", PreCompact: "compactando", SubagentStop: "subagente terminou" };
@@ -203,7 +214,8 @@
         {#if !targetTerm}
           {#if account}
             <button class="chip" title={`Conta de IA do projeto: ${account.label} · ${account.name}${account.email ? " · " + account.email : ""} — clique para trocar`} onclick={pickAccount}>
-              <AgentIcon provider={account.provider} size={13} /><span class="ell">{account.name}</span><ChevronDown size={11} /></button>
+              <AgentIcon provider={account.provider} size={13} /><span class="ell">{account.name}</span>
+              {#if mine?.free != null}<span class="cf {mine.tone}">{Math.round(mine.free)}%</span>{/if}<ChevronDown size={11} /></button>
           {:else}
             <span class="tiny muted">Nenhuma CLI de IA — Contas e ajustes → IA</span>
           {/if}
@@ -214,6 +226,13 @@
         <button class="btn sm primary icon go" title={`${targetTerm ? "Enviar à sessão" : "Enviar"} (Enter · ⇧Enter quebra a linha)`} aria-label="Enviar"
           disabled={busy || !text.trim() || (!targetTerm && !accountId)} onclick={submit}><ArrowUp size={15} /></button>
       </div>
+      {#if nudge && !targetTerm}
+        <div class="nudge">
+          <AccountAvatar a={nudge.a} size={20} />
+          <span class="grow"><b>{nudge.a.name}</b> está mais livre: {Math.round(nudge.free!)}%{mine?.free != null ? ` × ${Math.round(mine.free)}%` : ""}</span>
+          <button class="btn sm" onclick={() => work.setAccount(project.id, nudge!.a.id)}>Usar</button>
+        </div>
+      {/if}
     </div>
     {#if !targetTerm}
       <div class="opts">
@@ -303,31 +322,29 @@
     </section>
   {/if}
 
-  <!-- limites -->
+  <!-- fôlego das contas -->
   <section class="limits" class:shut={!limitsOpen}>
     <button class="lh" onclick={() => { limitsOpen = !limitsOpen; LSset("codeck.limitsOpen", limitsOpen ? "1" : "0"); }} aria-expanded={limitsOpen}>
-      <h4>Limites das contas</h4><ChevronDown size={13} class="chev {limitsOpen ? '' : 'rot'}" /></button>
+      <h4>Fôlego das contas{#if group}<span class="n">{group}</span>{/if}</h4><ChevronDown size={13} class="chev {limitsOpen ? '' : 'rot'}" /></button>
     {#if limitsOpen}
-    {#each accounts as a (a.id)}
-      {@const ws = a.usage?.rateLimits || []}
-      {@const b = binding(ws, now)}
+    {#each shown as r (r.a.id)}
+      {@const a = r.a}
       {@const st = work.activity[a.id]?.state}
       <div class="lim" class:cur={a.id === (acc?.id || accountId)}>
-        <AccountAvatar {a} state={st === "working" || st === "needs-you" ? st : null} size={24} />
-        <div class="lt">
-          <b class="ell">{a.name}{#if a.id === acc?.id}<span class="this">esta sessão</span>{:else if a.id === accountId}<span class="this">do projeto</span>{/if}</b>
-          {#if ws.length && b}
-            <span class="tiny cd {tone(effUsed(b, now))}" title="A janela mais gasta e quando ela reseta">{b.window} · {resetLabel(b.resetsAt, now)}</span>
-          {:else if a.provider === "claude"}
-            <button class="tiny readlim" disabled={!!work.probing[a.id]} onclick={() => work.probe(a.id)}>{work.probing[a.id] ? "lendo o limite…" : work.activity[a.id]?.probeError ? work.activity[a.id]!.probeError!.error : "limite não lido — ler agora"}</button>
-          {:else}<span class="tiny muted">{a.telemetry ? "aparece após a 1ª resposta" : "esta CLI não informa limites"}</span>{/if}
-        </div>
-        {#each ws as w (w.window)}
-          <div class="mw win" title={`${w.window}: ${Math.round(effUsed(w, now))}% · ${resetLabel(w.resetsAt, now)}`}>
-            <LimitRing used={effUsed(w, now)} size={30} binding={ws.length > 1 && b?.window === w.window && effUsed(w, now) > 0} />
-            <span>{w.window === "semanal" ? "sem." : w.window}</span>
+        <div class="lr">
+          <AccountAvatar {a} state={st === "working" || st === "needs-you" ? st : null} size={26} />
+          <div class="lt">
+            <b class="ell">{a.name}{#if a.id === acc?.id}<span class="this">esta sessão</span>{:else if a.id === accountId}<span class="this">do projeto</span>{:else if a.id === rec?.a.id}<span class="this good">recomendada</span>{/if}</b>
+            {#if r.free == null && a.provider === "claude"}
+              <button class="tiny readlim" disabled={!!work.probing[a.id]} onclick={() => work.probe(a.id)}>{work.probing[a.id] ? "lendo o limite…" : work.activity[a.id]?.probeError ? work.activity[a.id]!.probeError!.error : "limite não lido — ler agora"}</button>
+            {:else}<span class="tiny muted ell" title={r.why}>{r.why}</span>{/if}
           </div>
-        {/each}
+          {#if r.free != null}<span class="lf {r.tone}">{Math.round(r.free)}%</span>{/if}
+          {#if a.id !== accountId && r.free != null && !r.blocked}
+            <button class="use" title={`Usar ${a.name} neste projeto`} onclick={() => work.setAccount(project.id, a.id)}>usar</button>
+          {/if}
+        </div>
+        {#if r.free != null}<div class="lfu"><Fuel {a} compact /></div>{/if}
       </div>
     {:else}<div class="small muted">Nenhuma conta de IA. Configure em Contas e ajustes → IA.</div>{/each}
     {/if}
@@ -361,7 +378,7 @@
   .box textarea::placeholder { color: var(--muted); }
   .bar { display: flex; align-items: center; gap: 5px; padding: 4px 5px 5px 7px; min-width: 0; }
   .chip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 7px; border: 1px solid var(--line-2); border-radius: 99px; background: var(--surface);
-    color: var(--text-2); font: 500 12px var(--font); cursor: pointer; min-width: 0; max-width: 140px; transition: border-color var(--t-fast), color var(--t-fast); }
+    color: var(--text-2); font: 500 12px var(--font); cursor: pointer; min-width: 0; max-width: 190px; transition: border-color var(--t-fast), color var(--t-fast); }
   .chip:hover { border-color: var(--line-3); color: var(--text); }
   .chip :global(svg:last-child) { color: var(--muted); flex: none; }
   .byp { display: inline-flex; align-items: center; gap: 3px; height: 20px; padding: 0 6px; border-radius: 99px; background: var(--warn-soft); color: var(--warn);
@@ -427,16 +444,27 @@
   .lh { display: flex; align-items: center; justify-content: space-between; width: 100%; border: 0; background: none; padding: 0 0 6px; cursor: pointer; color: var(--muted); }
   .lh :global(.chev) { transition: transform var(--t); }
   .lh :global(.chev.rot) { transform: rotate(-90deg); }
-  .lim { display: flex; align-items: center; gap: 9px; padding: 6px; margin: 0 -6px; border-radius: var(--r-sm); min-width: 0; }
+  .lim { display: grid; gap: 6px; padding: 8px; margin: 0 -8px; border-radius: var(--r-sm); min-width: 0; transition: background var(--t-fast); }
+  .lim:hover { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
   .lim.cur { background: var(--surface-2); }
+  .lr { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .lfu { padding-left: 35px; }
+  .lf { font: 700 14px/1 var(--font); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--good); flex: none; }
+  .lf.warn { color: var(--warn); } .lf.bad { color: var(--bad); }
+  .use { flex: none; height: 20px; padding: 0 7px; border-radius: 6px; border: 1px solid var(--line-2); background: none; color: var(--text-2); font: 600 11px var(--font);
+    cursor: pointer; opacity: 0; transition: opacity var(--t-fast), background var(--t-fast); }
+  .lim:hover .use, .use:focus-visible { opacity: 1; }
+  .use:hover { background: var(--surface-3); color: var(--text); }
+  .this.good { color: var(--good); }
+  .cf { font: 650 10.5px/1 var(--font); font-variant-numeric: tabular-nums; color: var(--good); }
+  .cf.warn { color: var(--warn); } .cf.bad { color: var(--bad); }
+  .nudge { display: flex; align-items: center; gap: 8px; margin-top: 2px; padding: 7px 8px 7px 9px; border-radius: var(--r-sm); font-size: 12px; color: var(--text-2);
+    background: var(--good-soft); border: 1px solid color-mix(in srgb, var(--good) 28%, transparent); animation: rise 0.25s var(--ease-out); }
+  .nudge b { color: var(--text); font-weight: 650; }
   .lt { display: grid; min-width: 0; flex: 1; line-height: 1.35; }
   .lt b { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12.5px; min-width: 0; }
   .this { font: 600 10px/1 var(--font); color: var(--accent); flex: none; }
-  .cd { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .cd.warn { color: var(--warn); } .cd.bad { color: var(--bad); }
-  .mw { display: grid; justify-items: center; gap: 1px; flex: none; min-width: 30px; }
-  .mw span { font-size: 9.5px; color: var(--muted); line-height: 1; }
   .readlim { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; text-align: left; font-family: var(--font); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .readlim:disabled { color: var(--muted); cursor: default; }
-  @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .pulse, .nudge { animation: none; } }
 </style>

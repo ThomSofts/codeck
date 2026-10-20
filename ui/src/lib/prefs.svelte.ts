@@ -58,6 +58,12 @@ export const PREF_DEFAULTS = {
   "ui.density": "comfortable" as "comfortable" | "compact",
   /** abrir o último projeto ao iniciar */
   "work.reopenLast": true,
+  /** tela bloqueada/protetor de tela/ocioso: continuar trabalhando, só com algo rodando, ou pausar a automação */
+  "power.mode": "keep" as "keep" | "busy" | "pause",
+  /** manter os ajustes do editor sincronizados com o settings.json do VS Code/Cursor ("" = não) */
+  "vscode.sync": "" as "" | "VS Code" | "Cursor",
+  /** assinatura dos ajustes do VS Code na última sincronização (para só importar quando mudarem lá) */
+  "vscode.syncSig": "" as string,
 };
 export type PrefKey = keyof typeof PREF_DEFAULTS;
 type PrefValue<K extends PrefKey> = (typeof PREF_DEFAULTS)[K];
@@ -71,11 +77,15 @@ class Prefs {
     const v = this.values[k];
     return (v === undefined ? PREF_DEFAULTS[k] : v) as PrefValue<K>;
   }
+  private listeners: ((k: PrefKey) => void)[] = [];
+  /** Avisa quando uma preferência muda por aqui (ex.: sincronizar com o VS Code). */
+  onChange(fn: (k: PrefKey) => void) { this.listeners.push(fn); }
   /** Muda na hora (tela reage) e grava em lote logo depois. */
   set<K extends PrefKey>(k: K, v: PrefValue<K> | null) {
     if (v === null) { const { [k]: _, ...rest } = this.values; this.values = rest; }
     else this.values = { ...this.values, [k]: v };
     this.pending[k] = v;
+    for (const fn of this.listeners) { try { fn(k); } catch { /* quem escuta não derruba o ajuste */ } }
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => this.flush(), 300);
   }

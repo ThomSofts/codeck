@@ -111,10 +111,33 @@ def save_account(body):
     folder = os.path.abspath(os.path.expanduser((body.get("dir") or "").strip() or os.path.join(HOME, PROVIDERS[prov]["home"])))
     entry = {"id": body.get("id") or uuid.uuid4().hex[:10], "provider": prov, "dir": folder,
              "name": (body.get("name") or "").strip()[:40] or os.path.basename(folder),
-             "email": _claude_email(folder) if prov == "claude" else body.get("email"), "color": body.get("color")}
+             "email": _claude_email(folder) if prov == "claude" else body.get("email"), "color": body.get("color"),
+             "group": (str(body.get("group") or "").strip()[:30] or None)}
     d["accounts"] = [a for a in d["accounts"] if a["id"] != entry["id"]] + [entry]
     save_json(ACCOUNTS_FILE, d)
     return entry
+
+
+def update_account(body):
+    """Apelido, grupo (o cliente: Dematec, Pessoal…) e cor de uma conta — só o que vier; o resto fica."""
+    d = _load()
+    a = next((x for x in d["accounts"] if x["id"] == body.get("id")), None)
+    if not a:
+        raise LookupError("Conta de IA não encontrada")
+    if "name" in body:
+        name = str(body.get("name") or "").strip()[:40]
+        if not name:
+            raise ValueError("Dê um nome para a conta")
+        a["name"] = name
+    if "group" in body:
+        a["group"] = str(body.get("group") or "").strip()[:30] or None
+    if "color" in body:
+        c = str(body.get("color") or "").strip()
+        if c and not re.fullmatch(r"#[0-9a-fA-F]{6}|var\(--cat[1-6]\)", c):
+            raise ValueError("Cor inválida")
+        a["color"] = c or None
+    save_json(ACCOUNTS_FILE, d)
+    return a
 
 
 def delete_account(aid):
@@ -831,7 +854,8 @@ def auto_limits_loop():
     while True:
         try:
             ui = (ctx.config or {}).get("ui") or {}
-            if ui.get("ai.autoLimits", True) and which_all().get("claude"):
+            from . import power
+            if ui.get("ai.autoLimits", True) and not power.paused() and which_all().get("claude"):
                 every = max(15, int(ui.get("ai.autoLimitsMinutes") or 60)) * 60
                 live = {v["account"] for v in _sessions.values() if v.get("status") in ("working", "idle", "done", "needs-you")}
                 for a in [x for x in _load()["accounts"] if x["provider"] == "claude"]:

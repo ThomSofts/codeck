@@ -13,7 +13,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import accounts, agents, analytics, azure, catalogs, dotnet, editor, engine, extensions, git, github, kanban, library, lsp, rules, terminals, tracking, update, workspace, ws
+from . import accounts, agents, analytics, azure, catalogs, debug, dotnet, editor, engine, extensions, git, github, kanban, launch, library, lsp, power, rules, terminals, tracking, update, workspace, ws
 from .core import (APP_BUILD, APP_PLATFORM, APP_VERSION, ARCHIVE_FILE, CONFIG_FILE, DATA, DEFAULT_PORT, PRODUCT, RULES_FILE, OfflineError,
                    STATIC_DIR, TOKEN, ctx, load_json, lock, log_activity, log_build, log_deploy, notifications, notify_seq,
                    now_iso, pr_summary, read_activity, save_json, state, wake)
@@ -85,8 +85,22 @@ def get_summary(qs, body):
                   and (p.get("provider") != "github" or p.get("reviewRequested")))
         deploys = sum(1 for d in state["deploys"] if d.get("mine", True))
         errors = bool(state["errors"] or state["deployErrors"])
-        return {"prs": prs, "deploys": deploys, "total": prs + deploys, "errors": errors,
-                "configured": bool(ctx.orgs or ctx.gh), "lastPoll": state["lastPoll"], "notifySeq": notify_seq()}
+        out = {"prs": prs, "deploys": deploys, "total": prs + deploys, "errors": errors,
+               "configured": bool(ctx.orgs or ctx.gh), "lastPoll": state["lastPoll"], "notifySeq": notify_seq()}
+    out["power"] = power.summary()   # o app nativo segura (ou não) o computador acordado conforme o modo
+    return out
+
+
+# ---------------------------------------------------------------- tela bloqueada, protetor de tela, suspensão
+@route("GET", "/api/power")
+def get_power(qs, body):
+    return power.summary()
+
+
+@route("POST", "/api/power/event")
+def post_power_event(qs, body):
+    """O app nativo avisa: sleep, wake, lock, unlock, screensaver-start/-stop, display-sleep/-wake."""
+    return power.event(str(body.get("event") or ""), body.get("at"))
 
 
 @route("GET", "/api/notifications")
@@ -856,6 +870,168 @@ def post_dotnet_start(qs, body):
     return dotnet.start(body.get("repoId"), body.get("taskId"), body.get("projects") or [], body.get("config"), body.get("profile"))
 
 
+# ---------------------------------------------------------------- executar e depurar (launch.json, DAP)
+@route("GET", "/api/launch/configs")
+def get_launch_configs(qs, body):
+    return launch.configs(q1(qs, "repoId"), q1(qs, "taskId"))
+
+
+@route("GET", "/api/launch/raw")
+def get_launch_raw(qs, body):
+    return launch.raw_config(q1(qs, "repoId"), q1(qs, "taskId"), q1(qs, "id"))
+
+
+@route("POST", "/api/launch/save")
+def post_launch_save(qs, body):
+    return launch.save_config(body.get("repoId"), body.get("taskId"), body.get("config") or {}, body.get("oldName"))
+
+
+@route("POST", "/api/launch/compound")
+def post_launch_compound(qs, body):
+    return launch.save_compound(body.get("repoId"), body.get("taskId"), body.get("name"), body.get("names") or [], body.get("oldName"))
+
+
+@route("POST", "/api/launch/delete")
+def post_launch_delete(qs, body):
+    return launch.delete_config(body.get("repoId"), body.get("taskId"), body.get("id") or "")
+
+
+@route("POST", "/api/launch/settings")
+def post_launch_settings(qs, body):
+    return launch.save_project_settings(body.get("repoId"), body)
+
+
+@route("GET", "/api/launch/export-preview")
+def get_launch_export_preview(qs, body):
+    return launch.preview_export(q1(qs, "repoId"), q1(qs, "taskId"), (q1(qs, "ids") or "").split("\n") if q1(qs, "ids") else [])
+
+
+@route("POST", "/api/launch/export")
+def post_launch_export(qs, body):
+    return launch.export_vscode(body.get("repoId"), body.get("taskId"), body.get("ids") or None)
+
+
+@route("POST", "/api/launch/import")
+def post_launch_import(qs, body):
+    return launch.import_vscode(body.get("repoId"), body.get("taskId"))
+
+
+@route("GET", "/api/debug/adapters")
+def get_debug_adapters(qs, body):
+    return debug.adapters()
+
+
+@route("POST", "/api/debug/install")
+def post_debug_install(qs, body):
+    return debug.install(body.get("kind"))
+
+
+@route("POST", "/api/debug/start")
+def post_debug_start(qs, body):
+    terminals.hint_size(body.get("cols"), body.get("rows"))
+    return debug.start(body.get("repoId"), body.get("taskId"), body.get("configId"), bool(body.get("noDebug")), body.get("device") or None)
+
+
+@route("POST", "/api/debug/stop")
+def post_debug_stop(qs, body):
+    return debug.stop(body.get("sid"), body.get("group"), body.get("repoId"))
+
+
+@route("POST", "/api/debug/restart")
+def post_debug_restart(qs, body):
+    return debug.restart(body.get("sid"))
+
+
+@route("POST", "/api/debug/control")
+def post_debug_control(qs, body):
+    return debug.control(body.get("sid"), body.get("action"), body.get("threadId"))
+
+
+@route("GET", "/api/debug/poll")
+def get_debug_poll(qs, body):
+    return debug.poll(int(q1(qs, "after", "0") or 0), float(q1(qs, "wait", "25") or 0), q1(qs, "repoId"))
+
+
+@route("GET", "/api/debug/stack")
+def get_debug_stack(qs, body):
+    return debug.stack(q1(qs, "sid"), q1(qs, "threadId"))
+
+
+@route("GET", "/api/debug/scopes")
+def get_debug_scopes(qs, body):
+    return debug.scopes(q1(qs, "sid"), q1(qs, "frameId"))
+
+
+@route("GET", "/api/debug/variables")
+def get_debug_variables(qs, body):
+    return debug.variables(q1(qs, "sid"), q1(qs, "ref"))
+
+
+@route("POST", "/api/debug/evaluate")
+def post_debug_evaluate(qs, body):
+    return debug.evaluate(body.get("sid"), str(body.get("expression") or ""), body.get("frameId"), body.get("context") or "repl")
+
+
+@route("POST", "/api/debug/set-variable")
+def post_debug_set_variable(qs, body):
+    return debug.set_variable(body.get("sid"), body.get("ref"), body.get("name"), str(body.get("value") or ""))
+
+
+@route("GET", "/api/debug/output")
+def get_debug_output(qs, body):
+    return debug.output(q1(qs, "sid"), q1(qs, "after", "0"))
+
+
+@route("GET", "/api/debug/source")
+def get_debug_source(qs, body):
+    return debug.source(q1(qs, "sid"), q1(qs, "ref"), q1(qs, "path"))
+
+
+@route("GET", "/api/debug/breakpoints")
+def get_debug_breakpoints(qs, body):
+    return debug.breakpoints(q1(qs, "repoId"))
+
+
+@route("POST", "/api/debug/breakpoints")
+def post_debug_breakpoints(qs, body):
+    return debug.set_breakpoints(body.get("repoId"), body.get("path"), body.get("breakpoints") or [])
+
+
+@route("POST", "/api/debug/breakpoints/clear")
+def post_debug_breakpoints_clear(qs, body):
+    return debug.clear_breakpoints(body.get("repoId"), body.get("path"))
+
+
+@route("POST", "/api/debug/exceptions")
+def post_debug_exceptions(qs, body):
+    return debug.set_exception_filters(body.get("repoId"), body.get("kind"), body.get("filters") or [])
+
+
+@route("GET", "/api/debug/devices")
+def get_debug_devices(qs, body):
+    return debug.devices(q1(qs, "force") == "1")
+
+
+@route("POST", "/api/debug/emulator")
+def post_debug_emulator(qs, body):
+    return debug.launch_emulator(body.get("id"))
+
+
+@route("POST", "/api/debug/devtools")
+def post_debug_devtools(qs, body):
+    return debug.devtools(body.get("sid"), body.get("page") or "", body.get("theme") or "dark", bool(body.get("embed")))
+
+
+@route("POST", "/api/debug/service")
+def post_debug_service(qs, body):
+    return debug.service(body.get("sid"), body.get("method"), body.get("params"))
+
+
+@route("POST", "/api/debug/saved")
+def post_debug_saved(qs, body):
+    return debug.on_saved(body.get("repoId"), body.get("taskId"), body.get("path") or "")
+
+
 @route("GET", "/api/dotnet/problems")
 def get_dotnet_problems(qs, body):
     return dotnet.problems(q1(qs, "termId"))
@@ -870,6 +1046,16 @@ def post_dotnet_open_vs(qs, body):
 @route("GET", "/api/ext/list")
 def get_ext_list(qs, body):
     return extensions.public_list(q1(qs, "refresh") == "1")
+
+
+@route("GET", "/api/ext/vscode-settings")
+def get_ext_vscode_settings(qs, body):
+    return {"apps": extensions.vscode_settings()}
+
+
+@route("POST", "/api/ext/vscode-settings")
+def post_ext_vscode_settings(qs, body):
+    return extensions.write_vscode_settings(body.get("app"), body.get("values") or {})
 
 
 @route("GET", "/api/ext/file")
@@ -969,6 +1155,11 @@ def get_ai_detect(qs, body):
 @route("POST", "/api/ai/save")
 def post_ai_save(qs, body):
     return agents.save_account(body)
+
+
+@route("POST", "/api/ai/update")
+def post_ai_update(qs, body):
+    return agents.update_account(body)
 
 
 @route("POST", "/api/ai/delete")
@@ -1205,6 +1396,7 @@ def _watch_parent(parent):
     while True:
         time.sleep(3)
         if not alive(int(parent)):
+            debug.kill_now()
             terminals.close_all()   # shells e agentes vivem em sessão própria: fecham junto com o app
             os._exit(0)  # o app fechou (ou caiu): não fica processo órfão segurando a porta
 
@@ -1225,10 +1417,12 @@ def main():
     import atexit
     import signal
     atexit.register(terminals.close_all)
+    atexit.register(debug.shutdown)
 
     def _stop(*_):
         # o app pede para sair com SIGTERM: sem isto o Python morria na hora e os terminais (dotnet run, agentes…)
         # ficavam rodando em segundo plano, órfãos
+        debug.kill_now()
         terminals.close_all()
         os._exit(0)
     signal.signal(signal.SIGTERM, _stop)

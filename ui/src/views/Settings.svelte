@@ -25,6 +25,7 @@
   import { repos } from "../lib/repos.svelte";
   import TestResult from "../components/TestResult.svelte";
   import { chooseTheme, type ThemePref } from "../lib/theme";
+  import { send } from "../lib/native";
 
   type OrgForm = { name: string; url: string; pat: string; enabled: boolean; originalName?: string; hasPat?: boolean; patStore?: string; me?: any; test?: any };
   type SecId = "accounts" | "github" | "ai" | "appearance" | "editor" | "terminal" | "projects" | "agents" | "notifications" | "network" | "shortcuts" | "data" | "about";
@@ -60,7 +61,7 @@
   // ------------------------------------------------------------ linhas de ajuste (também o índice da busca)
   type Opt = { value: string; label: string; icon?: any };
   type Row = { sec: SecId; id: string; label: string; desc?: string; kw?: string;
-    kind: "pref-switch" | "pref-select" | "pref-seg" | "pref-text" | "rule-switch" | "auto" | "theme" | "ext-theme" | "ext-icons" | "vscode-import" | "ext-editor" | "poll" | "note" | "data-dir" | "diag" | "security" | "link";
+    kind: "pref-switch" | "pref-select" | "pref-seg" | "pref-text" | "rule-switch" | "auto" | "theme" | "ext-theme" | "ext-icons" | "vscode-import" | "vscode-sync" | "ext-editor" | "poll" | "note" | "data-dir" | "diag" | "security" | "link";
     key?: string; options?: Opt[]; when?: () => boolean };
   const sizes = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => ({ value: String(a + i), label: `${a + i} px` }));
   const ROWS: Row[] = [
@@ -70,6 +71,7 @@
     { sec: "appearance", id: "themeApp", kind: "pref-switch", key: "workbench.themeApp", label: "O tema de cores pinta o app inteiro", desc: "Desligado, o tema vale só no editor e no terminal; o resto segue Sistema/Escuro/Claro.", kw: "vscode tema app" },
     { sec: "appearance", id: "iconTheme", kind: "ext-icons", label: "Tema de ícones", desc: "Ícones de arquivo e pasta do explorador, das abas e do ⌘P (Material Icon Theme, vscode-icons, Seti…).", kw: "vscode extensão ícone material seti" },
     { sec: "appearance", id: "vscodeImport", kind: "vscode-import", label: "Usar a aparência do VS Code", desc: "Lê as configurações do VS Code/Cursor desta máquina: tema, ícones, fonte, tamanho, ligaduras, tabulação, salvar automático.", kw: "vscode cursor importar configurações" },
+    { sec: "appearance", id: "vscodeSync", kind: "vscode-sync", label: "Manter sincronizado com o VS Code", desc: "Fonte, tamanho, tabulação, salvar automático, tema e ícones: o que mudar no VS Code vem para cá ao abrir o app; o que mudar aqui vai para o settings.json dele. As configurações de execução (launch.json) sincronizam por projeto, em Executar e depurar.", kw: "vscode cursor sincronizar levar exportar settings.json" },
     { sec: "appearance", id: "extLink", kind: "note", label: "Extensões", desc: "Instale temas, ícones e snippets do marketplace aberto (Open VSX) no painel Extensões do projeto (ícone de blocos na barra da esquerda).", kw: "extensão marketplace open vsx instalar" },
     { sec: "appearance", id: "density", kind: "pref-seg", key: "ui.density", label: "Densidade", desc: "Compacta diminui alturas e espaçamentos — cabe mais na tela.",
       options: [{ value: "comfortable", label: "Confortável" }, { value: "compact", label: "Compacta" }], kw: "tamanho espaço compacto" },
@@ -129,6 +131,10 @@
     // leitura e automação
     { sec: "network", id: "poll", kind: "poll", label: "Intervalo de leitura", desc: "De quanto em quanto tempo o piloto consulta Azure e GitHub e roda as regras automáticas (15 s a 10 min). Sem internet, tenta a cada 10 s.", kw: "polling atualizar" },
     { sec: "network", id: "auto", kind: "auto", label: "Automação ativa", desc: "Desligada, nenhuma regra aprova ou arquiva nada sozinha — a tela continua igual.", kw: "pausar regras piloto" },
+    { sec: "network", id: "power", kind: "pref-select", key: "power.mode", label: "Com a tela bloqueada, protetor de tela ou o computador ocioso",
+      desc: `Continuar: o ${OS} não suspende por ociosidade enquanto o app estiver aberto (o monitor apaga normalmente) — agentes, execuções, regras e o quadro seguem. Só com algo rodando: o mesmo, enquanto houver agente trabalhando, projeto executando ou regra ativa. Pausar: deixa o computador dormir e retoma ao desbloquear. Ao acordar, tudo é relido na hora.${isMac() ? " Com a tampa fechada na bateria, o Mac dorme de qualquer jeito." : ""}`,
+      options: [{ value: "keep", label: "Continuar trabalhando" }, { value: "busy", label: "Continuar só com algo rodando" }, { value: "pause", label: "Pausar a automação" }],
+      kw: "suspender dormir sleep protetor tela bloqueio ocioso energia app nap acordado" },
     { sec: "network", id: "resurface", kind: "rule-switch", key: "resurfaceOnPush", label: "PR arquivada volta com push novo", desc: "Se a PR que você arquivou receber commits, ela volta para a fila.", kw: "arquivar" },
     // dados
     { sec: "data", id: "dataDir", kind: "data-dir", label: "Pasta de dados", kw: "config json pasta" },
@@ -166,6 +172,7 @@
     const v = typeof def === "number" ? Number(raw) : raw;
     prefs.set(k, v as any);
     if (k === "ui.density") applyDensity(v as Density);
+    if (k === "power.mode") setTimeout(() => send({ type: "power" }), 800);   // o app nativo relê o modo depois de gravado
     flashSaved();
   }
   async function setRule(key: string, v: boolean) {
@@ -297,8 +304,16 @@
     </select>
   {:else if r.kind === "vscode-import"}
     <div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">
-      {#each extensions.vscodeSettings as x (x.app)}<button class="btn sm" onclick={() => extensions.importVscode(x.settings)}>Do {x.app}</button>{:else}<span class="small muted">configurações do VS Code não encontradas</span>{/each}
+      {#each extensions.vscodeSettings as x (x.app)}
+        <button class="btn sm" title={`Traz tema, ícones e ajustes do editor do ${x.app}`} onclick={() => extensions.importVscode(x.settings)}>Trazer do {x.app}</button>
+        <button class="btn sm ghost" title={`Grava os ajustes do editor do Codeck no settings.json do ${x.app}`} onclick={() => extensions.exportVscode(x.app)}>Levar para o {x.app}</button>
+      {:else}<span class="small muted">configurações do VS Code não encontradas</span>{/each}
     </div>
+  {:else if r.kind === "vscode-sync"}
+    <select class="input" style="width:auto" value={prefs.get("vscode.sync")} onchange={(e) => { const v = (e.target as HTMLSelectElement).value as any; setPref("vscode.sync", v); if (v) { extensions.exportVscode(v, true); ui.toast(`Sincronizando com o ${v}: o que mudar lá vem para cá ao abrir o app, e o que mudar aqui vai para lá`); } }}>
+      <option value="">Não sincronizar</option>
+      {#each extensions.vscodeSettings as x (x.app)}<option value={x.app}>Com o {x.app}</option>{/each}
+    </select>
   {:else if r.kind === "pref-seg"}
     <Segmented size="sm" value={String(prefs.get(r.key as PrefKey))} options={r.options || []} onchange={(v) => setPref(r.key!, v)} />
   {:else if r.kind === "rule-switch"}

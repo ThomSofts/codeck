@@ -295,10 +295,12 @@ class Extensions {
     if (ct) { const [eid, tid] = ct.split("|"); const e = this.list.find(x => x.id === eid); const t = e?.themes.find(x => x.id === tid || x.label === tid); if (e && t) await this.applyTheme(e, t, false); }
     if (it) { const [eid, tid] = it.split("|"); const e = this.list.find(x => x.id === eid); const t = e?.iconThemes.find(x => x.id === tid); if (e && t) await this.applyIcons(e, t, false); }
     this.applyContributions().catch(() => {});
+    this.watchSync();
+    this.startSync().catch(() => {});
   }
 
   /** "Usar a aparência do VS Code": tema, ícones, fonte e ajustes do editor das configurações dele. */
-  async importVscode(s: Record<string, any>) {
+  async importVscode(s: Record<string, any>, quiet = false) {
     const found: string[] = [];
     if (s["workbench.colorTheme"]) {
       const want = String(s["workbench.colorTheme"]).toLowerCase();
@@ -323,7 +325,68 @@ class Extensions {
     if (typeof s["editor.cursorStyle"] === "string" && ["line", "block", "underline"].includes(s["editor.cursorStyle"])) prefs.set("editor.cursorStyle", s["editor.cursorStyle"] as any);
     if (s["files.autoSave"] === "afterDelay" || s["files.autoSave"] === "onFocusChange" || s["files.autoSave"] === "off") prefs.set("editor.autoSave", s["files.autoSave"]);
     if (typeof s["terminal.integrated.fontSize"] === "number") prefs.set("terminal.fontSize", s["terminal.integrated.fontSize"]);
-    ui.toast(found.length ? `Aparência do VS Code aplicada: ${found.join(", ")}` : "Ajustes do editor aplicados (o tema dele não está entre as extensões encontradas)", "ok");
+    if (s["editor.lineNumbers"] !== undefined) prefs.set("editor.lineNumbers", s["editor.lineNumbers"] !== "off");
+    if (s["editor.detectIndentation"] !== false && typeof s["editor.tabSize"] === "number") prefs.set("editor.tabSize", 0);   // o VS Code detecta: aqui também
+    if (!quiet) ui.toast(found.length ? `Aparência do VS Code aplicada: ${found.join(", ")}` : "Ajustes do editor aplicados (o tema dele não está entre as extensões encontradas)", "ok");
+  }
+
+  // ------------------------------------------------------------ levar para o VS Code e manter sincronizado
+  /** Os ajustes do Codeck no formato do settings.json do VS Code (o inverso do importVscode). */
+  toVscode(current: Record<string, any> = {}): Record<string, any> {
+    const o: Record<string, any> = {
+      "editor.fontSize": prefs.get("editor.fontSize"), "editor.fontLigatures": !!prefs.get("editor.ligatures"),
+      "editor.minimap.enabled": !!prefs.get("editor.minimap"), "editor.wordWrap": prefs.get("editor.wordWrap") ? "on" : "off",
+      "editor.lineNumbers": prefs.get("editor.lineNumbers") ? "on" : "off", "editor.stickyScroll.enabled": !!prefs.get("editor.stickyScroll"),
+      "editor.bracketPairColorization.enabled": !!prefs.get("editor.bracketPairs"), "editor.formatOnSave": !!prefs.get("editor.formatOnSave"),
+      "files.autoSave": prefs.get("editor.autoSave"), "editor.renderWhitespace": prefs.get("editor.renderWhitespace"),
+      "editor.cursorStyle": prefs.get("editor.cursorStyle"), "editor.cursorBlinking": prefs.get("editor.cursorBlinking"),
+      "terminal.integrated.fontSize": prefs.get("terminal.fontSize"),
+    };
+    const fam = String(prefs.get("editor.fontFamily") || "").trim();
+    const curFam = String(current["editor.fontFamily"] || "").split(",")[0].replace(/['"]/g, "").trim();
+    if (fam && fam.toLowerCase() !== curFam.toLowerCase()) o["editor.fontFamily"] = `'${fam}', monospace`;   // mesma 1ª fonte: mantém a lista dele
+    const tab = Number(prefs.get("editor.tabSize")) || 0;
+    if (tab) { o["editor.tabSize"] = tab; o["editor.detectIndentation"] = false; }
+    else if (current["editor.detectIndentation"] === false) o["editor.detectIndentation"] = true;
+    if (this.activeTheme) o["workbench.colorTheme"] = this.activeTheme.label;
+    if (this.activeIcons) o["workbench.iconTheme"] = this.activeIcons.id;
+    return o;
+  }
+  async exportVscode(app: string, quiet = false) {
+    try {
+      const cur = (await get<{ apps: { app: string; settings: Record<string, any> }[] }>("ext/vscode-settings")).apps.find(x => x.app === app)?.settings || {};
+      const r = await post<{ changed: string[]; backup: boolean }>("ext/vscode-settings", { app, values: this.toVscode(cur) }, { quiet: true });
+      await this.rememberSig(app);
+      if (!quiet) ui.toast(r.changed.length ? `${r.changed.length} ajuste(s) levado(s) para o ${app}${r.backup ? " (cópia do original em settings.json.codeck.bak)" : ""}` : `O ${app} já está igual`);
+    } catch (e) { if (!quiet) ui.error(e); }
+  }
+  private async rememberSig(app: string) {
+    const x = (await get<{ apps: { app: string; settings: Record<string, any> }[] }>("ext/vscode-settings")).apps.find(a => a.app === app);
+    if (x) prefs.set("vscode.syncSig", JSON.stringify(x.settings));
+  }
+  private syncT: ReturnType<typeof setTimeout> | undefined;
+  private syncing = false;
+  /** Sincronização ligada: na abertura traz o que mudou no VS Code; ao mudar um ajuste aqui, leva para lá. */
+  async startSync() {
+    const app = prefs.get("vscode.sync");
+    if (!app) return;
+    try {
+      const x = (await get<{ apps: { app: string; settings: Record<string, any> }[] }>("ext/vscode-settings")).apps.find(a => a.app === app);
+      if (x && JSON.stringify(x.settings) !== prefs.get("vscode.syncSig")) {
+        this.syncing = true;
+        await this.importVscode(x.settings, true);
+        this.syncing = false;
+        prefs.set("vscode.syncSig", JSON.stringify(x.settings));
+      }
+    } catch { this.syncing = false; }
+  }
+  watchSync() {
+    prefs.onChange(k => {
+      if (this.syncing || !prefs.get("vscode.sync") || k === "vscode.syncSig" || k === "vscode.sync") return;
+      if (!/^(editor\.|terminal\.fontSize|workbench\.(colorTheme|iconTheme))/.test(k)) return;
+      clearTimeout(this.syncT);
+      this.syncT = setTimeout(() => this.exportVscode(prefs.get("vscode.sync"), true), 1500);
+    });
   }
 
   // ------------------------------------------------------------ Open VSX

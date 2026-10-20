@@ -52,6 +52,8 @@
   import { loadMonaco, monacoTheme, onThemeChange } from "../../lib/monaco";
   import { lineHunks } from "../../lib/linediff";
   import { edState, trackMarkers } from "../../lib/editorstate.svelte";
+  import { debug } from "../../lib/debug.svelte";
+  import { attachDebug } from "../../lib/debugeditor";
   import { prefs } from "../../lib/prefs.svelte";
   import { scm } from "../../lib/scm.svelte";
   import { ui } from "../../lib/ui.svelte";
@@ -119,6 +121,7 @@
     try {
       if (prefs.get("editor.formatOnSave") && !quiet) await editor.getAction("editor.action.formatDocument")?.run().catch(() => {});
       await saveDoc(d);
+      debug.saved_(repoId, taskId, relP);
       if (!quiet) ui.toast(`${relP.split("/").pop()} salvo`);
       scm.touch(gitRepo);
     } catch (e: any) {
@@ -197,6 +200,14 @@
   }
   $effect(() => { if (edState.path === relP) edState.lsp = lsp; });
 
+  // ------------------------------------------------------------ depuração: breakpoints e a linha onde parou
+  let dbg: ReturnType<typeof attachDebug> | null = null;
+  $effect(() => { void debug.loadBps(repoId); });
+  $effect(() => {
+    void debug.bps[repoId]; void debug.current; void debug.sessions; void debug.focus.frameId; void key;
+    if (!loading) dbg?.paint();
+  });
+
   $effect(() => {
     if (!host) return;
     let disposed = false;
@@ -227,6 +238,8 @@
       }));
       subs.push(editor.onDidBlurEditorText(() => { if (prefs.get("editor.autoSave") === "onFocusChange" && dirty[key]) save(true); }));
       subs.push(onThemeChange(() => monaco?.editor.setTheme(monacoTheme())));
+      dbg = attachDebug(m, editor, () => (shownKey === key ? { repoId, taskId, path: relP } : null));
+      subs.push({ dispose: () => { dbg?.dispose(); dbg = null; } });
       loading = false;
     });
     const t = setInterval(syncFromDisk, 3000);
@@ -277,6 +290,7 @@
       if (d.view) editor.restoreViewState(d.view);
       if (ln) { editor.revealLineInCenter(ln); editor.setPosition({ lineNumber: ln, column: 1 }); }
       shownKey = k;
+      dbg?.paint();
       publish();
       loadBase();
       // só pega o foco se ninguém está digitando em outro lugar (o arquivo pode terminar de abrir depois que o
@@ -344,4 +358,19 @@
   :global(.cd-gut-mod) { background: #4f9cf7; }
   :global(.cd-gut-del) { background: none; }
   :global(.cd-gut-del::before) { content: ""; position: absolute; top: -4px; left: 0; border: 4px solid transparent; border-left-color: #ff6b7d; }
+  /* depuração: breakpoints (bolinha vermelha, como no Visual Studio) e a linha onde a execução parou */
+  :global(.cd-bp), :global(.cd-bp-hint) { cursor: pointer; }
+  :global(.cd-bp::before), :global(.cd-bp-hint::before) { content: ""; position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px;
+    border-radius: 50%; background: #e51400; box-sizing: border-box; }
+  :global(.cd-bp-hint::before) { background: rgba(229, 20, 0, 0.35); }
+  :global(.cd-bp-cond::before) { border-radius: 2px; transform: rotate(45deg) scale(0.9); }
+  :global(.cd-bp-cond::after) { content: "="; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -54%); color: #fff; font: 700 8px/1 var(--mono); }
+  :global(.cd-bp-log::before) { border-radius: 2px; transform: rotate(45deg) scale(0.85); }
+  :global(.cd-bp-pending::before) { background: transparent; border: 2px solid #e51400; }
+  :global(.cd-bp-off::before) { background: #8a8f9c; opacity: 0.7; }
+  :global(.cd-cur::after), :global(.cd-frame::after) { content: ""; position: absolute; left: 50%; top: 50%; width: 0; height: 0; margin: -6px 0 0 -3px;
+    border: 6px solid transparent; border-left: 8px solid #ffcc00; filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.6)); }
+  :global(.cd-frame::after) { border-left-color: #3ccf91; }
+  :global(.cd-cur-line) { background: rgba(255, 204, 0, 0.16); outline: 1px solid rgba(255, 204, 0, 0.35); }
+  :global(.cd-frame-line) { background: rgba(60, 207, 145, 0.12); }
 </style>

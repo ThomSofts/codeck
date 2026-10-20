@@ -210,7 +210,9 @@ def append_activity(entry):
     entry = {"ts": now_iso(), **entry}
     with lock, open(ACTIVITY_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    print(f"[{entry['ts']}] {entry.get('by')} {entry.get('action')} {entry.get('org')} {entry.get('title')}", flush=True)
+    # repositório e número na linha: uma feature aberta em vários repositórios tem o mesmo título em todas as PRs
+    where = f"{entry['repo']}#{entry['prId']} " if entry.get("repo") and entry.get("prId") else ""
+    print(f"[{entry['ts']}] {entry.get('by')} {entry.get('action')} {entry.get('org')} {where}{entry.get('title')}", flush=True)
 
 
 def pr_summary(pr):

@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
     var loaded = false
     var lastSeq = -1
     var nativeNotifications = false
+    var powerActivity: NSObjectProtocol?   // segura o Mac acordado e fora do App Nap (Configurações → Geral)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if adoptLegacyInstall() { return }
@@ -43,6 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         buildWindow()
         buildStatusItem()
         setupNotifications()
+        setHold(true)   // até o backend dizer o modo: o padrão é continuar trabalhando
+        observePower()
         ensureServer { [weak self] in self?.loadUI() }
         Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.poll() }
         if !attachMode && selfTestScript == nil { enableLoginItemOnFirstRun() }
@@ -311,9 +314,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
             self.statusItem.button?.title = total > 0 ? " \(total)" : ""
             self.statusItem.button?.toolTip = json == nil ? "Codeck — backend fora do ar" : "Codeck — \(total) pendente(s)"
             guard let seq = json?["notifySeq"] as? Int else { return }
+            if let power = json?["power"] as? [String: Any] { self.setHold(power["hold"] as? Bool ?? true) }
             if self.lastSeq < 0 { self.lastSeq = seq; return } // ao abrir, não repete o que já passou
             if seq > self.lastSeq { self.fetchNotifications() }
         }
+    }
+
+    // MARK: tela bloqueada, protetor de tela, suspensão — o modo vem do backend (/api/summary → power)
+
+    /// "Continuar trabalhando": impede a suspensão por ociosidade e o App Nap (que atrasava os timers do app e do
+    /// backend com a janela escondida pelo protetor de tela). O monitor pode apagar normalmente.
+    func setHold(_ hold: Bool) {
+        if hold, powerActivity == nil {
+            powerActivity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled],
+                                                                  reason: "Codeck: agentes e automação trabalhando")
+        } else if !hold, let a = powerActivity {
+            ProcessInfo.processInfo.endActivity(a)
+            powerActivity = nil
+        }
+    }
+
+    func observePower() {
+        let ws = NSWorkspace.shared.notificationCenter
+        let local: [(Notification.Name, String)] = [(NSWorkspace.willSleepNotification, "sleep"), (NSWorkspace.didWakeNotification, "wake"),
+                                                    (NSWorkspace.screensDidSleepNotification, "display-sleep"),
+                                                    (NSWorkspace.screensDidWakeNotification, "display-wake")]
+        for (name, event) in local {
+            ws.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.powerEvent(event) }
+        }
+        let dist: [(String, String)] = [("com.apple.screenIsLocked", "lock"), ("com.apple.screenIsUnlocked", "unlock"),
+                                        ("com.apple.screensaver.didstart", "screensaver-start"), ("com.apple.screensaver.didstop", "screensaver-stop")]
+        for (name, event) in dist {
+            DistributedNotificationCenter.default().addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
+                self?.powerEvent(event)
+            }
+        }
+    }
+
+    /// `at`: quando aconteceu — o "sleep" sai ao dormir e às vezes só é entregue depois do "wake"; o backend descarta o
+    /// atrasado. O "wake"/"unlock" tenta de novo se o backend não respondeu (a rede local volta junto, mas nem sempre na hora).
+    func powerEvent(_ event: String, at: Double = Date().timeIntervalSince1970, attempt: Int = 0) {
+        var req = request("api/power/event", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 10
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["event": event, "at": at])
+        URLSession.shared.dataTask(with: req) { [weak self] _, resp, err in
+            let ok = err == nil && (resp as? HTTPURLResponse)?.statusCode == 200
+            let back = event == "wake" || event == "unlock"
+            if !ok && back && attempt < 4 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self?.powerEvent(event, at: at, attempt: attempt + 1) }
+                return
+            }
+            if back { DispatchQueue.main.async { self?.poll() } }   // relê o contador já
+        }.resume()
     }
 
     func fetchNotifications() {
@@ -383,6 +436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         if body["type"] as? String == "openWindow", let hash = body["hash"] as? String {
             return openProjectWindow(hash: hash, title: body["title"] as? String ?? "Codeck")
         }
+        if body["type"] as? String == "power" { return poll() }   // mudou o modo em Configurações: aplica já
         if body["type"] as? String == "theme" {
             // a tela manda o tema RESOLVIDO; a barra de título e o fundo da janela acompanham
             let light = body["mode"] as? String == "light"
