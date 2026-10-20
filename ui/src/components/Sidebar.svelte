@@ -6,7 +6,7 @@
     KanbanSquare, PanelLeftClose, PanelLeftOpen, ChevronRight, LayoutGrid } from "@lucide/svelte";
   import { BRAND } from "../lib/brand";
   import { post } from "../lib/api";
-  import { kbd, matches } from "../lib/keys";
+  import { kb } from "../lib/keybindings.svelte";
   import { prefs } from "../lib/prefs.svelte";
   import { repos } from "../lib/repos.svelte";
   import { work, type Project } from "../lib/work.svelte";
@@ -118,10 +118,12 @@
   function keepFly() { clearTimeout(flyTimer); }
   $effect(() => { void router.path; fly = null; });   // navegou: o popover fecha
   function toggleCollapsed() { prefs.set("sidebar.collapsed", !collapsed); fly = null; }
-  function onKey(e: KeyboardEvent) { if (matches(e, "mod+\\")) { e.preventDefault(); toggleCollapsed(); } else if (matches(e, "mod+,")) { e.preventDefault(); go("/settings"); } }
+  $effect(() => {
+    const offs = [kb.on("codeck.toggleNav", () => toggleCollapsed()), kb.on("workbench.action.openSettings", () => go("/settings")),
+      kb.on("workbench.action.openGlobalKeybindings", () => go("/settings/shortcuts"))];
+    return () => { for (const off of offs) off(); };
+  });
 </script>
-
-<svelte:window onkeydown={onKey} />
 
 {#snippet openList(compact: boolean)}
   {#each openRuns as run (run.g ? "g:" + run.g.id : run.items[0].id)}
@@ -154,8 +156,8 @@
     {#if !collapsed}<div class="bn"><b>{BRAND.name}</b><span>{BRAND.short}</span></div>{/if}
   </div>
 
-  <button class="search" onclick={() => (ui.palette = true)} title={collapsed ? `Buscar ou ir para… (${kbd("mod+k")})` : ""}>
-    <Search size={15} />{#if !collapsed}<span>Buscar ou ir para…</span><span class="kbd">{kbd("mod+k")}</span>{/if}
+  <button class="search" onclick={() => (ui.palette = true)} title={collapsed ? `Buscar ou ir para… (${kb.label("workbench.action.showCommands")})` : ""}>
+    <Search size={15} />{#if !collapsed}<span>Buscar ou ir para…</span><span class="kbd">{kb.label("workbench.action.showCommands")}</span>{/if}
   </button>
 
   <nav bind:this={navEl}>
@@ -214,7 +216,7 @@
       <button class="btn ghost sm icon" title={store.refreshing ? "Lendo tudo…" : "Ler tudo agora"} aria-label="Atualizar" disabled={store.refreshing} onclick={manualRefresh}>
         <RefreshCw size={14} class={store.refreshing ? "spin" : ""} />
       </button>
-      <button class="btn ghost sm icon" title={`${collapsed ? "Expandir" : "Recolher"} a barra lateral (${kbd("mod+\\")})`} onclick={toggleCollapsed}>
+      <button class="btn ghost sm icon" title={`${collapsed ? "Expandir" : "Recolher"} a barra lateral (${kb.label("codeck.toggleNav")})`} onclick={toggleCollapsed}>
         {#if collapsed}<PanelLeftOpen size={15} />{:else}<PanelLeftClose size={15} />{/if}
       </button>
     </div>

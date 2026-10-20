@@ -1,11 +1,28 @@
 <script lang="ts" module>
   /** O que mudou de lugar (to) ou foi excluído (to: null) — as abas abertas acompanham */
   export type FsChange = { from: string; to: string | null };
+  import { get as apiGet } from "../../lib/api";
+  type FilesResp = { files: string[]; root: string; dirs: string[]; ignored: string[]; lazy: string[]; truncated?: boolean };
+  // várias árvores do mesmo escopo (explorador, um projeto por vez no Gerenciador de Soluções) leem a lista uma vez só;
+  // depois de criar/mover/excluir, a que mexeu avisa as outras
+  const inflight = new Map<string, Promise<FilesResp>>();
+  const listeners = new Set<(scope: string, from: object) => void>();
+  function fetchFiles(scope: string, repoId: string, taskId: string | null, fresh = false) {
+    if (fresh) inflight.delete(scope);
+    let p = inflight.get(scope);
+    if (!p) {
+      p = apiGet<FilesResp>("ws/files", { repoId, taskId });
+      p.finally(() => setTimeout(() => { if (inflight.get(scope) === p) inflight.delete(scope); }, 1500)).catch(() => {});
+      inflight.set(scope, p);
+    }
+    return p;
+  }
+  function filesChanged(scope: string, from: object) { for (const l of listeners) l(scope, from); }
 </script>
 
 <script lang="ts">
-  // Explorador (como o do VS Code): arquivos do projeto/tarefa (git ls-files: versionados + novos não ignorados, e as
-  // pastas vazias) em árvore, com as cores do Git (M alterado, U novo, D apagado, A adicionado, ! conflito — a pasta herda a
+  // Explorador (como o do VS Code): todos os arquivos do projeto/tarefa, inclusive os ignorados pelo .gitignore (apagados)
+  // e os repositórios dentro dele, em árvore — pasta ignorada inteira (bin/, obj/, node_modules/) é lida ao abrir —, com as cores do Git (M alterado, U novo, D apagado, A adicionado, ! conflito — a pasta herda a
   // cor), ícones do tema de ícones, menu de contexto (novo, recortar/copiar/colar, duplicar, renomear, excluir, caminho,
   // abrir alterações) e teclado (↑↓ ←→ Enter F2 ⌘X ⌘C ⌘V ⌘⌫ — Ctrl no Windows). Seleção múltipla com ⌘/⇧-clique.
   // Arrastar move (com ⌥/Ctrl copia) para outra pasta; arrastar do Finder/Explorer copia para dentro do projeto.
@@ -14,7 +31,8 @@
   import { CaseSensitive, ChevronRight, ChevronsDownUp, ClipboardPaste, Copy, CopyPlus, FilePlus2, FolderOpen, FolderPlus, GitCompareArrows, Pencil, Regex, RefreshCw, Scissors, Search, SquareTerminal, Trash2, X } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { get, post } from "../../lib/api";
-  import { isMac, kbd, matches as isKey } from "../../lib/keys";
+  import { isMac, matches as isKey } from "../../lib/keys";
+  import { kb } from "../../lib/keybindings.svelte";
   import { fileManagerName } from "../../lib/native";
   import { folderDecor, scm } from "../../lib/scm.svelte";
   import { icons } from "../../lib/fileicons.svelte";
@@ -23,10 +41,18 @@
   import FileIcon from "./FileIcon.svelte";
 
   type OpenOpts = { preview?: boolean };
-  let { repoId, taskId = null, gitRepo = null, mode = "files", onopen, ondiff, onterminal, onfs, active = null }:
+  // base/embedded: só a pasta `base` (com a barra no fim), sem barra de filtro nem rolagem própria — o Gerenciador de
+  // Soluções mostra cada projeto assim, abaixo do nó dele (depth0 = recuo); `hide` esconde pastas logo abaixo da base
+  let { repoId, taskId = null, gitRepo = null, mode = "files", onopen, ondiff, onterminal, onfs, active = null, base: baseDir = "", embedded = false, depth0 = 0, hide = [] }:
     { repoId: string; taskId?: string | null; gitRepo?: string | null; mode?: "files" | "search"; onopen: (path: string, line?: number, o?: OpenOpts) => void;
-      ondiff?: (path: string) => void; onterminal?: (dir: string) => void; onfs?: (changes: FsChange[]) => void; active?: string | null } = $props();
+      ondiff?: (path: string) => void; onterminal?: (dir: string) => void; onfs?: (changes: FsChange[]) => void; active?: string | null;
+      base?: string; embedded?: boolean; depth0?: number; hide?: string[] } = $props();
   let all = $state<string[]>([]);
+  // ignorados pelo .gitignore (pasta com a barra no fim vale para tudo dentro) e pastas lidas só ao abrir
+  let ignored = $state<Set<string>>(new Set());
+  let lazy = $state<string[]>([]);
+  let lazyKids = $state<Record<string, { files: string[]; lazy: string[] }>>({});
+  let lazyBusy = $state<Record<string, boolean>>({});
   // pastas vazias: as que o backend achou e as criadas aqui (pasta vazia dentro de pasta nova o git não mostra)
   let emptyDirs = $state<string[]>([]);
   let ghosts = $state<string[]>([]);
@@ -60,7 +86,9 @@
   function saveOpen() {
     try {
       const s = JSON.parse(localStorage.getItem(OPEN_KEY) || "{}");
-      s[scope] = Object.fromEntries(Object.entries(open).filter(([, v]) => v));
+      // só a parte desta árvore (base): as outras do mesmo escopo (um projeto cada, na solução) gravam a delas
+      const others = Object.entries(s[scope] || {}).filter(([k]) => !k.startsWith(baseDir));
+      s[scope] = Object.fromEntries([...others, ...Object.entries(open).filter(([k, v]) => v && k.startsWith(baseDir))]);
       const keys = Object.keys(s);
       for (const k of keys.slice(0, Math.max(0, keys.length - 40))) delete s[k];   // guarda as últimas 40 árvores
       localStorage.setItem(OPEN_KEY, JSON.stringify(s));
@@ -69,24 +97,51 @@
   function toggleDir(path: string, force?: boolean) {
     open = { ...open, [path]: force ?? !open[path] };
     saveOpen();
+    if (open[path]) loadLazy();
   }
+  /** Pasta "sob demanda" que está aberta e ainda não foi lida (ou `again`: relê as abertas) */
+  async function loadLazy(again = false) {
+    const known = new Set([...lazy, ...Object.values(lazyKids).flatMap(k => k.lazy)]);
+    const want = Object.keys(open).filter(d => open[d] && known.has(d) && (again ? lazyKids[d] : !lazyKids[d]) && !lazyBusy[d]);
+    for (const d of want) {
+      lazyBusy = { ...lazyBusy, [d]: true };
+      try {
+        const r = await get<FilesResp>("ws/files", { repoId, taskId, under: d });
+        lazyKids = { ...lazyKids, [d]: { files: r.files, lazy: r.lazy } };
+      } catch (e) { if (!again) ui.error(e); }
+      lazyBusy = { ...lazyBusy, [d]: false };
+    }
+  }
+  const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 
-  async function load(silent = false) {
+  async function load(silent = false, fresh = false) {
     if (!silent) loading = true;
     const k = scope;
     try {
-      const r = await get<{ files: string[]; root: string; dirs?: string[] }>("ws/files", { repoId, taskId, dirs: 1 });
+      const r = await fetchFiles(k, repoId, taskId, fresh);
       if (k !== scope) return;
-      const files = r.files.sort((a, b) => a.localeCompare(b));
-      if (files.length !== all.length || files.some((f, i) => f !== all[i])) all = files;
-      const dirs = (r.dirs || []).sort();
-      if (dirs.join("\0") !== emptyDirs.join("\0")) emptyDirs = dirs;
+      const files = [...r.files].sort((a, b) => a.localeCompare(b));
+      if (!sameList(files, all)) all = files;
+      const dirs = [...(r.dirs || [])].sort();
+      if (!sameList(dirs, emptyDirs)) emptyDirs = dirs;
+      if (!sameList(r.lazy || [], lazy)) lazy = r.lazy || [];
+      const ign = [...(r.ignored || [])].sort();
+      if (!sameList(ign, [...ignored].sort())) ignored = new Set(ign);
       root = r.root;
+      await loadLazy(silent);
     }
     catch (e) { if (!silent) ui.error(e); }
     loading = false;
   }
-  $effect(() => { const k = scope; untrack(() => { open = readOpen(k); load(); }); });
+  /** Depois de mexer nos arquivos: relê já (sem o cache) e avisa as outras árvores do mesmo escopo */
+  const self = {};
+  async function reload() { await load(true, true); filesChanged(scope, self); }
+  $effect(() => {
+    const l = (s: string, from: object) => { if (s === scope && from !== self) load(true); };
+    listeners.add(l);
+    return () => { listeners.delete(l); };
+  });
+  $effect(() => { const k = scope; untrack(() => { open = readOpen(k); lazyKids = {}; load(); }); });
   // o git status do escopo: cores e letras (o explorador relê junto)
   $effect(() => { const g = gitRepo; if (!g) return; return scm.watch(g); });
   const decor = $derived(scm.map(gitRepo));
@@ -94,7 +149,7 @@
   // arquivo novo/apagado no status que a lista ainda não tem: relê a lista (o agente criou algo)
   $effect(() => {
     const d = decor;
-    if (untrack(() => [...d.keys()].some(p => d.get(p)!.tone === "add" && !index.files.has(p)))) untrack(() => load(true));
+    if (untrack(() => [...d.keys()].some(p => d.get(p)!.tone === "add" && !index.files.has(p) && within(p, strip(baseDir) || p)))) untrack(() => load(true, true));
   });
 
   // o arquivo ativo (aberto por ⌘P, busca ou definição) fica visível: abre as pastas dele — uma vez por arquivo, para
@@ -106,6 +161,7 @@
     revealed = f;
     untrack(() => {
       cursor = f;
+      if (!f.startsWith(baseDir)) return;
       const parts = f.split("/").slice(0, -1);
       let acc = "", changed = false;
       const next = { ...open };
@@ -127,7 +183,9 @@
     const dirs = new Map<string, Dir>([["", { dirs: [], files: [] }]]);
     const files = new Set<string>();
     const ensure = (p: string) => { let d = dirs.get(p); if (!d) { d = { dirs: [], files: [] }; dirs.set(p, d); } return d; };
-    for (const f of all) {
+    const kids = Object.values(lazyKids);
+    for (const f of kids.length ? [...all, ...kids.flatMap(k => k.files)] : all) {
+      if (files.has(f)) continue;
       files.add(f);
       const parts = f.split("/");
       let acc = "";
@@ -138,7 +196,7 @@
       }
       ensure(acc).files.push(f);
     }
-    for (const g of new Set([...emptyDirs, ...ghosts])) {
+    for (const g of new Set([...emptyDirs, ...ghosts, ...lazy, ...kids.flatMap(k => k.lazy)])) {
       let acc = "";
       for (const part of g.split("/").filter(Boolean)) { const parent = acc; acc += part + "/"; if (!dirs.has(acc)) { ensure(parent).dirs.push(acc); ensure(acc); } }
     }
@@ -164,13 +222,14 @@
       const d = index.dirs.get(prefix);
       if (!d) return;
       for (const sub of d.dirs) {
+        if (prefix === baseDir && hide.includes(sub.slice(prefix.length))) continue;
         const c = compact(sub);
         out.push({ path: c.path, name: c.label, dir: true, depth });
         if (open[c.path]) walk(c.path, depth + 1);
       }
       for (const f of d.files) out.push({ path: f, name: f.slice(prefix.length), dir: false, depth });
     };
-    walk("", 0);
+    walk(baseDir, depth0);
     return out;
   });
   const matches = $derived.by(() => {
@@ -178,11 +237,19 @@
     if (!t) return [];
     const parts = t.split(/\s+/);
     const score = (f: string) => { const n = f.split("/").pop()!.toLowerCase(); return n.startsWith(parts[0]) ? 0 : n.includes(parts[0]) ? 1 : 2; };
-    return all.filter(f => { const l = f.toLowerCase(); return parts.every(p => l.includes(p)); })
+    return all.filter(f => { const l = f.toLowerCase(); return f.startsWith(baseDir) && parts.every(p => l.includes(p)); })
       .sort((a, b) => score(a) - score(b) || a.length - b.length).slice(0, 300);
   });
   const visible = $derived<Row[]>(q.trim() ? matches.map(f => ({ path: f, name: f.split("/").pop()!, dir: false, depth: 0 })) : rows);
   const rowBy = $derived(new Map(visible.map(r => [r.path, r])));
+  function isIgnored(p: string) {
+    if (!ignored.size) return false;
+    if (ignored.has(p)) return true;
+    const parts = p.replace(/\/$/, "").split("/");
+    let acc = "";
+    for (let i = 0; i < parts.length - 1; i++) { acc += parts[i] + "/"; if (ignored.has(acc)) return true; }
+    return false;
+  }
 
   // ------------------------------------------------------------ seleção e teclado
   const scrollTo = (path: string) => listEl?.querySelector(`[data-p="${CSS.escape(path)}"]`)?.scrollIntoView({ block: "nearest" });
@@ -225,11 +292,16 @@
     }
     else if (e.key === "Enter" && r) { e.preventDefault(); if (r.dir) toggleDir(r.path); else onopen(r.path, undefined, { preview: false }); }
     else if (e.key === " " && r && !r.dir) { e.preventDefault(); onopen(r.path, undefined, { preview: true }); }
-    else if (e.key === "F2" && r) { e.preventDefault(); startRename(r.path); }
-    else if ((e.key === "Delete" || (e.key === "Backspace" && (e.metaKey || e.ctrlKey))) && (r || sel.length)) { done(); remove(targets(cursor)); }
-    else if (isKey(e, "mod+c") && (r || sel.length)) { done(); toClip(targets(cursor), false); }
-    else if (isKey(e, "mod+x") && (r || sel.length)) { done(); toClip(targets(cursor), true); }
-    else if (isKey(e, "mod+v") && clip) { done(); paste(cursor ? dirOf(cursor, cursor.endsWith("/")) : ""); }
+    else if (kb.is(e, "renameFile") && r) { done(); startRename(r.path); }
+    else if (kb.is(e, "deleteFile") && (r || sel.length)) { done(); remove(targets(cursor)); }
+    else if (kb.is(e, "filesExplorer.copy") && (r || sel.length)) { done(); toClip(targets(cursor), false); }
+    else if (kb.is(e, "filesExplorer.cut") && (r || sel.length)) { done(); toClip(targets(cursor), true); }
+    else if (kb.is(e, "filesExplorer.paste") && clip) { done(); paste(cursor ? dirOf(cursor, cursor.endsWith("/")) : baseDir); }
+    else if (kb.is(e, "explorer.newFile")) { done(); startNew("file", cursor ? dirOf(cursor, cursor.endsWith("/")) : baseDir); }
+    else if (kb.is(e, "explorer.newFolder")) { done(); startNew("folder", cursor ? dirOf(cursor, cursor.endsWith("/")) : baseDir); }
+    else if (kb.is(e, "explorer.duplicate") && (r || sel.length)) { done(); duplicate(targets(cursor)); }
+    else if (kb.is(e, "copyFilePath") && (r || sel.length)) { done(); copy(targets(cursor).map(abs).join("\n"), "Caminho copiado"); }
+    else if (kb.is(e, "copyRelativeFilePath") && (r || sel.length)) { done(); copy(targets(cursor).map(strip).join("\n"), "Caminho relativo copiado"); }
     else if (isKey(e, "mod+a")) { done(); sel = visible.map(x => x.path); }
     else if (e.key === "Escape" && (clip?.cut || sel.length > 1)) { done(); if (clip?.cut) clip = null; else if (cursor) sel = [cursor]; }
   }
@@ -244,7 +316,7 @@
   function touched() { if (gitRepo) scm.touch(gitRepo); }
   /** Depois de criar/colar/mover: relê, abre as pastas de destino e seleciona o que chegou */
   async function landed(paths: string[], dirs: Set<string> = new Set()) {
-    await load(true);
+    await reload();
     touched();
     const next = { ...open };
     for (const p of paths) { let acc = ""; for (const part of p.split("/").slice(0, -1)) { acc += part + "/"; next[acc] = true; } }
@@ -326,14 +398,14 @@
       const r = await post<{ paths: string[] }>("ws/fs/delete", { repoId, taskId, paths: paths.map(strip) });
       changed(r.paths.map(p => ({ from: p, to: null })));
       sel = [];
-      await load(true); touched();
+      await reload(); touched();
       ui.toast(one ? "Movido para a Lixeira" : `${r.paths.length} itens movidos para a Lixeira`);
-    } catch (e) { ui.error(e); await load(true); }
+    } catch (e) { ui.error(e); await reload(); }
   }
   function toClip(paths: string[], cut: boolean) {
     if (!paths.length) return;
     clip = { cut, paths };
-    ui.toast(`${paths.length === 1 ? base(paths[0]) : paths.length + " itens"} ${cut ? "recortado" : "copiado"}${paths.length === 1 ? "" : "s"} — cole com ${kbd("mod+v")}`, "info");
+    ui.toast(`${paths.length === 1 ? base(paths[0]) : paths.length + " itens"} ${cut ? "recortado" : "copiado"}${paths.length === 1 ? "" : "s"} — cole com ${kb.label("filesExplorer.paste")}`, "info");
   }
   async function paste(at: string) {
     const c = clip;
@@ -347,7 +419,7 @@
       const r = await post<{ copied: { from: string; to: string }[] }>("ws/fs/copy", { repoId, taskId, paths: paths.map(strip), dest: strip(at) });
       await landed(r.copied.map(x => x.to), new Set(r.copied.filter((x, i) => paths[i]?.endsWith("/")).map(x => x.to)));
       return true;
-    } catch (e) { ui.error(e); await load(true); return false; }
+    } catch (e) { ui.error(e); await reload(); return false; }
   }
   async function duplicate(paths: string[]) {
     const out: string[] = [], dirs = new Set<string>();
@@ -379,7 +451,7 @@
       changed(r.moved.map(m => ({ from: m.from, to: m.to })));
       await landed(r.moved.map(m => m.to), new Set(r.moved.filter(m => index.dirs.has(m.from + "/") || ghosts.includes(m.to + "/")).map(m => m.to)));
       return true;
-    } catch (e) { ui.error(e); await load(true); return false; }
+    } catch (e) { ui.error(e); await reload(); return false; }
   }
 
   // ------------------------------------------------------------ arrastar e soltar
@@ -407,7 +479,7 @@
   function dropDir(e: DragEvent) {
     const el = (e.target as HTMLElement).closest<HTMLElement>("[data-p]");
     const r = el ? rowBy.get(el.dataset.p!) : null;
-    return { r, at: r ? dirOf(r.path, r.dir) : "" };
+    return { r, at: r ? dirOf(r.path, r.dir) : baseDir };
   }
   function dragOver(e: DragEvent) {
     const dt = e.dataTransfer;
@@ -503,7 +575,7 @@
       }
       await landed(landedPaths, dirs);
       prog.done(`${nFiles} arquivo${nFiles === 1 ? "" : "s"} copiado${nFiles === 1 ? "" : "s"} para ${dest ? base(dest) : "a raiz do projeto"}`);
-    } catch (e) { prog.fail(e); await load(true); }
+    } catch (e) { prog.fail(e); await reload(); }
   }
   // soltar arquivo fora da árvore não pode abrir o arquivo no lugar do app (a WebView navegaria para ele)
   $effect(() => {
@@ -515,7 +587,6 @@
 
   const abs = (p: string) => (root.replace(/[\\/]$/, "") + "/" + p.replace(/\/$/, "")).replace(/\//g, root.includes("\\") ? "\\" : "/");
   async function copy(t: string, msg: string) { try { await navigator.clipboard.writeText(t); ui.toast(msg); } catch (e) { ui.error(e); } }
-  const delKbd = () => (isMac() ? kbd("mod+backspace") : "Del");
   function rowMenu(r: Row) {
     if (!sel.includes(r.path)) pick(r.path);
     const at = dirOf(r.path, r.dir), d = decor.get(r.path), ts = targets(r.path), many = ts.length > 1;
@@ -523,19 +594,19 @@
       ...(!r.dir && !many ? [{ label: "Abrir", onclick: () => onopen(r.path, undefined, { preview: false }) }] : []),
       ...(!r.dir && !many && d && ondiff ? [{ label: "Abrir alterações", icon: GitCompareArrows, onclick: () => ondiff!(r.path) }] : []),
       { separator: true },
-      { label: "Novo arquivo…", icon: FilePlus2, onclick: () => startNew("file", at) },
-      { label: "Nova pasta…", icon: FolderPlus, onclick: () => startNew("folder", at) },
+      { label: "Novo arquivo…", icon: FilePlus2, kbd: kb.label("explorer.newFile"), onclick: () => startNew("file", at) },
+      { label: "Nova pasta…", icon: FolderPlus, kbd: kb.label("explorer.newFolder"), onclick: () => startNew("folder", at) },
       { separator: true },
-      { label: "Recortar", icon: Scissors, kbd: kbd("mod+x"), onclick: () => toClip(ts, true) },
-      { label: "Copiar", icon: Copy, kbd: kbd("mod+c"), onclick: () => toClip(ts, false) },
-      { label: clip && clip.paths.length > 1 ? `Colar ${clip.paths.length} itens` : "Colar", icon: ClipboardPaste, kbd: kbd("mod+v"), disabled: !clip?.paths.length, onclick: () => paste(at) },
-      { label: "Duplicar", icon: CopyPlus, onclick: () => duplicate(ts) },
+      { label: "Recortar", icon: Scissors, kbd: kb.label("filesExplorer.cut"), onclick: () => toClip(ts, true) },
+      { label: "Copiar", icon: Copy, kbd: kb.label("filesExplorer.copy"), onclick: () => toClip(ts, false) },
+      { label: clip && clip.paths.length > 1 ? `Colar ${clip.paths.length} itens` : "Colar", icon: ClipboardPaste, kbd: kb.label("filesExplorer.paste"), disabled: !clip?.paths.length, onclick: () => paste(at) },
+      { label: "Duplicar", icon: CopyPlus, kbd: kb.label("explorer.duplicate"), onclick: () => duplicate(ts) },
       { separator: true },
-      ...(!many ? [{ label: "Renomear…", icon: Pencil, kbd: "F2", onclick: () => startRename(r.path) }] : []),
-      { label: many ? `Excluir ${ts.length} itens` : "Excluir", icon: Trash2, kbd: delKbd(), danger: true, onclick: () => remove(ts) },
+      ...(!many ? [{ label: "Renomear…", icon: Pencil, kbd: kb.label("renameFile"), onclick: () => startRename(r.path) }] : []),
+      { label: many ? `Excluir ${ts.length} itens` : "Excluir", icon: Trash2, kbd: kb.label("deleteFile"), danger: true, onclick: () => remove(ts) },
       { separator: true },
-      { label: many ? "Copiar caminhos" : "Copiar caminho", icon: Copy, onclick: () => copy(ts.map(abs).join("\n"), many ? "Caminhos copiados" : "Caminho copiado") },
-      { label: many ? "Copiar caminhos relativos" : "Copiar caminho relativo", icon: Copy, onclick: () => copy(ts.map(strip).join("\n"), "Caminho relativo copiado") },
+      { label: many ? "Copiar caminhos" : "Copiar caminho", icon: Copy, kbd: kb.label("copyFilePath"), onclick: () => copy(ts.map(abs).join("\n"), many ? "Caminhos copiados" : "Caminho copiado") },
+      { label: many ? "Copiar caminhos relativos" : "Copiar caminho relativo", icon: Copy, kbd: kb.label("copyRelativeFilePath"), onclick: () => copy(ts.map(strip).join("\n"), "Caminho relativo copiado") },
       { label: `Revelar no ${fileManagerName()}`, icon: FolderOpen, onclick: () => post("open", { path: abs(r.path), target: "files" }).catch(ui.error) },
       ...(onterminal ? [{ label: "Abrir no terminal integrado", icon: SquareTerminal, onclick: () => onterminal!(strip(at)) }] : []),
     ];
@@ -543,15 +614,20 @@
   /** Clique direito no vazio da lista: ações na raiz do projeto */
   function rootMenu(e: MouseEvent) {
     if ((e.target as HTMLElement).closest("[data-p], input")) return;
+    e.stopPropagation();
     ui.contextMenu(e, [
-      { label: "Novo arquivo…", icon: FilePlus2, onclick: () => startNew("file", "") },
-      { label: "Nova pasta…", icon: FolderPlus, onclick: () => startNew("folder", "") },
+      { label: "Novo arquivo…", icon: FilePlus2, onclick: () => startNew("file", baseDir) },
+      { label: "Nova pasta…", icon: FolderPlus, onclick: () => startNew("folder", baseDir) },
       { separator: true },
-      { label: "Colar", icon: ClipboardPaste, kbd: kbd("mod+v"), disabled: !clip?.paths.length, onclick: () => paste("") },
+      { label: "Colar", icon: ClipboardPaste, kbd: kb.label("filesExplorer.paste"), disabled: !clip?.paths.length, onclick: () => paste(baseDir) },
       { separator: true },
-      { label: `Revelar no ${fileManagerName()}`, icon: FolderOpen, onclick: () => post("open", { path: root, target: "files" }).catch(ui.error) },
+      { label: `Revelar no ${fileManagerName()}`, icon: FolderOpen, onclick: () => post("open", { path: baseDir ? abs(baseDir) : root, target: "files" }).catch(ui.error) },
     ]);
   }
+  /** Ações na pasta-base (o Gerenciador de Soluções chama pelo nó do projeto) */
+  export function newIn(kind: "file" | "folder") { startNew(kind, baseDir); }
+  export function pasteHere() { paste(baseDir); }
+  export const canPaste = () => !!clip?.paths.length;
 
   // ------------------------------------------------------------ busca no conteúdo
   function runSearch() {
@@ -592,20 +668,22 @@
   </div>
 {/snippet}
 
-<div class="ft">
+<div class="ft" class:emb={embedded}>
   {#if mode === "files"}
+    {#if !embedded}
     <div class="bar">
       <label class="flt"><Search size={13} /><input bind:value={q} placeholder="Filtrar arquivos…" />{#if q}<button class="x" onclick={() => (q = "")}><X size={11} /></button>{/if}</label>
-      <button class="ib" title="Novo arquivo" onclick={() => startNew("file", cursor ? dirOf(cursor, cursor.endsWith("/")) : "")}><FilePlus2 size={14} /></button>
-      <button class="ib" title="Nova pasta" onclick={() => startNew("folder", cursor ? dirOf(cursor, cursor.endsWith("/")) : "")}><FolderPlus size={14} /></button>
-      <button class="ib" title="Recarregar" onclick={() => { load(); if (gitRepo) scm.touch(gitRepo); }}><RefreshCw size={13} class={loading ? "spin" : ""} /></button>
+      <button class="ib" title="Novo arquivo" onclick={() => startNew("file", cursor ? dirOf(cursor, cursor.endsWith("/")) : baseDir)}><FilePlus2 size={14} /></button>
+      <button class="ib" title="Nova pasta" onclick={() => startNew("folder", cursor ? dirOf(cursor, cursor.endsWith("/")) : baseDir)}><FolderPlus size={14} /></button>
+      <button class="ib" title="Recarregar" onclick={() => { load(false, true); if (gitRepo) scm.touch(gitRepo); }}><RefreshCw size={13} class={loading ? "spin" : ""} /></button>
       <button class="ib" title="Recolher todas as pastas" onclick={() => { open = {}; saveOpen(); }}><ChevronsDownUp size={14} /></button>
     </div>
+    {/if}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-    <div class="list" class:dz={dropAt === ""} bind:this={listEl} tabindex="0" role="tree" aria-label="Arquivos" aria-multiselectable="true" onkeydown={onKey}
+    <div class="list" class:dz={dropAt === baseDir} bind:this={listEl} tabindex="0" role="tree" aria-label="Arquivos" aria-multiselectable="true" onkeydown={onKey}
       oncontextmenu={rootMenu} ondragover={dragOver} ondragleave={dragLeave} ondrop={onDrop}>
-      {#if edit && edit.at === "" && edit.kind !== "rename"}{@render editor(0)}{/if}
-      {#if loading && !all.length}<div class="none">Carregando…</div>
+      {#if edit && edit.at === baseDir && edit.kind !== "rename"}{@render editor(depth0)}{/if}
+      {#if loading && !all.length}<div class="none" style="--d:{depth0}">Carregando…</div>
       {:else if q.trim() && !matches.length}<div class="none">Nenhum arquivo com “{q}”.</div>
       {:else}
         {#each visible as r (r.path)}
@@ -617,7 +695,7 @@
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -->
             <div class="n {d?.tone || ''} {ft ? 'f-' + ft : ''}" class:file={!r.dir} class:on={!r.dir && active === r.path} class:cur={cursor === r.path} class:del={d?.tone === "del"}
               class:sel={sel.length > 1 && sel.includes(r.path)} class:cutting={clip?.cut && clip.paths.includes(r.path)} class:dz={!!dropAt && r.path.startsWith(dropAt)}
-              class:dragged={dragging?.includes(r.path)}
+              class:dragged={dragging?.includes(r.path)} class:ign={isIgnored(r.path)}
               style="--d:{r.depth}" data-p={r.path} role="treeitem" aria-selected={sel.includes(r.path) || active === r.path} aria-expanded={r.dir ? !!open[r.path] : undefined}
               title={r.dir ? r.path : `${r.path}${d ? " · " + d.label : ""}`} draggable={!edit}
               ondragstart={(e) => dragStart(e, r)} ondragend={dragEnd}
@@ -635,6 +713,7 @@
               {#if d}<span class="gl" title={d.label}>{d.letter}</span>{:else if ft}<span class="gd"></span>{/if}
             </div>
             {#if r.dir && open[r.path] && edit && edit.at === r.path && edit.kind !== "rename"}{@render editor(r.depth + 1)}{/if}
+            {#if r.dir && open[r.path] && lazyBusy[r.path] && !lazyKids[r.path]}<div class="n wait" style="--d:{r.depth + 1}"><span class="sp"></span><RefreshCw size={11} class="spin" /><span class="tiny muted">lendo…</span></div>{/if}
           {/if}
         {/each}
       {/if}
@@ -680,6 +759,11 @@
   .tg:hover { color: var(--text); }
   .tg.on { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
   .list { flex: 1; overflow: auto; padding: 0 4px 10px; outline: none; }
+  .emb, .emb .list { height: auto; flex: none; overflow: visible; padding: 0; }
+  .emb .none { padding: 3px 0 3px calc(22px + var(--d, 0) * 12px); }
+  /* ignorado pelo .gitignore: apagado, como no VS Code */
+  .n.ign { opacity: 0.55; }
+  .n.wait { cursor: default; gap: 6px; }
   .list:focus-visible .n.cur { box-shadow: inset 0 0 0 1px var(--accent); }
   .n { --d: 0; position: relative; display: flex; align-items: center; gap: 5px; width: 100%; height: 22px; padding: 0 6px 0 calc(4px + var(--d) * 12px); border: 0; border-radius: 5px;
     background: none; color: var(--text-2); font: 12.5px var(--font); text-align: left; cursor: pointer; user-select: none; -webkit-user-select: none; outline: none; }

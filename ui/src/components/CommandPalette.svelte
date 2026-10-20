@@ -1,8 +1,8 @@
 <script lang="ts">
   // ⌘K / Ctrl+K: ir para qualquer tela, repositório, catálogo ou PR, e disparar ações.
   import { untrack } from "svelte";
-  import { ArrowRight, FolderGit2, GitPullRequest, Hammer, Layers, Plus, RefreshCw, Search, Sparkles, Zap, KanbanSquare, Code2 } from "@lucide/svelte";
-  import { matches } from "../lib/keys";
+  import { ArrowRight, FolderGit2, GitPullRequest, Hammer, Keyboard, Layers, Plus, RefreshCw, Search, Sparkles, Zap, KanbanSquare, Code2 } from "@lucide/svelte";
+  import { COMMANDS, kb } from "../lib/keybindings.svelte";
   import { work } from "../lib/work.svelte";
   import { post } from "../lib/api";
   import { repos } from "../lib/repos.svelte";
@@ -14,11 +14,23 @@
   let q = $state("");
   let idx = $state(0);
   let input: HTMLInputElement | undefined = $state();
+  // os comandos que dá para executar agora (o que tem quem execute depende da tela): lidos ao abrir
+  let opened = $state(0);
+  $effect(() => kb.on("workbench.action.showCommands", () => { ui.palette = !ui.palette; }));
 
   interface Item { group: string; label: string; sub?: string; icon?: any; provider?: string; run: () => void }
   const items = $derived.by<Item[]>(() => {
+    void opened;
     const s = store.s;
+    // "> texto" (como no VS Code): só os comandos
+    const cmds: Item[] = COMMANDS.filter(c => c.id !== "workbench.action.showCommands" && kb.has(c.id))
+      .map(c => ({ group: "Comandos", label: `${c.group}: ${c.label}`, sub: kb.label(c.id) || undefined, icon: Keyboard, run: () => setTimeout(() => kb.run(c.id), 30) }));
+    if (q.trimStart().startsWith(">")) {
+      const words = q.trim().slice(1).toLowerCase().split(/\s+/).filter(Boolean);
+      return cmds.filter(i => words.every(w => i.label.toLowerCase().includes(w))).slice(0, 80);
+    }
     const out: Item[] = [
+      ...cmds,
       ...[["projects", "Projetos (hub)"], ["board", "Quadro"], ["ai", "Uso de IA"], ["inbox", "Fila"], ["prs", "Pull requests"], ["builds", "Builds e Actions"], ["deploys", "Deploys"], ["issues", "Issues e tarefas"],
           ["repos", "Repositórios"], ["automation", "Automação"], ["analytics", "Análise"], ["history", "Histórico"], ["settings", "Contas e ajustes"]]
         .map(([id, label]) => ({ group: "Ir para", label, icon: ArrowRight, run: () => go("/" + id) })),
@@ -42,7 +54,7 @@
         provider: b.provider, run: () => go("/builds/" + encodeURIComponent(b.key)) })),
     ];
     const t = q.trim().toLowerCase();
-    if (!t) return out.filter(i => !["Pull requests", "Builds", "Pedir à IA"].includes(i.group)).slice(0, 40);
+    if (!t) return out.filter(i => !["Pull requests", "Builds", "Pedir à IA", "Comandos"].includes(i.group)).slice(0, 40);
     const words = t.split(/\s+/);
     return out.map(i => {
       const hay = `${i.label} ${i.sub || ""} ${i.group}`.toLowerCase();
@@ -54,13 +66,12 @@
   $effect(() => { void q; idx = 0; });
   $effect(() => {
     if (!ui.palette) return;
-    untrack(() => { q = ""; store.hold++; });
+    untrack(() => { q = ""; opened++; store.hold++; });
     setTimeout(() => input?.focus(), 20);
     return () => untrack(() => store.hold--);
   });
 
   function onkey(e: KeyboardEvent) {
-    if (matches(e, "mod+k")) { e.preventDefault(); ui.palette = !ui.palette; return; }
     if (!ui.palette) return;
     if (e.key === "Escape") ui.palette = false;
     else if (e.key === "ArrowDown") { e.preventDefault(); idx = Math.min(idx + 1, items.length - 1); scroll(); }
@@ -77,7 +88,7 @@
   <div class="wrap">
     <button class="scrim" aria-label="Fechar" onclick={() => (ui.palette = false)}></button>
     <div class="pal" role="dialog" aria-label="Paleta de comandos">
-      <div class="in"><Search size={17} /><input bind:this={input} bind:value={q} placeholder="Buscar telas, repositórios, PRs, builds, ações…" /><span class="kbd">Esc</span></div>
+      <div class="in"><Search size={17} /><input bind:this={input} bind:value={q} placeholder="Buscar telas, repositórios, PRs, ações… (> para comandos)" /><span class="kbd">Esc</span></div>
       <div class="list">
         {#each items as it, i (it.group + it.label + i)}
           {#if i === 0 || items[i - 1].group !== it.group}<div class="grp">{it.group}</div>{/if}

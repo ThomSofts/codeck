@@ -455,6 +455,67 @@ def pre_launch(cfg, root, tasks):
     return _and(*[c for c in chain if c])
 
 
+# ---------------------------------------------------------------- o SDK do Flutter do projeto (como o Dart-Code do VS Code)
+def _fvm_version(d):
+    """A versão do Flutter fixada pelo FVM nesta pasta (.fvmrc ou .fvm/fvm_config.json)."""
+    for f, key in ((".fvmrc", "flutter"), (os.path.join(".fvm", "fvm_config.json"), "flutterSdkVersion"), (os.path.join(".fvm", "fvm_config.json"), "flutter")):
+        try:
+            v = str((json.load(open(os.path.join(d, f), encoding="utf-8")) or {}).get(key) or "").strip()
+        except (OSError, ValueError, AttributeError):
+            continue
+        if v:
+            return v
+    return None
+
+
+def flutter_sdk(d, root=None):
+    """A pasta do SDK que o projeto pede, ou None (usa o do PATH). Ordem do VS Code: `dart.flutterSdkPath` do
+    .vscode/settings.json; depois o FVM (.fvmrc → .fvm/versions/<v>, .fvm/flutter_sdk, ~/fvm/versions/<v>).
+    Devolve (sdk, aviso): o aviso diz que o projeto pede uma versão que não está instalada."""
+    ok = lambda s: s and os.path.isfile(os.path.join(s, "bin", "flutter.bat" if IS_WIN else "flutter"))   # noqa: E731
+    dirs, cur = [], os.path.realpath(d or root or ".")
+    top = os.path.realpath(root) if root else cur
+    while True:   # da pasta do app até a raiz do projeto (monorepo: o .fvmrc pode estar na raiz)
+        dirs.append(cur)
+        if cur == top or os.path.dirname(cur) == cur or len(dirs) > 6:
+            break
+        cur = os.path.dirname(cur)
+    for base in dirs:
+        st, _ = _read_vscode(base, "settings.json")
+        p = (st or {}).get("dart.flutterSdkPath") if isinstance(st, dict) else None
+        if isinstance(p, str) and p.strip():
+            p = os.path.expanduser(_vars(p.strip(), base))
+            p = p if os.path.isabs(p) else os.path.join(base, p)
+            if ok(p):
+                return os.path.realpath(p), None
+    for base in dirs:
+        v = _fvm_version(base)
+        if not v:
+            continue
+        cache = os.environ.get("FVM_CACHE_PATH") or os.path.join(os.path.expanduser("~"), "fvm")
+        for p in (os.path.join(base, ".fvm", "versions", v), os.path.join(base, ".fvm", "flutter_sdk"), os.path.join(cache, "versions", v)):
+            if ok(p):
+                return os.path.realpath(p), None
+        return None, f"O projeto pede o Flutter {v} (FVM), que não está instalado — rode `fvm install {v}`. Usando o Flutter do PATH."
+    return None, None
+
+
+def _is_flutter_dir(d):
+    try:
+        return bool(re.search(r"^\s+sdk:\s*flutter\s*$", open(os.path.join(d, "pubspec.yaml"), encoding="utf-8").read(), re.M))
+    except OSError:
+        return False
+
+
+def flutter_exe(d, root=None, name="flutter"):
+    """O executável `flutter`/`dart` do SDK do projeto (ou só o nome, para achar no PATH)."""
+    sdk, _ = flutter_sdk(d, root)
+    if not sdk:
+        return name
+    exe = os.path.join(sdk, "bin", name + (".bat" if IS_WIN else ""))
+    return exe if os.path.isfile(exe) else name
+
+
 def run_command(cfg, root, tasks, probe=False, device=None):
     """O comando de terminal que executa a configuração SEM depurar (como o Ctrl+F5)."""
     t, c = cfg.get("type"), cfg.get("codeck") or {}
@@ -493,8 +554,11 @@ def run_command(cfg, root, tasks, probe=False, device=None):
     elif t == "go":
         cmd = "go run " + _q(cfg.get("program") or ".")
     elif t == "dart":
-        flutter = (c.get("kind") == "flutter") or c.get("device")
-        parts = (["flutter", "run"] if flutter else ["dart", "run"]) + list(cfg.get("toolArgs") or [])
+        cwd = cfg.get("cwd") if cfg.get("cwd") and os.path.isdir(cfg.get("cwd")) else root
+        # as do launch.json do VS Code não têm o "kind": o pubspec.yaml diz se é Flutter (senão virava `dart run`)
+        flutter = (c.get("kind") == "flutter") or c.get("device") or cfg.get("type") == "flutter" or (c.get("kind") != "dart" and _is_flutter_dir(cwd))
+        exe = flutter_exe(cwd, root, "flutter" if flutter else "dart")
+        parts = [exe, "run"] + list(cfg.get("toolArgs") or [])
         if flutter and device:
             parts += ["-d", device]
         if flutter and cfg.get("flutterMode") in ("profile", "release"):

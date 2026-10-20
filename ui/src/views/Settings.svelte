@@ -9,7 +9,9 @@
   import { get, post } from "../lib/api";
   import { applyDensity, type Density } from "../lib/density";
   import { dateTime } from "../lib/format";
-  import { isMac, kbd, SHORTCUTS } from "../lib/keys";
+  import { isMac, kbd } from "../lib/keys";
+  import Keybindings from "../components/settings/Keybindings.svelte";
+  import People from "../components/settings/People.svelte";
   import { PREF_DEFAULTS, prefs, type PrefKey } from "../lib/prefs.svelte";
   import { go, router } from "../lib/router.svelte";
   import { store } from "../lib/store.svelte";
@@ -88,6 +90,8 @@
       options: [{ value: "smooth", label: "Suave" }, { value: "blink", label: "Piscar" }, { value: "phase", label: "Fase" }, { value: "expand", label: "Expandir" }, { value: "solid", label: "Fixo" }], kw: "cursor piscar" },
     { sec: "editor", id: "whitespace", kind: "pref-select", key: "editor.renderWhitespace", label: "Mostrar espaços",
       options: [{ value: "none", label: "Nunca" }, { value: "boundary", label: "Nas bordas" }, { value: "selection", label: "Na seleção" }, { value: "all", label: "Sempre" }], kw: "whitespace espaço tab" },
+    { sec: "editor", id: "inlay", kind: "pref-seg", key: "editor.inlayHints", label: "Dicas inline", desc: `Nome do parâmetro e tipo inferido, do servidor de linguagem. "Segurando" = aparecem com ${isMac() ? "⌃⌥" : "Ctrl+Alt"} pressionados, como no VS Code.`,
+      options: [{ value: "offUnlessPressed", label: "Segurando" }, { value: "on", label: "Sempre" }, { value: "off", label: "Nunca" }], kw: "inlay hints parametro tipo" },
     { sec: "editor", id: "brackets", kind: "pref-switch", key: "editor.bracketPairs", label: "Colchetes coloridos", desc: "Cada par de ( ) [ ] { } numa cor, como no VS Code.", kw: "bracket pair colorization" },
     { sec: "editor", id: "gutter", kind: "pref-switch", key: "editor.gitGutter", label: "Alterações do Git na margem", desc: "Faixa verde (novo), azul (alterado) e o triângulo vermelho (apagado) ao lado dos números de linha.", kw: "git gutter diff margem" },
     { sec: "editor", id: "formatSave", kind: "pref-switch", key: "editor.formatOnSave", label: "Formatar ao salvar", desc: "Usa o formatador do servidor de linguagem (ou do Monaco) a cada ⌘S.", kw: "format prettier salvar" },
@@ -144,7 +148,7 @@
     // atalhos para as seções de contas (a busca leva até elas)
     { sec: "accounts", id: "azLink", kind: "link", key: "accounts", label: "Organizações do Azure DevOps", desc: "PAT por organização, com teste de cada permissão.", kw: "azure pat organização" },
     { sec: "github", id: "ghLink", kind: "link", key: "github", label: "Contas do GitHub", desc: "Entrar com GitHub, gh CLI ou token.", kw: "github token gh login" },
-    { sec: "shortcuts", id: "keysLink", kind: "link", key: "shortcuts", label: "Atalhos de teclado", desc: "Todos os atalhos do app.", kw: "teclado atalho kbd" },
+    { sec: "shortcuts", id: "keysLink", kind: "link", key: "shortcuts", label: "Atalhos de teclado", desc: "Todos os atalhos do app e do editor (os do VS Code) — troque qualquer um.", kw: "teclado atalho kbd keybinding vscode" },
     { sec: "about", id: "updLink", kind: "link", key: "about", label: "Versão e atualizações", desc: "Procurar atualização agora.", kw: "atualizar versão update sobre" },
   ];
 
@@ -425,6 +429,7 @@
           </div>
         {/each}
         <div class="foot"><button class="btn primary" onclick={saveOrgs} disabled={saving}>{saving ? "Salvando…" : "Salvar organizações"}</button></div>
+        <People />
 
       {:else if tab === "github"}
         <div class="head"><div><h2>{sec.title}</h2><p class="muted small">{sec.desc}</p></div></div>
@@ -481,14 +486,7 @@
 
       {:else if tab === "shortcuts"}
         <div class="head"><div><h2>{sec.title}</h2><p class="muted small">{sec.desc}</p></div></div>
-        {#each SHORTCUTS as g (g.group)}
-          <div class="card org keys">
-            <h4>{g.group}</h4>
-            {#each g.items as k (k.combo)}
-              <div class="key"><span>{k.label}</span><span class="kbd">{kbd(k.combo)}</span></div>
-            {/each}
-          </div>
-        {/each}
+        <Keybindings />
 
       {:else if tab === "about"}
         <div class="head"><div><h2>{store.s?.app.product || "Codeck"}</h2><p class="muted small">Versão {store.s?.app.version} · build {store.s?.app.build} · {store.s?.app.platform}</p></div></div>
@@ -565,11 +563,6 @@
   .rh:hover { color: var(--accent); }
   .none { display: grid; justify-items: center; gap: 6px; padding: 36px 16px; text-align: center; color: var(--text-2); }
   .none :global(svg) { color: var(--muted); }
-  .keys { gap: 0; }
-  .keys h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
-  .key { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; font-size: 13px; color: var(--text-2); }
-  .key + .key { border-top: 1px solid var(--line); }
-  .key .kbd { font-size: 11.5px; padding: 4px 7px; }
   @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } .tabs { flex-direction: row; flex-wrap: wrap; } .ng, .find, .sec-note { display: none; } .fields { grid-template-columns: 1fr; } }
   .autherr { padding: 8px 11px; border-radius: 9px; background: var(--bad-soft); color: var(--text-2); }
   .autherr b { color: var(--bad); }

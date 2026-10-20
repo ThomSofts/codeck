@@ -1,24 +1,42 @@
 <script lang="ts">
   // Gerenciador de Soluções (como o do Visual Studio): a solução, as pastas de solução, os projetos (tipo, framework,
-  // projeto de inicialização em negrito) e os arquivos de cada um. Clique direito no projeto: definir como
-  // inicialização, compilar, recompilar, limpar, iniciar. No topo, o que esta máquina tem para compilar e rodar.
-  import { AppWindow, Box, Check, ChevronRight, CircleAlert, Globe, Hammer, Library, Play, RefreshCw, Sparkles, SquareTerminal, TestTube2, Trash2, Wrench } from "@lucide/svelte";
-  import { untrack } from "svelte";
-  import { get, post } from "../../lib/api";
+  // projeto de inicialização em negrito) e os arquivos de cada um — a mesma árvore do explorador (criar, renomear,
+  // excluir, arrastar, recortar/copiar/colar, cores do Git). Clique direito no projeto: definir como inicialização,
+  // compilar, recompilar, limpar, novo arquivo/pasta. No topo, o que esta máquina tem para compilar e rodar.
+  import { AppWindow, Box, Check, ChevronRight, CircleAlert, ClipboardPaste, Copy, Eye, EyeOff, FilePlus2, FolderOpen, FolderPlus, Globe, Hammer, Library, Play, RefreshCw, Sparkles, SquareTerminal, TestTube2, Trash2, Wrench } from "@lucide/svelte";
+  import { tick, untrack } from "svelte";
+  import { post } from "../../lib/api";
   import { dotnet, KIND_LABEL, type DnProject } from "../../lib/dotnet.svelte";
+  import { fileManagerName } from "../../lib/native";
   import { ui } from "../../lib/ui.svelte";
   import FileIcon from "./FileIcon.svelte";
+  import FileTree, { type FsChange } from "./FileTree.svelte";
 
-  let { repoId, taskId = null, active = null, onopen, onterm }:
-    { repoId: string; taskId?: string | null; active?: string | null; onopen: (path: string, line?: number, o?: { preview?: boolean }) => void; onterm?: (id: string) => void } = $props();
+  let { repoId, taskId = null, gitRepo = null, root = "", active = null, onopen, onterm, ondiff, onfs, onterminal }:
+    { repoId: string; taskId?: string | null; gitRepo?: string | null; root?: string; active?: string | null; onopen: (path: string, line?: number, o?: { preview?: boolean }) => void;
+      onterm?: (id: string) => void; ondiff?: (path: string) => void; onfs?: (changes: FsChange[]) => void; onterminal?: (dir: string) => void } = $props();
   const k = $derived(dotnet.key(repoId, taskId));
   $effect(() => { const kk = k; untrack(() => { if (!dotnet.data[kk]) dotnet.load(repoId, taskId); }); });
   const d = $derived(dotnet.data[k] || null);
   const c = $derived(dotnet.choice(repoId));
   const sln = $derived(dotnet.solution(repoId, taskId));
-  let files = $state<string[]>([]);
-  let open = $state<Record<string, boolean>>({});
-  $effect(() => { void k; get<{ files: string[] }>("ws/files", { repoId, taskId }).then(r => (files = r.files)).catch(() => {}); });
+  const OPEN = "codeck.sln.open";
+  let open = $state<Record<string, boolean>>((() => { try { return JSON.parse(localStorage.getItem(OPEN) || "{}")[`${repoId}|${taskId || ""}`] || {}; } catch { return {}; } })());
+  $effect(() => {
+    const v = JSON.stringify(open);
+    try { const all = JSON.parse(localStorage.getItem(OPEN) || "{}"); all[`${repoId}|${taskId || ""}`] = JSON.parse(v); localStorage.setItem(OPEN, JSON.stringify(all)); } catch { /* sem armazenamento */ }
+  });
+  // como o "Mostrar todos os arquivos" do Visual Studio: bin/ e obj/ ficam escondidos até ligar
+  let showAll = $state(false);
+  const trees = $state<Record<string, FileTree | undefined>>({});
+  const baseOf = (p: DnProject) => (p.dir === "." ? "" : p.dir + "/");
+  async function inProject(p: DnProject, fn: (t: FileTree) => void) {
+    if (!open[p.path]) { open = { ...open, [p.path]: true }; await tick(); }
+    const t = trees[p.path];
+    if (t) fn(t);
+  }
+  const abs = (rel: string) => (root.replace(/[\\/]$/, "") + "/" + rel.replace(/\/$/, "")).replace(/\//g, root.includes("\\") ? "\\" : "/");
+  async function copy(t: string) { try { await navigator.clipboard.writeText(t); ui.toast("Caminho copiado"); } catch (e) { ui.error(e); } }
 
   const ICON: Record<string, any> = { web: Globe, console: SquareTerminal, winexe: AppWindow, library: Library, test: TestTube2 };
   const folders = $derived.by(() => {
@@ -26,17 +44,6 @@
     for (const p of sln?.projects || []) { const f = p.folder || ""; m.set(f, [...(m.get(f) || []), p]); }
     return [...m.entries()].sort((a, b) => (a[0] === "" ? 1 : b[0] === "" ? -1 : a[0].localeCompare(b[0])));
   });
-  function filesOf(p: DnProject, prefix: string) {
-    const base = (p.dir === "." ? "" : p.dir + "/") + prefix;
-    const dirs = new Set<string>(), fl: string[] = [];
-    for (const f of files) {
-      if (!f.startsWith(base)) continue;
-      const rest = f.slice(base.length), i = rest.indexOf("/");
-      if (/^(bin|obj)\//i.test(rest) && !prefix) continue;
-      if (i >= 0) dirs.add(rest.slice(0, i)); else fl.push(f);
-    }
-    return { dirs: [...dirs].sort((a, b) => a.localeCompare(b)), files: fl.sort((a, b) => a.localeCompare(b)) };
-  }
   const isStart = (p: DnProject) => c.startup.includes(p.path);
   function projMenu(p: DnProject) {
     return [
@@ -49,7 +56,14 @@
       { label: "Limpar", icon: Trash2, onclick: () => dotnet.run(repoId, taskId, "Clean", { target: p.path, onterm }) },
       { label: "Restaurar pacotes NuGet", icon: RefreshCw, onclick: () => dotnet.run(repoId, taskId, "Restore", { target: p.path, onterm }) },
       { separator: true },
+      { label: "Novo arquivo…", icon: FilePlus2, onclick: () => inProject(p, t => t.newIn("file")) },
+      { label: "Nova pasta…", icon: FolderPlus, onclick: () => inProject(p, t => t.newIn("folder")) },
+      { label: "Colar", icon: ClipboardPaste, disabled: !trees[p.path]?.canPaste(), onclick: () => inProject(p, t => t.pasteHere()) },
+      { separator: true },
       { label: "Abrir o arquivo do projeto", icon: Box, onclick: () => onopen(p.path, undefined, { preview: false }) },
+      { label: "Copiar caminho", icon: Copy, onclick: () => copy(abs(p.dir === "." ? "" : p.dir)) },
+      { label: `Revelar no ${fileManagerName()}`, icon: FolderOpen, onclick: () => post("open", { path: abs(p.dir === "." ? "" : p.dir), target: "files" }).catch(ui.error) },
+      ...(onterminal ? [{ label: "Abrir no terminal integrado", icon: SquareTerminal, onclick: () => onterminal!(p.dir === "." ? "" : p.dir) }] : []),
     ];
   }
   const tc = $derived(d?.toolchain);
@@ -57,23 +71,10 @@
   const hasWebFx = $derived(!!sln?.projects.some(p => p.netfx && p.kind === "web"));
 </script>
 
-{#snippet ftree(p: DnProject, prefix: string, depth: number)}
-  {@const t = filesOf(p, prefix)}
-  {#each t.dirs as dname (dname)}
-    {@const key = p.path + ":" + prefix + dname}
-    <button class="n" style="--d:{depth}" onclick={() => (open = { ...open, [key]: !open[key] })}>
-      <ChevronRight size={12} class="chev {open[key] ? 'rot' : ''}" /><FileIcon name={dname} dir open={!!open[key]} size={15} /><span class="ell">{dname}</span></button>
-    {#if open[key]}{@render ftree(p, prefix + dname + "/", depth + 1)}{/if}
-  {/each}
-  {#each t.files as f (f)}
-    <button class="n" class:on={active === f} style="--d:{depth}" onclick={() => onopen(f, undefined, { preview: true })} ondblclick={() => onopen(f, undefined, { preview: false })}>
-      <span class="sp"></span><FileIcon name={f.split("/").pop() || f} size={15} /><span class="ell">{f.split("/").pop()}</span></button>
-  {/each}
-{/snippet}
-
 <div class="sv">
   <div class="top">
     <span class="ttl">Gerenciador de Soluções</span>
+    <button class="ib" class:on={showAll} title={showAll ? "Esconder bin/ e obj/" : "Mostrar todos os arquivos (bin/, obj/)"} onclick={() => (showAll = !showAll)}>{#if showAll}<Eye size={14} />{:else}<EyeOff size={14} />{/if}</button>
     <button class="ib" title="Ler a solução de novo" onclick={() => dotnet.load(repoId, taskId, true)}><RefreshCw size={13} class={dotnet.loading[k] ? "spin" : ""} /></button>
   </div>
   {#if !d}
@@ -100,7 +101,9 @@
     </div>
     <div class="list">
       {#if sln}
-        <div class="sol"><Sparkles size={13} /><b class="ell">Solução “{sln.name}”</b><span class="tiny muted">{sln.projects.length} projeto{sln.projects.length === 1 ? "" : "s"}</span></div>
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="sol" ondblclick={() => sln?.path && onopen(sln.path, undefined, { preview: false })}
+          oncontextmenu={(e) => sln?.path && ui.contextMenu(e, [{ label: "Abrir o arquivo da solução", icon: Box, onclick: () => onopen(sln!.path!, undefined, { preview: false }) }])}><Sparkles size={13} /><b class="ell">Solução “{sln.name}”</b><span class="tiny muted">{sln.projects.length} projeto{sln.projects.length === 1 ? "" : "s"}</span></div>
         {#each folders as [folder, projs] (folder)}
           {#if folder}<div class="fold" style="--d:1"><FileIcon name={folder} dir open size={14} /><span class="ell">{folder}</span></div>{/if}
           {#each projs as p (p.path)}
@@ -117,7 +120,8 @@
             </button>
             {#if open[p.path] && !p.missing}
               <div class="meta tiny muted" style="--d:{depth + 1}">{KIND_LABEL[p.kind]}{p.sdk ? " · SDK" : p.netfx ? " · formato clássico" : ""}{p.iisUrl ? " · " + p.iisUrl : ""}</div>
-              {@render ftree(p, "", depth + 1)}
+              <FileTree bind:this={trees[p.path]} {repoId} {taskId} {gitRepo} {onopen} {ondiff} {onfs} {onterminal} {active}
+                base={baseOf(p)} embedded depth0={depth + 1} hide={showAll ? [] : ["bin/", "obj/"]} />
             {/if}
           {/each}
         {/each}
@@ -132,6 +136,7 @@
   .ttl { flex: 1; min-width: 0; font: 650 10.5px/1 var(--font); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ib { display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; }
   .ib:hover { background: var(--surface-3); color: var(--text); }
+  .ib.on { color: var(--accent); }
   .none { padding: 12px; font-size: 12px; color: var(--muted); }
   .pick { margin: 2px 8px 6px; width: calc(100% - 16px); height: 28px; font-size: 12px; }
   .warn { display: flex; gap: 7px; margin: 2px 8px 6px; padding: 7px 9px; border-radius: 8px; background: var(--warn-soft); color: var(--text-2); }
@@ -145,13 +150,11 @@
   .sol :global(svg) { color: #9b6bdf; flex: none; }
   .fold, .meta { --d: 0; display: flex; align-items: center; gap: 6px; height: 22px; padding-left: calc(8px + var(--d) * 12px); font-size: 12.5px; color: var(--text-2); }
   .meta { height: 20px; padding-left: calc(22px + var(--d) * 12px); }
-  .proj, .n { --d: 0; display: flex; align-items: center; gap: 5px; width: 100%; height: 23px; padding: 0 6px 0 calc(4px + var(--d) * 12px); border: 0; border-radius: 5px;
+  .proj { --d: 0; display: flex; align-items: center; gap: 5px; width: 100%; height: 23px; padding: 0 6px 0 calc(4px + var(--d) * 12px); border: 0; border-radius: 5px;
     background: none; color: var(--text-2); font: 12.5px var(--font); text-align: left; cursor: pointer; }
-  .proj:hover, .n:hover { background: var(--surface-2); color: var(--text); }
-  .n.on { background: var(--accent-soft); color: var(--text); }
-  .proj :global(.chev), .n :global(.chev) { color: var(--faint); flex: none; transition: transform var(--t) var(--ease); }
-  .proj :global(.chev.rot), .n :global(.chev.rot) { transform: rotate(90deg); }
-  .sp { width: 12px; flex: none; }
+  .proj:hover { background: var(--surface-2); color: var(--text); }
+  .proj :global(.chev) { color: var(--faint); flex: none; transition: transform var(--t) var(--ease); }
+  .proj :global(.chev.rot) { transform: rotate(90deg); }
   .pi { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 5px; flex: none; color: #fff; background: #6b5bd6; }
   .pi.k-web { background: #2f8cf0; } .pi.k-console { background: #3a7d5c; } .pi.k-winexe { background: #6b5bd6; } .pi.k-library { background: #5a6276; } .pi.k-test { background: #c27c0e; }
   .pn { flex: 1; min-width: 0; color: var(--text); }

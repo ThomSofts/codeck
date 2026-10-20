@@ -58,3 +58,20 @@ export function scanTasks(src: string): TaskLine[] {
   }
   return out;
 }
+
+/** HTML de fora (descrição/comentário de work item do Azure) → HTML seguro, com as mesmas regras do Markdown. */
+export function safeHtml(html: string) {
+  hook();
+  return DOMPurify.sanitize(html || "", {
+    FORBID_TAGS: ["style", "form", "iframe", "object", "embed", "button", "textarea", "select", "option", "frame", "frameset", "base", "link", "meta", "svg", "math", "input"],
+    FORBID_ATTR: ["style", "srcset", "action", "formaction", "background", "ping"],
+    ALLOW_DATA_ATTR: false,
+  });
+}
+
+/** HTML → texto (para mandar a descrição do work item ao agente). */
+export function htmlText(html: string) {
+  const d = document.createElement("div");
+  d.innerHTML = safeHtml(html.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li|h\d|tr)>/gi, "$&\n"));
+  return (d.textContent || "").replace(/ /g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}

@@ -528,6 +528,37 @@ def post_library_clone(qs, body):
 
 
 # ---------------------------------------------------------------- quadro (kanban)
+# ---------------------------------------------------------------- issues e work items: ler inteiro e comentar
+def _issue_acc(body):
+    """A conta da issue/work item: GitHub pelo login (ou a 1ª), Azure pelo nome da organização."""
+    return engine.account_for_item({"provider": body.get("provider"), "account": body.get("account"), "org": body.get("org") or ""})
+
+
+@route("GET", "/api/issues/browse")
+def get_issues_browse(qs, body):
+    return engine.browse_issues(q1(qs, "scope", "all"), q1(qs, "state", "open"), q1(qs, "fresh") == "1")
+
+
+@route("GET", "/api/issue")
+def get_issue(qs, body):
+    q = {k: q1(qs, k) for k in ("provider", "account", "org", "repo", "number")}
+    acc = _issue_acc(q)
+    return acc.issue(q["repo"], q["number"]) if q["provider"] == "github" else acc.work_item(q["number"])
+
+
+@route("POST", "/api/issue/comment")
+def post_issue_comment(qs, body):
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise ValueError("Escreva o comentário")
+    acc = _issue_acc(body)
+    if body.get("provider") == "github":
+        acc.comment_issue(body.get("repo"), body.get("number"), text)
+    else:
+        acc.comment_work_item(body.get("number"), text)
+    return {"ok": True}
+
+
 @route("GET", "/api/kanban")
 def get_kanban(qs, body):
     return kanban.view()
@@ -788,10 +819,7 @@ def post_ws_run(qs, body):
 
 @route("GET", "/api/ws/files")
 def get_ws_files(qs, body):
-    r = workspace.files(q1(qs, "repoId"), q1(qs, "taskId"))
-    if q1(qs, "dirs") == "1":   # o explorador também mostra as pastas vazias
-        r["dirs"] = editor.empty_dirs(q1(qs, "repoId"), q1(qs, "taskId"), r["files"])
-    return r
+    return workspace.files(q1(qs, "repoId"), q1(qs, "taskId"), q1(qs, "under"))
 
 
 @route("GET", "/api/ws/file")

@@ -9,6 +9,7 @@
   import { debug, KIND_LABEL, type Device, type LaunchCfg, type Session } from "../../lib/debug.svelte";
   import { darkOf, DEVTOOLS_PAGES, DUMPS, flipBrightness, flipPlatform, has, isOn, openInBrowser, platformOf, toggle, TOGGLES, dump } from "../../lib/flutter";
   import { kbd } from "../../lib/keys";
+  import { kb } from "../../lib/keybindings.svelte";
   import { router } from "../../lib/router.svelte";
   import { ui } from "../../lib/ui.svelte";
 
@@ -57,7 +58,7 @@
     }
     if (!list.length) items.push({ label: debug.loadingList[k] ? "Procurando…" : "Nada detectado — crie uma configuração", disabled: true });
     return [...items, { separator: true },
-      { label: "Iniciar sem depurar", icon: Zap, kbd: kbd("ctrl") + "F5", disabled: !sel, onclick: () => go(true) },
+      { label: "Iniciar sem depurar", icon: Zap, kbd: kb.label("workbench.action.debug.run"), disabled: !sel, onclick: () => go(true) },
       { label: "Configurações de execução…", icon: Settings2, onclick: () => onconfigs?.() },
       { label: "Detectar de novo", icon: RefreshCw, onclick: () => debug.load(repoId, taskId) }];
   });
@@ -101,35 +102,34 @@
   }
   const restartTarget = (): Session | null => act || live[0] || null;
 
-  function onKey(e: KeyboardEvent) {
-    if (router.view !== "work" && router.view !== "solo") return;
-    const t = e.target as HTMLElement | null;
-    if (t?.closest?.("input, textarea") && !t.closest(".monaco-editor")) return;
-    const mod = e.metaKey || e.ctrlKey;
-    if (e.key === "F5" && !e.shiftKey && !mod) { e.preventDefault(); if (stopped) debug.control(act, "continue"); else go(false); }
-    else if (e.key === "F5" && e.ctrlKey && !e.shiftKey) { e.preventDefault(); go(true); }
-    else if (e.key === "F5" && e.shiftKey && mod) { e.preventDefault(); const r = restartTarget(); if (r) debug.restart(r.id); }
-    else if (e.key === "F5" && e.shiftKey) { e.preventDefault(); debug.stopScope(repoId, taskId); }
-    else if (e.key === "F6" && act && !stopped) { e.preventDefault(); debug.control(act, "pause"); }
-    else if (e.key === "F10" && stopped) { e.preventDefault(); debug.control(act, "next"); }
-    else if (e.key === "F11" && e.shiftKey && stopped) { e.preventDefault(); debug.control(act, "stepOut"); }
-    else if (e.key === "F11" && stopped) { e.preventDefault(); debug.control(act, "stepIn"); }
-  }
+  // F5, ⌃F5, ⇧F5, F10, F11… (lib/keybindings — personalizáveis em Configurações → Atalhos)
+  $effect(() => {
+    const here = () => router.view === "work" || router.view === "solo";
+    const offs = [
+      kb.on("workbench.action.debug.start", () => { if (!here()) return false; if (stopped) debug.control(act, "continue"); else go(false); }),
+      kb.on("workbench.action.debug.run", () => { if (!here()) return false; go(true); }),
+      kb.on("workbench.action.debug.restart", () => { const r = restartTarget(); if (!here() || !r) return false; debug.restart(r.id); }),
+      kb.on("workbench.action.debug.stop", () => { if (!here()) return false; debug.stopScope(repoId, taskId); }),
+      kb.on("workbench.action.debug.pause", () => { if (!here() || !act || stopped) return false; debug.control(act, "pause"); }),
+      kb.on("workbench.action.debug.stepOver", () => { if (!here() || !stopped) return false; debug.control(act, "next"); }),
+      kb.on("workbench.action.debug.stepInto", () => { if (!here() || !stopped) return false; debug.control(act, "stepIn"); }),
+      kb.on("workbench.action.debug.stepOut", () => { if (!here() || !stopped) return false; debug.control(act, "stepOut"); }),
+    ];
+    return () => { for (const off of offs) off(); };
+  });
 </script>
-
-<svelte:window onkeydown={onKey} />
 
 <div class="rb" class:dbg={dbgLive.length > 0} class:stopped role="toolbar" aria-label="Executar e depurar">
   {#if live.length}
     {#if dbgLive.length}
       {#if stopped}
-        <button class="ib go" title="Continuar (F5)" onclick={() => debug.control(act, "continue")}><Play size={13} fill="currentColor" /></button>
+        <button class="ib go" title={`Continuar (${kb.label("workbench.action.debug.start")})`} onclick={() => debug.control(act, "continue")}><Play size={13} fill="currentColor" /></button>
       {:else}
-        <button class="ib" title="Pausar (F6)" disabled={building || starting} onclick={() => debug.control(act, "pause")}><Pause size={13} /></button>
+        <button class="ib" title={`Pausar (${kb.label("workbench.action.debug.pause")})`} disabled={building || starting} onclick={() => debug.control(act, "pause")}><Pause size={13} /></button>
       {/if}
-      <button class="ib" title="Passar por cima (F10)" disabled={!stopped} onclick={() => debug.control(act, "next")}><StepForward size={14} /></button>
-      <button class="ib" title="Entrar (F11)" disabled={!stopped} onclick={() => debug.control(act, "stepIn")}><ArrowDownToLine size={14} /></button>
-      <button class="ib" title={`Sair (${kbd("shift")}F11)`} disabled={!stopped} onclick={() => debug.control(act, "stepOut")}><ArrowUpFromLine size={14} /></button>
+      <button class="ib" title={`Passar por cima (${kb.label("workbench.action.debug.stepOver")})`} disabled={!stopped} onclick={() => debug.control(act, "next")}><StepForward size={14} /></button>
+      <button class="ib" title={`Entrar (${kb.label("workbench.action.debug.stepInto")})`} disabled={!stopped} onclick={() => debug.control(act, "stepIn")}><ArrowDownToLine size={14} /></button>
+      <button class="ib" title={`Sair (${kb.label("workbench.action.debug.stepOut")})`} disabled={!stopped} onclick={() => debug.control(act, "stepOut")}><ArrowUpFromLine size={14} /></button>
       <span class="sep"></span>
     {/if}
     {#if hot}
@@ -139,8 +139,8 @@
     {#if flutter}
       <button class="ib tools" title="Ferramentas do Flutter: DevTools, debug paint, overlay de performance…" onclick={(e) => ui.contextMenu(e, toolItems)}><Gauge size={14} /></button>
     {/if}
-    <button class="ib" title={`Reiniciar (${kbd("mod+shift")}F5)`} onclick={() => { const r = restartTarget(); if (r) debug.restart(r.id); }}><RotateCcw size={13} /></button>
-    <button class="ib stop" title={`Parar (${kbd("shift")}F5)`} onclick={() => debug.stopScope(repoId, taskId)}><Square size={11} fill="currentColor" /></button>
+    <button class="ib" title={`Reiniciar (${kb.label("workbench.action.debug.restart")})`} onclick={() => { const r = restartTarget(); if (r) debug.restart(r.id); }}><RotateCcw size={13} /></button>
+    <button class="ib stop" title={`Parar (${kb.label("workbench.action.debug.stop")})`} onclick={() => debug.stopScope(repoId, taskId)}><Square size={11} fill="currentColor" /></button>
     <span class="st" class:warn={stopped} title={live.map(s => s.name).join(", ")}>
       {#if booting || building || starting}<Loader2 size={12} class="spin" />{:else if dbgLive.length}<Bug size={12} />{/if}
       <span class="ell">{status}{live.length > 1 ? ` · ${live.length}` : ""}</span>
@@ -152,14 +152,14 @@
     </button>
   {/if}
   <div class="start">
-    <button class="gob" disabled={!sel && !list.length} title={sel ? `${sel.debug ? "Depurar" : "Executar"}: ${sel.name} (F5)${sel.why ? " — " + sel.why : ""}` : "Escolha o que executar"} onclick={() => go(false)}>
+    <button class="gob" disabled={!sel && !list.length} title={sel ? `${sel.debug ? "Depurar" : "Executar"}: ${sel.name} (${kb.label("workbench.action.debug.start")})${sel.why ? " — " + sel.why : ""}` : "Escolha o que executar"} onclick={() => go(false)}>
       {#if selRunning.some(s => s.status === "building" || s.status === "starting")}<Loader2 size={12} class="spin" />{:else}<Play size={12} fill="currentColor" />{/if}
       <span class="ell lbl">{sel ? sel.name : debug.loadingList[k] ? "Procurando…" : "Executar"}</span>
       {#if sel}<span class="kind">{KIND_LABEL[sel.kind] || sel.kind}</span>{/if}
     </button>
     <button class="caret" title="O que iniciar" onclick={(e) => { const r = (e.currentTarget as HTMLElement).parentElement!.getBoundingClientRect(); ui.openMenu({ items: pick, anchor: { left: r.left, right: r.right, top: r.top, bottom: r.bottom }, align: "right", owner: null }); }}><ChevronDown size={12} /></button>
   </div>
-  <button class="ib nodbg" title={`Iniciar sem depurar (${kbd("ctrl")}F5)`} disabled={!sel} onclick={() => go(true)}><ArrowRightToLine size={14} /></button>
+  <button class="ib nodbg" title={`Iniciar sem depurar (${kb.label("workbench.action.debug.run")})`} disabled={!sel} onclick={() => go(true)}><ArrowRightToLine size={14} /></button>
 </div>
 
 <style>

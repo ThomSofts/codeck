@@ -30,26 +30,3 @@ export function matches(e: KeyboardEvent, combo: string) {
   const k = e.key.toLowerCase();
   return k === key || (key === "\\" && e.code === "Backslash") || (key.length === 1 && e.code === `Key${key.toUpperCase()}`) || (/^[0-9]$/.test(key) && e.code === `Digit${key}`);
 }
-
-/** Atalhos do app — a tela de Configurações → Atalhos lista estes, já no formato do sistema. */
-export const SHORTCUTS: { group: string; items: { combo: string; label: string }[] }[] = [
-  { group: "Geral", items: [
-    { combo: "mod+k", label: "Buscar ou ir para… (paleta de comandos)" },
-    { combo: "mod+\\", label: "Recolher/expandir a barra lateral" },
-    { combo: "mod+,", label: "Configurações" },
-  ] },
-  { group: "Projetos", items: [
-    { combo: "mod+p", label: "Abrir arquivo do projeto" },
-    { combo: "mod+shift+f", label: "Buscar no projeto" },
-    { combo: "mod+t", label: "Novo terminal" },
-    { combo: "mod+w", label: "Fechar a aba" },
-    { combo: "mod+1", label: "Ir para o projeto 1…9" },
-    { combo: "mod+shift+i", label: "Pedir à IA (planejar/implementar)" },
-  ] },
-  { group: "Editor", items: [
-    { combo: "mod+s", label: "Salvar" },
-    { combo: "f12", label: "Ir para a definição" },
-    { combo: "mod+shift+v", label: "Markdown: alternar pré-visualização" },
-    { combo: "mod+shift+c", label: "Revisão: comentar a linha" },
-  ] },
-];

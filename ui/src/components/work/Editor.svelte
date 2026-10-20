@@ -47,8 +47,8 @@
 
 <script lang="ts">
   import { ChevronRight } from "@lucide/svelte";
-  import { kbd } from "../../lib/keys";
-  import { gotoDefinition, openInApp } from "../../lib/lsp";
+  import { kb } from "../../lib/keybindings.svelte";
+  import { documentSymbols, gotoDefinition, openInApp, type Sym } from "../../lib/lsp";
   import { loadMonaco, monacoTheme, onThemeChange } from "../../lib/monaco";
   import { lineHunks } from "../../lib/linediff";
   import { edState, trackMarkers } from "../../lib/editorstate.svelte";
@@ -182,9 +182,51 @@
   const statusSig = $derived(gitRepo ? JSON.stringify(scm.status[gitRepo]?.staged || []) + (scm.status[gitRepo]?.head || "") : "");
   $effect(() => { void statusSig; void key; if (!loading) loadBase(); });
 
+  // ------------------------------------------------------------ breadcrumbs com os símbolos (arquivo › classe › método)
+  // Como no VS Code: o caminho até o símbolo do cursor; clicar num pedaço lista os irmãos dele para pular.
+  let symPath = $state<{ sym: Sym; siblings: Sym[] }[]>([]);
+  let symTop: Sym[] = [];
+  let symT: ReturnType<typeof setTimeout> | undefined;
+  function updateSyms() {
+    clearTimeout(symT);
+    symT = setTimeout(async () => {
+      const m = editor?.getModel(), p = editor?.getPosition();
+      if (!m || !p) { symPath = []; return; }
+      const syms = await documentSymbols(m);
+      if (!editor || editor.getModel() !== m) return;
+      symTop = syms;
+      const chain: { sym: Sym; siblings: Sym[] }[] = [];
+      let level = syms;
+      for (let guard = 0; guard < 12; guard++) {
+        const hit = level.find(x => x.range.s <= p.lineNumber && p.lineNumber <= x.range.e);
+        if (!hit) break;
+        chain.push({ sym: hit, siblings: level });
+        level = hit.children;
+      }
+      if (chain.map(c => c.sym.name).join("\0") !== symPath.map(c => c.sym.name).join("\0") || chain.length !== symPath.length) symPath = chain;
+    }, 180);
+  }
+  // o tipo do símbolo (LSP SymbolKind) como no VS Code: letra e cor
+  const GLYPH: Record<number, [string, string]> = { 2: ["{}", "#c5c5c5"], 3: ["{}", "#c5c5c5"], 4: ["{}", "#c5c5c5"], 5: ["C", "#ee9d28"], 6: ["ƒ", "#b180d7"],
+    7: ["◇", "#75beff"], 8: ["◇", "#75beff"], 9: ["ƒ", "#b180d7"], 10: ["E", "#ee9d28"], 11: ["I", "#75beff"], 12: ["ƒ", "#b180d7"], 13: ["x", "#75beff"],
+    14: ["π", "#75beff"], 22: ["e", "#75beff"], 23: ["S", "#75beff"], 24: ["⚡", "#ee9d28"], 26: ["T", "#4ec9b0"] };
+  const glyph = (k: number) => GLYPH[k] || ["•", "#9aa4b2"];
+  function jump(x: Sym) {
+    if (!editor) return;
+    editor.setPosition({ lineNumber: x.sel.line, column: x.sel.col });
+    editor.revealLineInCenterIfOutsideViewport(x.sel.line);
+    editor.focus();
+  }
+  function symMenu(e: MouseEvent, list: Sym[], cur?: Sym) {
+    if (!list.length) return;
+    const flat = (l: Sym[], d = 0): { s: Sym; d: number }[] => l.flatMap(x => [{ s: x, d }, ...(d < 1 && !cur ? flat(x.children, d + 1) : [])]);
+    ui.contextMenu(e, flat(list).slice(0, 200).map(({ s: x, d }) => ({ label: `${"   ".repeat(d)}${glyph(x.kind)[0]}  ${x.name}${x === cur ? "  ●" : ""}`, onclick: () => jump(x) })));
+  }
+
   // ------------------------------------------------------------ barra de status
   function publish() {
     if (!editor) return;
+    updateSyms();
     const m = editor.getModel(), p = editor.getPosition(), s = editor.getSelection();
     if (!m || !p) return;
     const o = m.getOptions();
@@ -217,12 +259,14 @@
       monaco = m;
       trackMarkers(m);
       editor = m.editor.create(host, { automaticLayout: true, theme: monacoTheme(),
-        smoothScrolling: true, mouseWheelZoom: true, guides: { bracketPairs: "active", indentation: true },
-        scrollBeyondLastLine: false, padding: { top: 6 }, fixedOverflowWidgets: true, ...editorPrefs() });
-      editor.addCommand(m.KeyMod.CtrlCmd | m.KeyCode.KeyS, () => save());
-      editor.addCommand(m.KeyMod.CtrlCmd | m.KeyMod.Shift | m.KeyCode.KeyV, () => { if (isMd) toggleMd(); });
-      // ir para a definição pelo servidor de linguagem — inclusive em outro arquivo, que abre numa aba
-      editor.addCommand(m.KeyCode.F12, () => { const pos = editor!.getPosition(); if (pos) gotoDefinition(editor!, pos); });
+        smoothScrolling: true, mouseWheelZoom: true, guides: { bracketPairs: "active", indentation: true, highlightActiveIndentation: true },
+        scrollBeyondLastLine: false, padding: { top: 6 }, fixedOverflowWidgets: true,
+        // como o VS Code: cores pelo significado, ocorrências do símbolo, lâmpada de correção, colchetes e dobras
+        "semanticHighlighting.enabled": true, occurrencesHighlight: "singleFile", lightbulb: { enabled: "onCode" as any }, renderLineHighlight: "all",
+        matchBrackets: "always", showFoldingControls: "mouseover", foldingHighlight: true, linkedEditing: true, colorDecorators: true,
+        suggest: { preview: true, showStatusBar: true, insertMode: "replace" }, hover: { delay: 300, sticky: true }, parameterHints: { enabled: true, cycle: true },
+        scrollbar: { verticalScrollbarSize: 12, horizontalScrollbarSize: 12, useShadows: true }, ...editorPrefs() } as Monaco.editor.IStandaloneEditorConstructionOptions);
+      // salvar, Markdown, ir para a definição…: pelos atalhos (lib/keybindings), no editor em foco
       editor.onMouseDown(e => {
         if ((e.event.metaKey || e.event.ctrlKey) && e.target.position) gotoDefinition(editor!, e.target.position);
       });
@@ -251,6 +295,20 @@
     };
   });
 
+  // atalhos que este editor atende (o último editor em foco; ⌘S também com o foco no explorador)
+  const mine = () => !!editor && edState.editor === editor;
+  $effect(() => {
+    const offs = [
+      kb.on("workbench.action.files.save", () => { if (!mine() || note) return false; save(); }),
+      kb.on("markdown.showPreviewToSide", () => { if (!mine() || !isMd) return false; toggleMd(); }),
+      // ir para a definição pelo servidor de linguagem — inclusive em outro arquivo, que abre numa aba
+      kb.on("codeck.gotoDefinition", () => { const pos = editor?.getPosition(); if (!mine() || !pos) return false; gotoDefinition(editor!, pos); }),
+      kb.on("editor.action.toggleWordWrap", () => { if (!mine()) return false; prefs.set("editor.wordWrap", !prefs.get("editor.wordWrap")); }),
+      kb.on("editor.action.toggleMinimap", () => { if (!mine()) return false; prefs.set("editor.minimap", !prefs.get("editor.minimap")); }),
+    ];
+    return () => { for (const off of offs) off(); };
+  });
+
   // preferências do editor (Configurações → Editor): na criação e ao mudar
   function editorPrefs(): Monaco.editor.IEditorOptions {
     const fs = Number(prefs.get("editor.fontSize")) || 13;
@@ -259,7 +317,8 @@
     return { fontSize: fs, lineHeight: Math.round(fs * 1.54),
       fontFamily: (fam ? `"${fam.replace(/"/g, "")}", ` : "") + '"JetBrains Mono Variable", ui-monospace, Menlo, Consolas, monospace',
       fontLigatures: !!prefs.get("editor.ligatures"),
-      minimap: { enabled: !!prefs.get("editor.minimap"), renderCharacters: false, showSlider: "mouseover" },
+      minimap: { enabled: !!prefs.get("editor.minimap"), renderCharacters: true, showSlider: "mouseover", maxColumn: 100 },
+      inlayHints: { enabled: prefs.get("editor.inlayHints") },
       wordWrap: (prefs.get("editor.wordWrap") ? "on" : "off") as "on" | "off", lineNumbers: (prefs.get("editor.lineNumbers") ? "on" : "off") as "on" | "off",
       stickyScroll: { enabled: !!prefs.get("editor.stickyScroll") }, renderWhitespace: prefs.get("editor.renderWhitespace"),
       cursorStyle: prefs.get("editor.cursorStyle"), cursorBlinking: prefs.get("editor.cursorBlinking"), cursorSmoothCaretAnimation: "on",
@@ -306,8 +365,13 @@
   <div class="crumbs" aria-label="Caminho do arquivo">
     {#each crumbs as c, i (i)}
       {#if i}<ChevronRight size={11} class="sep" />{/if}
-      {#if i === crumbs.length - 1}<span class="cur"><FileIcon name={c} size={13} />{c}</span>
+      {#if i === crumbs.length - 1}<button class="cur" title="Símbolos do arquivo" onclick={(e) => symMenu(e, symTop)}><FileIcon name={c} size={13} />{c}</button>
       {:else}<button onclick={() => onreveal?.(crumbs.slice(0, i + 1).join("/") + "/")}>{c}</button>{/if}
+    {/each}
+    {#each symPath as p (p.sym.name + p.sym.range.s)}
+      {@const g = glyph(p.sym.kind)}
+      <ChevronRight size={11} class="sep" />
+      <button class="sym" onclick={(e) => symMenu(e, p.siblings, p.sym)}><span class="sg" style="color:{g[1]}">{g[0]}</span>{p.sym.name}</button>
     {/each}
   </div>
   <div class="body">
@@ -318,8 +382,8 @@
         <div class="mdpane"><MarkdownView text={mdText} path={relP} ontoggle={toggleTask} onopen={(rel) => openInApp(rel)} onkey={toggleMd} /></div>
       {/if}
       <div class="mdbar" role="tablist" aria-label="Como ver o Markdown">
-        <button role="tab" class:on={mdMode === "preview"} aria-selected={mdMode === "preview"} title={`Ver renderizado (${kbd("mod+shift+v")})`} onclick={() => setMd("preview")}>Visualizar</button>
-        <button role="tab" class:on={mdMode === "code"} aria-selected={mdMode === "code"} title={`Ver o código (${kbd("mod+shift+v")})`} onclick={() => setMd("code")}>Código</button>
+        <button role="tab" class:on={mdMode === "preview"} aria-selected={mdMode === "preview"} title={`Ver renderizado (${kb.label("markdown.showPreviewToSide")})`} onclick={() => setMd("preview")}>Visualizar</button>
+        <button role="tab" class:on={mdMode === "code"} aria-selected={mdMode === "code"} title={`Ver o código (${kb.label("markdown.showPreviewToSide")})`} onclick={() => setMd("code")}>Código</button>
         <button role="tab" class:on={mdMode === "split"} aria-selected={mdMode === "split"} title="Código e renderizado lado a lado" onclick={() => setMd("split")}>Lado a lado</button>
       </div>
     {/if}
@@ -334,7 +398,10 @@
   .crumbs button { border: 0; background: none; padding: 1px 3px; border-radius: 4px; color: var(--muted); font: inherit; cursor: pointer; }
   .crumbs button:hover { color: var(--text); background: var(--surface-2); }
   .crumbs :global(.sep) { color: var(--faint); flex: none; }
-  .crumbs .cur { display: inline-flex; align-items: center; gap: 5px; color: var(--text-2); padding: 0 3px; }
+  .crumbs .cur { display: inline-flex; align-items: center; gap: 5px; color: var(--text-2); padding: 1px 3px; }
+  .crumbs .sym { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); animation: crumb 0.18s var(--ease-out, ease-out); }
+  .crumbs .sg { font: 700 10.5px/1 var(--mono); width: 12px; text-align: center; }
+  @keyframes crumb { from { opacity: 0; transform: translateX(-3px); } to { opacity: 1; transform: none; } }
   .body { position: relative; flex: 1; min-height: 0; }
   .host { position: absolute; inset: 0; }
   .host.hidden { visibility: hidden; }

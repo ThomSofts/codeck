@@ -457,30 +457,115 @@ class Org:
         return {"id": pr["pullRequestId"],
                 "url": f"{self.url}/{urllib.parse.quote(project)}/_git/{urllib.parse.quote(repo_name)}/pullrequest/{pr['pullRequestId']}"}
 
-    def fetch_work_items(self):
-        """Itens de trabalho atribuídos a mim e abertos (Boards). Sem o escopo Work Items, só não aparece nada."""
-        out = []
+    def _done_states(self, proj):
+        """Estados que encerram o item (categoria Completed/Removed) de cada tipo do projeto — processos personalizados
+        têm nomes próprios ("Code Review (Done)", "Concluído"…), então a lista fixa deixava itens fechados ou abertos errados."""
+        try:
+            types = self.req("GET", f"{proj}/_apis/wit/workitemtypes?{API}").get("value") or []
+        except Exception:  # noqa: BLE001 — sem a lista: os nomes padrão
+            return {"Closed", "Done", "Removed"}
+        out = {s["name"] for t in types for s in (t.get("states") or []) if s.get("category") in ("Completed", "Removed")}
+        return out or {"Closed", "Done", "Removed"}
+
+    def _wiql_ids(self, proj, where, top=1000):
+        q = {"query": "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project" + (f" AND {where}" if where else "")
+                      + " ORDER BY [System.ChangedDate] DESC"}
+        return [w["id"] for w in self.req("POST", f"{proj}/_apis/wit/wiql?$top={int(top)}&{API}", q).get("workItems", [])]
+
+    # escopos da lista: os meus (a leitura de fundo) e "all" — todos os itens dos projetos (sob demanda, na tela)
+    WI_SCOPES = {"assigned": "[System.AssignedTo] = @Me", "created": "[System.CreatedBy] = @Me",
+                 "mentioned": "[System.Id] IN (@RecentMentions)", "all": ""}
+
+    def fetch_work_items(self, scopes=("assigned", "created", "mentioned"), state="open", limit=1000):
+        """Itens de trabalho (Boards) por escopo — atribuídos a mim, criados por mim, que me mencionam ou todos os dos
+        projetos — e estado (open, closed, all). Cada item diz por que veio (`reasons`: os meus escopos que ele
+        cumpre). Sem o escopo Work Items, só não aparece nada. O workitems aceita no máximo 200 ids por chamada."""
+        out, seen = [], set()
+        fields = "System.Id,System.Title,System.State,System.WorkItemType,System.ChangedDate,System.CreatedDate,System.CreatedBy," \
+                 "System.AssignedTo,System.Tags,System.TeamProject,System.CommentCount"
+        # com "todos", os meus escopos também são lidos (só ids, barato): o item mostra se é seu e o filtro funciona
+        wanted = list(dict.fromkeys(list(scopes) + (["assigned", "created", "mentioned"] if "all" in scopes else [])))
         for p in self.projects():
             proj = urllib.parse.quote(p["name"])
-            wiql = {"query": "SELECT [System.Id] FROM WorkItems WHERE [System.AssignedTo] = @Me "
-                             "AND [System.State] NOT IN ('Closed', 'Done', 'Removed', 'Resolved') ORDER BY [System.ChangedDate] DESC"}
-            ids = [w["id"] for w in self.req("POST", f"{proj}/_apis/wit/wiql?$top=100&{API}", wiql).get("workItems", [])][:100]
-            if not ids:
-                continue
-            fields = "System.Id,System.Title,System.State,System.WorkItemType,System.ChangedDate,System.CreatedBy,System.Tags,System.TeamProject"
-            items = self.req("GET", f"_apis/wit/workitems?ids={','.join(map(str, ids))}&fields={fields}&{API}")["value"]
-            for w in items:
-                f = w["fields"]
-                out.append({
-                    "key": f"{self.name}|wi:{w['id']}", "provider": "azure", "org": self.name, "repo": f.get("System.TeamProject"),
-                    "number": w["id"], "title": f.get("System.Title"), "state": f.get("System.State"),
-                    "type": f.get("System.WorkItemType"), "updated": f.get("System.ChangedDate"),
-                    "author": (f.get("System.CreatedBy") or {}).get("displayName", ""),
-                    "labels": [{"name": t.strip(), "color": None} for t in (f.get("System.Tags") or "").split(";") if t.strip()],
-                    "reason": "assigned", "comments": None,
-                    "url": f"{self.url}/{urllib.parse.quote(f.get('System.TeamProject') or p['name'])}/_workitems/edit/{w['id']}",
-                })
+            cond = ""
+            if state in ("open", "closed"):
+                done = "(" + ", ".join("'" + x.replace("'", "''") + "'" for x in sorted(self._done_states(proj))) + ")"
+                cond = f"[System.State] {'NOT IN' if state == 'open' else 'IN'} {done}"
+            reasons = {}
+            for scope in wanted:
+                where = " AND ".join(x for x in (self.WI_SCOPES[scope], cond) if x)
+                try:
+                    ids = self._wiql_ids(proj, where, limit)
+                except RuntimeError:
+                    if scope == "mentioned":   # @RecentMentions não existe no Azure DevOps Server antigo
+                        continue
+                    raise
+                for i in ids:
+                    r = reasons.setdefault(i, [])
+                    if scope != "all":
+                        r.append(scope)
+            ids = list(reasons)
+            for k in range(0, len(ids), 200):
+                chunk = ids[k:k + 200]
+                items = self.req("GET", f"_apis/wit/workitems?ids={','.join(map(str, chunk))}&fields={fields}&errorPolicy=omit&{API}")["value"]
+                for w in items:
+                    if not w or w["id"] in seen:
+                        continue
+                    seen.add(w["id"])
+                    f = w.get("fields") or {}
+                    team = f.get("System.TeamProject") or p["name"]
+                    rs = reasons.get(w["id"]) or []
+                    out.append({
+                        "key": f"{self.name}|wi:{w['id']}", "provider": "azure", "org": self.name, "repo": team,
+                        "number": w["id"], "title": f.get("System.Title"), "state": f.get("System.State"),
+                        "type": f.get("System.WorkItemType"), "updated": f.get("System.ChangedDate"), "created": f.get("System.CreatedDate"),
+                        "author": (f.get("System.CreatedBy") or {}).get("displayName", ""),
+                        "assignees": [{"login": (f.get("System.AssignedTo") or {}).get("displayName", ""), "avatar": None,
+                                       "email": (f.get("System.AssignedTo") or {}).get("uniqueName", "")}] if f.get("System.AssignedTo") else [],
+                        "labels": [{"name": t.strip(), "color": None} for t in (f.get("System.Tags") or "").split(";") if t.strip()],
+                        "reason": rs[0] if rs else "other", "reasons": rs, "comments": f.get("System.CommentCount"),
+                        "url": f"{self.url}/{urllib.parse.quote(team)}/_workitems/edit/{w['id']}",
+                    })
         return out
+
+    def work_item(self, wid):
+        """Um work item inteiro, para ler no app: campos, descrição/critérios (HTML), comentários e o que está ligado."""
+        w = self.req("GET", f"_apis/wit/workitems/{int(wid)}?$expand=relations&{API}")
+        f = w.get("fields") or {}
+        proj = f.get("System.TeamProject") or ""
+        comments = []
+        try:
+            r = self.req("GET", f"{urllib.parse.quote(proj)}/_apis/wit/workItems/{int(wid)}/comments?$top=200&order=asc&api-version=7.0-preview.3")
+            comments = [{"author": (c.get("createdBy") or {}).get("displayName", ""), "created": c.get("createdDate"), "html": c.get("text") or ""}
+                        for c in r.get("comments") or []]
+        except Exception:  # noqa: BLE001 — sem comentários (permissão/servidor antigo): mostra o resto
+            pass
+        person = lambda v: (v or {}).get("displayName", "") if isinstance(v, dict) else (v or "")   # noqa: E731
+        html = [(label, f.get(k)) for label, k in (("Descrição", "System.Description"), ("Passos para reproduzir", "Microsoft.VSTS.TCM.ReproSteps"),
+                                                    ("Critérios de aceite", "Microsoft.VSTS.Common.AcceptanceCriteria"),
+                                                    ("Informações do sistema", "Microsoft.VSTS.TCM.SystemInfo")) if f.get(k)]
+        rels = []
+        for r in w.get("relations") or []:
+            name = (r.get("attributes") or {}).get("name") or r.get("rel")
+            if r.get("rel") == "AttachedFile":
+                rels.append({"kind": "file", "name": (r.get("attributes") or {}).get("name") or "anexo", "url": r.get("url")})
+            elif "workitems/" in (r.get("url") or "").lower():
+                rels.append({"kind": "item", "name": name, "id": int(r["url"].rstrip("/").rsplit("/", 1)[-1])})
+            elif str(r.get("url") or "").startswith("http"):   # vstfs:/// (PR, commit) não abre no navegador
+                rels.append({"kind": "link", "name": name, "url": r.get("url")})
+        return {"provider": "azure", "number": w["id"], "title": f.get("System.Title"), "state": f.get("System.State"),
+                "type": f.get("System.WorkItemType"), "project": proj, "author": person(f.get("System.CreatedBy")),
+                "assignee": person(f.get("System.AssignedTo")), "created": f.get("System.CreatedDate"), "updated": f.get("System.ChangedDate"),
+                "iteration": f.get("System.IterationPath"), "area": f.get("System.AreaPath"), "priority": f.get("Microsoft.VSTS.Common.Priority"),
+                "effort": f.get("Microsoft.VSTS.Scheduling.StoryPoints") or f.get("Microsoft.VSTS.Scheduling.Effort") or f.get("Microsoft.VSTS.Scheduling.RemainingWork"),
+                "labels": [t.strip() for t in (f.get("System.Tags") or "").split(";") if t.strip()],
+                "sections": [{"label": label, "html": v} for label, v in html], "comments": comments, "relations": rels,
+                "url": f"{self.url}/{urllib.parse.quote(proj)}/_workitems/edit/{w['id']}"}
+
+    def comment_work_item(self, wid, text):
+        w = self.req("GET", f"_apis/wit/workitems/{int(wid)}?fields=System.TeamProject&{API}")
+        proj = urllib.parse.quote((w.get("fields") or {}).get("System.TeamProject") or "")
+        self.req("POST", f"{proj}/_apis/wit/workItems/{int(wid)}/comments?api-version=7.0-preview.3", {"text": text})
 
     def comment(self, project, repo_id, pr_id, text):
         """Comentário geral na PR (thread nova, status ativo)."""

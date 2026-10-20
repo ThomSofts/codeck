@@ -519,6 +519,7 @@ class Session:
         # Flutter: a URI da VM (o DevTools conecta nela), o isolate da UI e as extensões de serviço (debug paint…)
         self.vm_uri, self.isolate, self.app_mode = None, None, None
         self.exts, self.ext_state, self.ext_user = set(), {}, {}
+        self.first_err = None       # o 1º erro de compilação (Flutter): vira o motivo se o app não chegar a subir
         self._initialized = threading.Event()
         self._closing = False
 
@@ -544,6 +545,10 @@ class Session:
     def out(self, text, cat="console"):
         if not text:
             return
+        if self.adapter == "dart" and not self.first_err and cat == "stderr":
+            m = re.search(r"^.*(?:^|: )Error: .*$|^Error: .*$", text, re.M)
+            if m:
+                self.first_err = m.group(0).strip()[:400]
         with _lock:
             self.out_seq += 1
             self.output.append({"seq": self.out_seq, "cat": cat, "text": text[:20000]})
@@ -578,7 +583,18 @@ class Session:
             argv = [exe, "--interpreter=vscode"]
         elif self.adapter == "dart":
             flutter = (self.cfg.get("codeck") or {}).get("kind") == "flutter" or self.cfg.get("type") == "flutter" or _is_flutter(cwd)
-            exe = _which("flutter" if flutter else "dart") or _which("dart")
+            # o SDK que o projeto fixou (dart.flutterSdkPath do VS Code / FVM): com o Flutter do PATH, um projeto
+            # fixado numa versão antiga pode nem compilar
+            sdk, warn = launch.flutter_sdk(cwd, self.root)
+            if warn:
+                self.out(warn + "\n", "console")
+            exe = None
+            if sdk:
+                exe = launch.flutter_exe(cwd, self.root, "flutter" if flutter else "dart")
+                exe = exe if os.path.isabs(exe) else None
+                env["PATH"] = os.path.join(sdk, "bin") + os.pathsep + env.get("PATH", "")
+                self.out(f"Flutter do projeto: {sdk}\n", "console")
+            exe = exe or _which("flutter" if flutter else "dart") or _which("dart")
             if not exe:
                 raise LookupError("need-adapter:dart")
             argv = [exe, "debug_adapter"]
@@ -816,6 +832,10 @@ class Session:
         elif ev == "terminated":
             if body.get("restart") is not None and self.adapter == "js":
                 pass
+            if self.adapter == "dart" and not self.vm_uri and (self.first_err or self.exit_code not in (None, 0)):
+                # não chegou a subir (a compilação/o Gradle/o Xcode falhou): o motivo vai para o aviso da tela
+                why = (self.first_err or f"o Flutter saiu com código {self.exit_code}").rstrip(". ")
+                self._end(f"O app não subiu — {why}. Veja o console de depuração.")
             self._end()
             threading.Thread(target=self._shutdown, daemon=True).start()
         elif ev == "breakpoint":

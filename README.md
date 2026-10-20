@@ -64,14 +64,25 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
 - **Editor como o VS Code** (Monaco, o editor do VS Code), que acompanha ao vivo o que o agente edita:
   - barra de atividades: Explorador (⌘⇧E), Busca (⌘⇧F, com maiúsculas/regex), Controle de código-fonte (⌃⇧G, com a
     contagem de alterações), Gerenciador de Soluções (.NET) e Extensões (⌘⇧X);
+  - explorador com **todos os arquivos**, como o VS Code: os ignorados pelo `.gitignore` aparecem apagados e os
+    repositórios dentro do projeto (uma pasta "workspace" que reúne vários repos) entram inteiros; pastas pesadas
+    (`bin/`, `obj/`, `node_modules/`) são lidas ao abrir;
   - explorador com as cores do Git (alterado, novo, apagado, conflito — a pasta herda a cor), guias de indentação,
     pastas compactas, novo arquivo/pasta, renomear (F2), recortar/copiar/colar/duplicar, excluir (vai para a
     Lixeira), copiar caminho, seleção múltipla, teclado ↑↓←→; arraste para mover (⌥ copia) e arraste arquivos e
     pastas do Finder/Explorer para dentro do projeto;
   - controle de código-fonte: alterações preparadas e não preparadas (lista ou árvore), commit (⌘↩, "commit e enviar",
     amend), sincronizar, stash, descartar; clique abre o **diff** (lado a lado ou em linha, editável, ⌘S salva);
-  - abas de visualização (clique simples reaproveita a aba, duplo clique fixa), "fechar outras/à direita/salvas",
-    breadcrumbs, marcas do Git na margem (novo/alterado/apagado), ⌘P com busca aproximada (`arquivo:42`, `:42`);
+  - abas de visualização (clique simples reaproveita a aba, duplo clique fixa), arrastar para reordenar, ⌘⇧T reabre a
+    fechada, "fechar outras/à direita/salvas", breadcrumbs com os símbolos (`arquivo › Classe › método`, clique lista os
+    irmãos), marcas do Git na margem, ⌘P com busca aproximada (`arquivo:42`, `:42`);
+  - as cores do VS Code (Dark/Light Modern) e, com servidor de linguagem, **destaque semântico** (função, tipo,
+    parâmetro, propriedade), ocorrências do símbolo, **lâmpada de correção rápida** (⌘.), **F2 renomeia** em todos os
+    arquivos, referências (⇧F12), implementação, símbolos do arquivo (⌘⇧O), formatar, dicas de parâmetros e **dicas
+    inline** (segurando ⌃⌥);
+  - **atalhos do VS Code** (cerca de 100: editor, abas, painéis, terminal ⌃\`, depuração F5/F10/F11, explorador),
+    todos trocáveis em Configurações → Atalhos (busca por nome/tecla, acordes como ⌘K ⌘F, conflitos, voltar ao padrão);
+    a paleta (⌘⇧P) lista os comandos com `>`;
   - painel **Problemas** (⌘⇧M) com os erros do servidor de linguagem e da compilação, e **barra de status** com branch,
     sincronizar, erros/avisos, linha e coluna, indentação, fim de linha (LF/CRLF) e linguagem — clicáveis;
   - fonte (qualquer uma instalada), ligaduras, tabulação, cursor, colchetes coloridos, formatar ao salvar e salvar
@@ -83,7 +94,8 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
   inicia — o .exe, o site no IIS Express com a URL do projeto, ou `dotnet run`), Shift+F5 para, ⌘⇧B/Ctrl+Shift+B compila,
   Recompilar/Limpar/Restaurar NuGet, e a Lista de Erros vinda da saída do MSBuild. No Windows usa o MSBuild do Visual
   Studio/Build Tools (achado pelo vswhere); no Mac, o `dotnet` (projetos SDK) ou o Mono. "Abrir no Visual Studio" no
-  Gerenciador de Soluções.
+  Gerenciador de Soluções, que mostra os arquivos de cada projeto com as mesmas ações do explorador (criar, renomear,
+  excluir, arrastar, copiar/colar) e esconde `bin/`/`obj/` até "Mostrar todos os arquivos".
 - **Extensões do VS Code**: usa as que você já tem no VS Code/Cursor (e os temas que vêm com o VS Code) e instala novas
   do Open VSX — **temas de cores** (pintam o editor, o terminal e, se quiser, o app inteiro), **temas de ícones**
   (Material Icon Theme, vscode-icons, Seti…), **snippets** e linguagens. Seletor de tema com prévia ao vivo e "usar a
@@ -107,6 +119,8 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
   sync) e a aba **PRs** (pull requests e builds deste repositório, com o detalhe ao lado).
 - **Executar** como no VS Code: configurações do `.vscode/launch.json` (com `compounds`, `preLaunchTask` e `envFile`, lido
   só na hora), scripts do `package.json` (npm/pnpm/yarn/bun), perfis do .NET (`launchSettings.json`), Go, Rust e Compose.
+  Flutter usa o SDK que o projeto fixa, como o VS Code (`dart.flutterSdkPath` do `.vscode/settings.json` ou o FVM:
+  `.fvmrc`, `.fvm/`), avisa se a versão não está instalada e mostra o erro de compilação quando o app não sobe.
 - Painéis laterais redimensionáveis arrastando a borda; tarefas abaixo dos arquivos.
 - **Minimizar** um terminal em execução (o "−" na aba, o clique direito ou ao fechar): o processo continua e ele fica
   numa doca no canto de baixo — clique para voltar, × para parar.
@@ -128,8 +142,12 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
 - **Builds e Actions**: execuções recentes com filtros; no que está rodando, o que acontece de verdade (etapa atual,
   "falhando em…", aguardando aprovação, esperando agente, sem progresso — relido a cada 20 s); no que falhou, o job,
   as anotações e o trecho do log em volta do erro. *Tentar de novo* (só o que falhou), *Rodar de novo* e *Cancelar*.
-- **Issues e tarefas**: issues do GitHub e work items do Azure atribuídos a você ou que mencionam você. "Não
-  acompanhar issues de…" num item desliga só as issues daquele repositório/projeto (PRs, builds e deploys seguem).
+- **Issues e tarefas**: issues do GitHub e work items do Azure — **todas** dos projetos/repositórios ou as suas
+  (atribuídas, criadas por você, que mencionam você), abertas, fechadas ou ambas, com filtro de **responsável**. Em
+  Configurações → Contas → **Pessoas**, a mesma pessoa com nomes diferentes em cada conta ("Leonardo" = *Leonardo
+  Thomaz* na Cifal e *leonardo.thomaz* na Dematec) vira um filtro só (o app sugere juntar). Clicar num item abre a
+  descrição, os campos, os ligados e a discussão (dá para comentar) e **Implementar com IA** no projeto certo, com o
+  conteúdo inteiro no pedido. "Não acompanhar issues de…" num item desliga só as issues daquele repositório/projeto.
 - **Automação**: regras por prioridade — PR (criador → branch → aprovar/arquivar/notificar), deploy (pipeline →
   estágio → branch, com *"só se eu já aprovei a PR de origem"*) e permissão (pipeline → recurso), com prévia do que
   cada regra pegaria.
@@ -167,7 +185,7 @@ fixo, tenta reconectar a cada 10 s e atualiza tudo assim que a rede volta.
   alterações com diff, stage/unstage/descartar, commit/amend, pull/push/fetch, branches locais e remotas, merge,
   cherry-pick, revert, reset, stash, tags e **Criar PR** direto para o GitHub ou o Azure.
 - Abrir no **VS Code/Cursor/Rider**, no **Finder/Explorer**, no terminal ou no navegador.
-- **⌘K / Ctrl+K**: paleta de comandos para ir a qualquer tela, repositório ou ação. Os atalhos aparecem no formato do
+- **⌘⇧P / Ctrl+Shift+P** (ou ⌘K): paleta de comandos para ir a qualquer tela, repositório ou ação — com `>`, os comandos. Os atalhos aparecem no formato do
   sistema (⌘ no macOS, Ctrl no Windows); a lista completa fica em Configurações → Atalhos.
 - **Barra lateral recolhível** (⌘\ / Ctrl+\): só ícones, com os submenus em popover.
 

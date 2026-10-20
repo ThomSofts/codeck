@@ -311,6 +311,68 @@
     if (!txt($(".tab.on")).includes("util.ts")) throw new Error("⌘P não abriu util.ts (aba: " + txt($(".tab.on")) + ")");
     return "a.txt em M, diff aberto pelo controle de código-fonte, ⌘P abriu util.ts";
   });
+  await step("Explorador: mostra os ignorados e o repositório aninhado (e abre)", async () => {
+    const ign = await waitFor(() => byText(".ft .n.file.ign", "workspace.local.json"), 8000).catch(() => { throw new Error("workspace.local.json (ignorado) não apareceu apagado"); });
+    click(await waitFor(() => $$(".ft .n:not(.file)").find(e => txt(e) === "nested-repo"), 5000));
+    click(await waitFor(() => byText(".ft .n.file", "nested.txt"), 5000)); await sleep(1500);
+    if (!txt($(".tab.on")).includes("nested.txt")) throw new Error("não abriu o arquivo do repositório aninhado (aba: " + txt($(".tab.on")) + ")");
+    await waitFor(() => M()?.editor.getModels().some(m => m.uri.path.endsWith("nested-repo/nested.txt") && m.getValue().includes("aninhado")), 6000);
+    // pasta ignorada inteira (bin/) é lida só ao abrir
+    click(await waitFor(() => $$(".ft .n:not(.file)").find(e => txt(e) === "bin"), 5000));
+    await waitFor(() => byText(".ft .n.file.ign", "out.txt"), 6000).catch(() => { throw new Error("bin/ não listou out.txt ao abrir"); });
+    click($$(".ft .n:not(.file)").find(e => txt(e) === "bin")); click($$(".ft .n:not(.file)").find(e => txt(e) === "nested-repo"));
+    await shot("06c-ignorados");
+    return `${txt(ign)} apagado; nested-repo/nested.txt abriu; bin/ sob demanda`;
+  });
+  await step("Gerenciador de Soluções: projeto do repositório aninhado, abrir e criar arquivo", async () => {
+    click(await waitFor(".abar button[title^='Gerenciador']", 8000)); await sleep(800);
+    const proj = await waitFor(() => byText(".sv .proj", "App"), 8000);
+    if (!$$(".sv .proj").some(p => p.classList.contains("start") || true)) throw new Error("sem projeto");
+    if (!$(".sv .ft .n") ) click(proj);
+    const prog = await waitFor(() => byText(".sv .ft .n.file", "Program.cs"), 6000);
+    if ($$(".sv .ft .n").some(e => txt(e) === "bin")) throw new Error("bin/ apareceu no projeto (deveria ficar escondido)");
+    click(prog); await sleep(1500);
+    if (!txt($(".tab.on")).includes("Program.cs")) throw new Error("Program.cs não abriu (aba: " + txt($(".tab.on")) + ")");
+    const r = proj.getBoundingClientRect();
+    proj.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.x + 20, clientY: r.y + 8 }));
+    click(await waitFor(() => byText(".items .it", "Novo arquivo"), 3000)); await sleep(400);
+    const inp = await waitFor(".sv input.ren", 3000); inp.focus();
+    await type("Novo.cs"); await press("Enter"); await sleep(1500);
+    const f = await api("ws/file?repoId=" + apiRepo.id + "&path=nested-repo/App/Novo.cs");
+    if (typeof f.text !== "string") throw new Error("Novo.cs não foi criado no disco");
+    await waitFor(() => byText(".sv .ft .n.file", "Novo.cs"), 5000);
+    await shot("06d-solucao");
+    click($(".abar button[title^='Explorador']")); await sleep(500);
+    return "App (repositório aninhado) com Program.cs aberto; Novo.cs criado pelo clique direito no projeto";
+  });
+  await step("Atalhos: personalizar (Configurações) e usar; paleta com comandos (⌘⇧P >)", async () => {
+    try { return await shortcutsStep(); } finally { if (!location.hash.startsWith("#/work/")) await go("#/work/" + apiRepo.id, 1200); }
+  });
+  async function shortcutsStep() {
+    await go("#/settings/shortcuts", 900);
+    const search = await waitFor(".kb .flt input", 5000); search.focus();
+    await type("Mostrar as Extens"); await sleep(400);
+    const row = await waitFor(() => byText(".kb .row", "Mostrar as Extensões"), 4000);
+    click(row.querySelector("button[title='Adicionar um atalho']")); await sleep(300);
+    await press("9", MOD + ",alt"); await sleep(300);
+    await press("Enter"); await sleep(600);
+    if (!/9/.test(txt(byText(".kb .row", "Mostrar as Extensões")))) throw new Error("o atalho novo não apareceu na lista: " + txt(byText(".kb .row", "Mostrar as Extensões")));
+    await go("#/work/" + apiRepo.id, 1500);
+    document.body.focus();
+    await press("9", MOD + ",alt"); await sleep(600);
+    if (!$(".abar button.on[title^='Extensões']")) throw new Error("o atalho personalizado não abriu as Extensões");
+    click($(".abar button[title^='Explorador']")); await sleep(300);
+    await press("p", MOD + ",shift"); await sleep(500);
+    const pi = await waitFor(".pal input", 3000); pi.focus();
+    await type(">format"); await sleep(500);
+    const it = byText(".pal .it", "Formatar") || byText(".pal .it", "format");
+    await press("Escape");
+    if (!it) throw new Error("a paleta não listou os comandos com >");
+    await go("#/settings/shortcuts", 700);
+    click(await waitFor(() => byText(".kb .row", "Mostrar as Extensões")?.querySelector("button[title^='Voltar ao padrão']"), 4000));
+    await go("#/work/" + apiRepo.id, 1200);
+    return "⌘⌥9 → Extensões; paleta com > lista os comandos; padrão restaurado";
+  }
   await step("Editor: servidor de linguagem (erro, hover e F12)", async () => {
     if (!CTX.lsp) return "pulado — sem servidor instalado no teste";
     click(byText(".ft .n.file", "main.ts")); await sleep(1000);

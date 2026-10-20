@@ -19,7 +19,7 @@
   import ProviderIcon from "../components/ProviderIcon.svelte";
   import AgentIcon from "../components/work/AgentIcon.svelte";
   import AgentPanel from "../components/work/AgentPanel.svelte";
-  import Editor, { dirty, forget, keyOf } from "../components/work/Editor.svelte";
+  import Editor, { dirty, docs, forget, keyOf, saveDoc } from "../components/work/Editor.svelte";
   import FileTree, { type FsChange } from "../components/work/FileTree.svelte";
   import FileIcon from "../components/work/FileIcon.svelte";
   import DiffEditor from "../components/work/DiffEditor.svelte";
@@ -50,7 +50,8 @@
   import RepoDetail from "./RepoDetail.svelte";
   import RepoActivity from "../components/work/RepoActivity.svelte";
   import AskAi from "../components/work/AskAi.svelte";
-  import { kbd, matches } from "../lib/keys";
+  import { kbd } from "../lib/keys";
+  import { kb } from "../lib/keybindings.svelte";
   import type { Group } from "../lib/work.svelte";
 
   // aba de arquivo (preview = aba de visualização, em itálico, reaproveitada pelo próximo clique — como no VS Code) ou de diff
@@ -293,11 +294,14 @@
       drop(t.term!.id);
       await work.load();
     } else if (t.kind === "diff") {
+      closedTabs.push({ repoId: p!.id, scope: v.scope || null, file: t.file! });
       v.files = v.files.filter(f => f.key !== t.key);
     } else if (t.kind === "devtools") {
       v.devtools = (v.devtools || []).filter(d => d.scope !== (v!.scope || null));
     } else {
       if (dirty[t.key] && !(await ui.ask({ title: `${t.file!.path.split("/").pop()} tem alterações não salvas`, message: "Fechar e perder as alterações?", confirm: "Fechar sem salvar", danger: true }))) return;
+      closedTabs.push({ repoId: p!.id, scope: v.scope || null, file: t.file! });
+      if (closedTabs.length > 30) closedTabs.shift();
       v.files = v.files.filter(f => f.key !== t.key);
       forgetUnused(t.key, t.file!.path);
     }
@@ -369,6 +373,23 @@
       if (v.recent) v.recent = v.recent.flatMap(r => (!within(r, c.from) ? [r] : c.to === null ? [] : [c.to + r.slice(c.from.length)]));
     }
   }
+  // abas: arrastar reordena (como no VS Code); a ativa fica sempre à vista
+  let tabsEl: HTMLDivElement | undefined = $state();
+  let tabDrag = $state<string | null>(null);
+  let tabDrop = $state<string | null>(null);
+  function moveTab(target: string) {
+    const from = tabDrag;
+    tabDrag = tabDrop = null;
+    if (!v || !from || from === target) return;
+    const keys = tabs.map(t => t.key).filter(k => k !== from);
+    const at = keys.indexOf(target), fi = tabs.findIndex(t => t.key === from), ti = tabs.findIndex(t => t.key === target);
+    keys.splice(fi < ti ? at + 1 : at, 0, from);
+    v.order = [...keys, ...v.order.filter(k => !keys.includes(k))];
+  }
+  $effect(() => {
+    const k = activeTab?.key;
+    if (k) requestAnimationFrame(() => tabsEl?.querySelector(`[data-tab="${CSS.escape(k)}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" }));
+  });
   function pinTab(key: string) {
     const f = v?.files.find(x => x.key === key);
     if (f?.preview) f.preview = false;
@@ -413,28 +434,98 @@
     return ss.includes("needs-you") ? "warn" : ss.includes("working") ? "accent" : ss.includes("done") ? "good" : t.terms.some(x => x.alive) ? "muted" : "off";
   };
 
-  // ------------------------------------------------------------ atalhos
-  // atalhos: ⌘ no macOS, Ctrl no Windows (lib/keys)
-  function onKey(e: KeyboardEvent) {
-    if (router.view !== "work" || !p || !v) return;
-    const focusFt = () => setTimeout(() => document.querySelector<HTMLInputElement>(".work .side input")?.focus(), 30);
-    const side = (x: LeftView) => { e.preventDefault(); if (v!.left === x && leftOpen) v!.leftOpen = false; else { v!.left = x; v!.leftOpen = true; } };
-    if (matches(e, "mod+p")) { e.preventDefault(); quickOpen = true; }
-    else if (matches(e, "mod+shift+f")) { e.preventDefault(); v.left = "search"; v.leftOpen = true; focusFt(); }
-    else if (matches(e, "mod+shift+e")) side("files");
-    else if (matches(e, "ctrl+shift+g") || matches(e, "mod+shift+g")) side("scm");
-    else if (matches(e, "mod+shift+x")) side("ext");
-    else if (matches(e, "mod+shift+d")) side("debug");
-    else if (matches(e, "mod+shift+m")) { e.preventDefault(); v.panel = !v.panel; }
-    else if (matches(e, "mod+b")) { e.preventDefault(); v.leftOpen = !leftOpen; }
-    else if (matches(e, "mod+t")) { e.preventDefault(); newTerm(); }
-    else if (matches(e, "mod+shift+i")) { e.preventDefault(); ask(); }
-    else if (matches(e, "mod+w") && activeTab && (activeTab.kind === "term" || activeTab.kind === "file" || activeTab.kind === "diff")) { e.preventDefault(); closeTab(activeTab); }
-    else {
-      const n = "123456789".split("").find(d => matches(e, "mod+" + d));
-      if (n && work.projects[+n - 1]) { e.preventDefault(); go("/work/" + work.projects[+n - 1].id, "soft"); }
-    }
+  // ------------------------------------------------------------ atalhos (lib/keybindings: os do VS Code, personalizáveis)
+  let fileTree: FileTree | undefined = $state();
+  // abas de arquivo fechadas, para o ⌘⇧T reabrir (no mesmo projeto e escopo)
+  const closedTabs: { repoId: string; scope: string | null; file: FileTab }[] = [];
+  // a última aba que não é terminal: o ⌃` vai para o terminal e volta para ela
+  let lastNonTerm: string | null = null;
+  $effect(() => { const t = activeTab; if (t && t.kind !== "term") lastNonTerm = t.key; });
+  async function saveAll() {
+    const list = [...docs.entries()].filter(([k]) => dirty[k]);
+    let n = 0;
+    for (const [, d] of list) { try { await saveDoc(d); n++; } catch (e) { ui.error(e); } }
+    if (gitRepo) scm.touch(gitRepo);
+    ui.toast(n ? `${n} arquivo${n === 1 ? "" : "s"} salvo${n === 1 ? "" : "s"}` : "Nada para salvar");
   }
+  $effect(() => {
+    const here = () => router.view === "work" && !board && !!p && !!v;
+    const side = (x: LeftView) => () => { if (!here()) return false; if (v!.left === x && leftOpen) v!.leftOpen = false; else { v!.left = x; v!.leftOpen = true; } };
+    const fileTabs = () => tabs.filter(t => t.kind === "file" || t.kind === "diff");
+    const step = (d: number) => () => {
+      if (!here() || tabs.length < 2) return false;
+      const i = tabs.findIndex(t => t.key === activeTab?.key);
+      focusTab(tabs[(i + d + tabs.length) % tabs.length].key);
+    };
+    const offs = [
+      kb.on("workbench.action.quickOpen", () => { if (!here()) return false; quickOpen = true; }),
+      kb.on("workbench.view.explorer", side("files")),
+      kb.on("workbench.view.search", () => {
+        if (!here()) return false;
+        v!.left = "search"; v!.leftOpen = true;
+        setTimeout(() => document.querySelector<HTMLInputElement>(".work .side input")?.focus(), 30);
+      }),
+      kb.on("workbench.view.scm", side("scm")),
+      kb.on("workbench.view.debug", side("debug")),
+      kb.on("workbench.view.extensions", side("ext")),
+      kb.on("codeck.view.solution", () => (here() && hasSln ? side("solution")() : false)),
+      kb.on("workbench.actions.view.problems", () => {
+        if (!here()) return false;
+        if (v!.panel && (v!.panelTab || "problems") === "problems") v!.panel = false; else { v!.panel = true; v!.panelTab = "problems"; }
+      }),
+      kb.on("workbench.action.togglePanel", () => { if (!here()) return false; v!.panel = !v!.panel; }),
+      kb.on("workbench.action.toggleSidebarVisibility", () => { if (!here()) return false; v!.leftOpen = !leftOpen; }),
+      kb.on("workbench.action.toggleAuxiliaryBar", () => { if (!here()) return false; v!.right = !v!.right; }),
+      kb.on("workbench.action.terminal.new", () => { if (!here()) return false; newTerm(); }),
+      kb.on("workbench.action.terminal.toggleTerminal", () => {
+        if (!here()) return false;
+        if (activeTab?.kind === "term") { if (lastNonTerm && tabs.some(t => t.key === lastNonTerm)) focusTab(lastNonTerm); return; }
+        const t = [...scopeTerms].reverse().find(x => x.kind === "shell" && x.alive) || [...scopeTerms].reverse().find(x => x.kind !== "agent" && x.alive);
+        if (!t) return void newTerm();
+        if (v!.hidden?.includes(t.id)) restore(t.id); else focusTab("t:" + t.id);
+      }),
+      kb.on("codeck.askAi", () => { if (!here()) return false; ask(); }),
+      kb.on("workbench.action.closeActiveEditor", () => {
+        if (!here() || !activeTab || !["term", "file", "diff", "devtools"].includes(activeTab.kind)) return false;
+        closeTab(activeTab);
+      }),
+      kb.on("workbench.action.closeAllEditors", () => { if (!here()) return false; closeMany(fileTabs()); }),
+      kb.on("workbench.action.closeOtherEditors", () => { if (!here() || !activeTab) return false; closeMany(fileTabs().filter(t => t.key !== activeTab!.key)); }),
+      kb.on("workbench.action.reopenClosedEditor", () => {
+        if (!here()) return false;
+        let i = closedTabs.length - 1;
+        while (i >= 0 && !(closedTabs[i].repoId === p!.id && closedTabs[i].scope === (v!.scope || null))) i--;
+        if (i < 0) return;
+        const [{ file: f }] = closedTabs.splice(i, 1);
+        if (f.k === "diff") openDiff(f.path, !!f.staged); else openFile(f.path, f.line, { preview: false });
+      }),
+      kb.on("workbench.action.nextEditor", step(1)),
+      kb.on("workbench.action.previousEditor", step(-1)),
+      ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => kb.on(`workbench.action.openEditorAtIndex${n}`, () => {
+        if (!here() || !tabs[n - 1]) return false;
+        focusTab(tabs[n - 1].key);
+      })),
+      ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => kb.on(`codeck.openProject${n}`, () => {
+        if (router.view !== "work" || !work.projects[n - 1]) return false;
+        go("/work/" + work.projects[n - 1].id, "soft");
+      })),
+      kb.on("workbench.action.splitEditor", () => {
+        if (!here() || !activeTab) return false;
+        if (v!.split) { v!.split = null; return; }
+        const other = tabs.find(x => x.key !== activeTab!.key);
+        if (!other) return false;
+        v!.split = activeTab.key; v!.active = other.key;
+      }),
+      kb.on("workbench.action.files.newUntitledFile", () => {
+        if (!here()) return false;
+        v!.left = "files"; v!.leftOpen = true; v!.mode = "code";
+        setTimeout(() => fileTree?.newIn("file"), 40);
+      }),
+      kb.on("workbench.files.action.showActiveFileInExplorer", () => { if (!here() || !activeTab?.file) return false; reveal(activeTab.file.path); }),
+      kb.on("workbench.action.files.saveAll", () => { if (!here()) return false; saveAll(); }),
+    ];
+    return () => { for (const off of offs) off(); };
+  });
 
   // ------------------------------------------------------------ grupos de abas
   type Run = { key: string; group: Group | null; projects: Project[] };
@@ -532,7 +623,7 @@
                   {/each}
                 </div>
               {/if}
-              <button class="askcta" onclick={ask}><Sparkles size={18} /><span><b>Pedir à IA</b><span class="tiny muted">escreva o pedido no painel — Enter manda direto para o agente da conta do projeto</span></span><span class="kbd">{kbd("mod+shift+i")}</span></button>
+              <button class="askcta" onclick={ask}><Sparkles size={18} /><span><b>Pedir à IA</b><span class="tiny muted">escreva o pedido no painel — Enter manda direto para o agente da conta do projeto</span></span><span class="kbd">{kb.label("codeck.askAi")}</span></button>
               <div class="cards">
                 {#each work.ai.filter(a => a.installed).slice(0, 6) as a (a.id)}
                   <button class="cardbtn" onclick={() => newAgent(a.id)}><AgentIcon provider={a.provider} size={20} /><span><b>{a.name}</b><span class="tiny muted">{a.label}{a.group ? " · " + a.group : ""}{a.email ? " · " + a.email : ""}</span></span></button>
@@ -540,7 +631,7 @@
                 <button class="cardbtn" onclick={() => newTerm()}><SquareTerminal size={20} /><span><b>Terminal</b><span class="tiny muted">shell na pasta {task ? "da tarefa" : "do projeto"}</span></span></button>
                 {#if !task}<button class="cardbtn accent" onclick={() => (newTask = {})}><Plus size={20} /><span><b>Nova tarefa</b><span class="tiny muted">branch + worktree + agente</span></span></button>{/if}
               </div>
-              <p class="tiny muted keys"><span class="kbd">{kbd("mod+p")}</span> abrir arquivo · <span class="kbd">{kbd("mod+shift+f")}</span> buscar · <span class="kbd">{kbd("mod+t")}</span> terminal · <span class="kbd">{kbd("mod+w")}</span> fechar aba</p>
+              <p class="tiny muted keys"><span class="kbd">{kb.label("workbench.action.quickOpen")}</span> abrir arquivo · <span class="kbd">{kb.label("workbench.view.search")}</span> buscar · <span class="kbd">{kb.label("workbench.action.terminal.new")}</span> terminal · <span class="kbd">{kb.label("workbench.action.closeActiveEditor")}</span> fechar aba</p>
             </div>
           {/if}
 {/snippet}
@@ -562,7 +653,6 @@
   </div>
 {/snippet}
 
-<svelte:window onkeydown={onKey} />
 
 <div class="work">
   <!-- abas de projeto (em grupos, como no navegador) -->
@@ -608,26 +698,28 @@
         <div class="hsplit r" role="separator" aria-orientation="vertical" title="Arraste para redimensionar" onpointerdown={(e) => drag(e, "left")}></div>
         <!-- barra de atividades (como a do VS Code) -->
         <nav class="abar" aria-label="Visões do projeto">
-          <button class:on={v.left === "files"} title={`Explorador (${kbd("mod+shift+e")})`} onclick={() => (v!.left = "files")}><Files size={18} /></button>
-          <button class:on={v.left === "search"} title={`Buscar (${kbd("mod+shift+f")})`} onclick={() => (v!.left = "search")}><Search size={18} /></button>
-          <button class:on={v.left === "scm"} title={`Controle de código-fonte (${kbd("ctrl+shift+g")})`} onclick={() => (v!.left = "scm")}><GitBranch size={18} />{#if scmCount}<span class="ab-n">{scmCount > 99 ? "99+" : scmCount}</span>{/if}</button>
+          <button class:on={v.left === "files"} title={`Explorador (${kb.label("workbench.view.explorer")})`} onclick={() => (v!.left = "files")}><Files size={18} /></button>
+          <button class:on={v.left === "search"} title={`Buscar (${kb.label("workbench.view.search")})`} onclick={() => (v!.left = "search")}><Search size={18} /></button>
+          <button class:on={v.left === "scm"} title={`Controle de código-fonte (${kb.label("workbench.view.scm")})`} onclick={() => (v!.left = "scm")}><GitBranch size={18} />{#if scmCount}<span class="ab-n">{scmCount > 99 ? "99+" : scmCount}</span>{/if}</button>
           {#if hasSln}<button class:on={v.left === "solution"} title="Gerenciador de Soluções (.NET)" onclick={() => (v!.left = "solution")}><Boxes size={18} /></button>{/if}
-          <button class:on={v.left === "debug"} class:live={dbgLive.length > 0} title={`Executar e depurar (${kbd("mod+shift+d")})`} onclick={() => (v!.left = "debug")}><Bug size={18} />{#if dbgLive.length}<span class="ab-n live">{dbgLive.length}</span>{/if}</button>
-          <button class:on={v.left === "ext"} title={`Extensões (${kbd("mod+shift+x")})`} onclick={() => (v!.left = "ext")}><Blocks size={18} /></button>
+          <button class:on={v.left === "debug"} class:live={dbgLive.length > 0} title={`Executar e depurar (${kb.label("workbench.view.debug")})`} onclick={() => (v!.left = "debug")}><Bug size={18} />{#if dbgLive.length}<span class="ab-n live">{dbgLive.length}</span>{/if}</button>
+          <button class:on={v.left === "ext"} title={`Extensões (${kb.label("workbench.view.extensions")})`} onclick={() => (v!.left = "ext")}><Blocks size={18} /></button>
           <span class="ab-grow"></span>
           <button title="Ajustes do projeto" onclick={() => (settingsOpen = true)}><Settings2 size={17} /></button>
         </nav>
         <div class="side">
           <div class="tree">
             {#if v.left === "files" || v.left === "search"}
-              {#key p.id + (v.scope || "")}<FileTree repoId={p.id} taskId={v.scope} {gitRepo} mode={v.left} onopen={openFile} ondiff={(f) => openDiff(f, false)} onfs={fsChanged}
+              {#key p.id + (v.scope || "")}<FileTree bind:this={fileTree} repoId={p.id} taskId={v.scope} {gitRepo} mode={v.left} onopen={openFile} ondiff={(f) => openDiff(f, false)} onfs={fsChanged}
                 onterminal={(dir) => newTerm(dir ? `cd ${JSON.stringify(dir)}` : undefined)} active={revealDir || activeTab?.file?.path || null} />{/key}
             {:else if v.left === "scm"}
               {#key gitRepo}<ScmView {gitRepo} ondiff={openDiff} onopen={(f) => openFile(f, undefined, { preview: false })} />{/key}
             {:else if v.left === "debug"}
               {#key p.id + (v.scope || "")}<DebugView repoId={p.id} taskId={v.scope} onopen={(f, ln) => openFile(f, ln, { preview: false })} onconfigs={() => (launchOpen = true)} />{/key}
             {:else if v.left === "solution"}
-              {#key p.id + (v.scope || "")}<SolutionView repoId={p.id} taskId={v.scope} active={activeTab?.file?.path || null} onopen={openFile} onterm={(id) => { work.load().then(() => focusTab("t:" + id)); }} />{/key}
+              {#key p.id + (v.scope || "")}<SolutionView repoId={p.id} taskId={v.scope} {gitRepo} root={task?.path || p.path} active={activeTab?.file?.path || null} onopen={openFile}
+                onterm={(id) => { work.load().then(() => focusTab("t:" + id)); }} ondiff={(f) => openDiff(f, false)} onfs={fsChanged}
+                onterminal={(dir) => newTerm(dir ? `cd ${JSON.stringify(dir)}` : undefined)} />{/key}
             {:else}
               <ExtensionsView />
             {/if}
@@ -671,18 +763,23 @@
           <div class="tact">
             {#if hasSln}<DotnetBar repoId={p.id} taskId={v.scope} onterm={(id) => { work.load().then(() => focusTab("t:" + id)); }} />{/if}
             <RunBar repoId={p.id} taskId={v.scope} onconfigs={() => (launchOpen = true)} />
-            <button class="btn sm ask" title={`Pedir à IA (${kbd("mod+shift+i")})`} onclick={ask}><Sparkles size={14} /> <span class="lbl l-ask">Pedir à IA</span></button>
+            <button class="btn sm ask" title={`Pedir à IA (${kb.label("codeck.askAi")})`} onclick={ask}><Sparkles size={14} /> <span class="lbl l-ask">Pedir à IA</span></button>
             <Menu items={agentItems} align="right">{#snippet trigger()}<span class="btn sm"><Bot size={14} /> <span class="lbl l-ag">Agente</span> <ChevronDown size={12} /></span>{/snippet}</Menu>
-            <button class="btn sm ghost" title={`Novo terminal (${kbd("mod+t")})`} onclick={() => newTerm()}><SquareTerminal size={14} /></button>
+            <button class="btn sm ghost" title={`Novo terminal (${kb.label("workbench.action.terminal.new")})`} onclick={() => newTerm()}><SquareTerminal size={14} /></button>
             <button class="btn sm ghost icon" title="Painel do agente" onclick={() => (v.right = !v.right)}><PanelRight size={15} /></button>
           </div>
         </div>
         {#if tabs.length}
-          <div class="tl" class:other={mode !== "code"} role="tablist" aria-label="Abas abertas">
+          <div class="tl" class:other={mode !== "code"} role="tablist" aria-label="Abas abertas" bind:this={tabsEl}
+            onwheel={(e) => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && tabsEl) { tabsEl.scrollLeft += e.deltaY; e.preventDefault(); } }}>
             {#each tabs as t (t.key)}
               {@const s = t.kind === "term" ? work.session(t.term) : null}
               {@const fd = t.file ? decor.get(t.file.path) : null}
               <div class="tab {fd?.tone || ''}" class:on={activeTab?.key === t.key} class:dead={t.kind === "term" && !t.term?.alive} class:preview={!!t.file?.preview} role="tab" tabindex="0" aria-selected={activeTab?.key === t.key}
+                class:isdirty={t.kind === "file" && dirty[t.key]} class:dropl={tabDrop === t.key} class:dragging={tabDrag === t.key} data-tab={t.key}
+                draggable={!t.key.startsWith("r:")} ondragstart={(e) => { tabDrag = t.key; e.dataTransfer?.setData("text/x-codeck-tab", t.key); if (e.dataTransfer) e.dataTransfer.effectAllowed = "move"; }}
+                ondragend={() => (tabDrag = tabDrop = null)} ondragover={(e) => { if (tabDrag && tabDrag !== t.key) { e.preventDefault(); tabDrop = t.key; } }}
+                ondragleave={() => tabDrop === t.key && (tabDrop = null)} ondrop={(e) => { e.preventDefault(); moveTab(t.key); }}
                 onclick={() => focusTab(t.key)} ondblclick={() => t.file && pinTab(t.key)} onkeydown={(e) => e.key === "Enter" && focusTab(t.key)} onauxclick={(e) => e.button === 1 && closeTab(t)}
                 oncontextmenu={(e) => ui.contextMenu(e, [
                   { label: "Abrir ao lado", icon: Columns2, onclick: () => { if (v) { if (v.active === t.key || activeTab?.key === t.key) v.active = tabs.find(x => x.key !== t.key)?.key || null; v.split = t.key; } }, disabled: tabs.length < 2 },
@@ -704,9 +801,9 @@
                 <span class="ell tname">{t.kind === "term" ? t.term!.title : t.kind === "review" ? "Revisão" : t.kind === "devtools" ? "DevTools" : t.kind === "git" ? "Git" : t.kind === "prs" ? `PRs${prCount ? " · " + prCount : ""}` : t.file!.path.split("/").pop() + (t.kind === "diff" ? (t.file!.staged ? " (preparado)" : " (alterações)") : "")}</span>
                 {#if fd && t.kind === "file"}<span class="tl-g" title={fd.label}>{fd.letter}</span>{/if}
                 {#if s}<span class="sdot {STATUS[s.status]?.[1]}" class:pulse={s.status === "working"} title={STATUS[s.status]?.[0]}></span>{/if}
-                {#if t.kind === "file" && dirty[t.key]}<span class="dirty" title="não salvo"></span>{/if}
+                {#if t.kind === "file" && dirty[t.key]}<span class="dirty" title="não salvo — passe o mouse para fechar"></span>{/if}
                 {#if t.kind === "term" && t.term?.alive}<button class="x" title="Minimizar — continua rodando no canto" onclick={(e) => { e.stopPropagation(); minimize(t.term!.id); }}><Minus size={11} /></button>{/if}
-                {#if t.kind === "term" || t.kind === "file" || t.kind === "diff" || t.kind === "devtools"}<button class="x" title={`Fechar (${kbd("mod+w")})`} onclick={(e) => { e.stopPropagation(); closeTab(t); }}><X size={11} /></button>{/if}
+                {#if t.kind === "term" || t.kind === "file" || t.kind === "diff" || t.kind === "devtools"}<button class="x" title={`Fechar (${kb.label("workbench.action.closeActiveEditor")})`} onclick={(e) => { e.stopPropagation(); closeTab(t); }}><X size={11} /></button>{/if}
               </div>
             {/each}
           </div>
@@ -908,6 +1005,15 @@
   .tab.on::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--accent); }
   .tab.dead { opacity: 0.55; }
   .tab.preview .tname { font-style: italic; }
+  .tab { animation: tabin 0.16s var(--ease-out, ease-out); }
+  @keyframes tabin { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+  .tab.dragging { opacity: 0.45; }
+  .tab.dropl { box-shadow: inset 2px 0 0 var(--accent); }
+  /* não salvo: o ponto fica no lugar do ✕ e vira ✕ ao passar o mouse, como no VS Code */
+  .tab.isdirty .dirty { order: 10; margin: 0 5.5px; }
+  .tab.isdirty .x:last-child { display: none; }
+  .tab.isdirty:hover .dirty { display: none; }
+  .tab.isdirty:hover .x:last-child { display: grid; opacity: 1; }
   .tab.mod .tname, .tab.mod .tl-g { color: #e2c08d; } .tab.add .tname, .tab.add .tl-g { color: #73c991; } .tab.del .tname, .tab.del .tl-g { color: #e5717d; }
   :global([data-theme="light"]) .tab.mod .tname, :global([data-theme="light"]) .tab.mod .tl-g { color: #a26a00; }
   :global([data-theme="light"]) .tab.add .tname, :global([data-theme="light"]) .tab.add .tl-g { color: #2f8a4a; }

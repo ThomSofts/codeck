@@ -162,6 +162,10 @@ def save_prefs(body):
                 ui[k] = v
             elif isinstance(v, list) and len(v) <= 200 and all(isinstance(x, (str, int, float, bool)) for x in v):
                 ui[k] = v
+            elif isinstance(v, dict) and len(v) <= 400 and all(   # atalhos personalizados: {comando: [atalhos]}
+                    isinstance(a, str) and len(a) <= 120 and isinstance(b, list) and len(b) <= 8
+                    and all(isinstance(x, str) and len(x) <= 60 for x in b) for a, b in v.items()):
+                ui[k] = v
         cfg["ui"] = dict(list(ui.items())[-UI_MAX:])
     save_json(CONFIG_FILE, cfg, private=True)
     ctx.config = cfg

@@ -38,8 +38,8 @@ export interface Release {
 
 export interface Issue {
   key: string; provider: Provider; org: string; repo: string; number: number; title: string; state: string; type: string;
-  updated: string; author: string; labels: { name: string; color: string | null }[]; assignees?: { login: string; avatar: string }[];
-  comments: number | null; reason: string; url: string; repoKey?: string | null; account?: string | null;
+  updated: string; author: string; labels: { name: string; color: string | null }[]; assignees?: { login: string; avatar: string | null; email?: string }[];
+  comments: number | null; reason: string; reasons?: string[]; url: string; repoKey?: string | null; account?: string | null;
   /** repositório (ou projeto do Azure, para work items) que liga/desliga este item no acompanhamento */
   scopeKey?: string | null;
 }

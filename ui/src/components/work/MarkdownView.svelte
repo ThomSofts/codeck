@@ -1,7 +1,7 @@
 <script lang="ts">
   // Markdown renderizado (seguro: DOMPurify). Checkboxes de lista de tarefas são clicáveis — a N-ésima checkbox
   // corresponde à N-ésima linha de tarefa do código (scanTasks). Roteiros de teste: marque e ele salva.
-  import { kbd, matches } from "../../lib/keys";
+  import { kb } from "../../lib/keybindings.svelte";
   import { renderMarkdown, scanTasks, slug } from "./md/render";
 
   let { text, path, ontoggle, onopen, onkey }:
@@ -80,12 +80,12 @@
     }
   }
   function key(e: KeyboardEvent) {
-    if (matches(e, "mod+shift+v")) { e.preventDefault(); onkey?.(e); }
+    if (kb.is(e, "markdown.showPreviewToSide")) { e.preventDefault(); onkey?.(e); }
   }
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-<div class="mdv" bind:this={scroller} tabindex="0" onkeydown={key} role="document" title={`${kbd("mod+shift+v")} alterna para o código`}>
+<div class="mdv" bind:this={scroller} tabindex="0" onkeydown={key} role="document" title={`${kb.label("markdown.showPreviewToSide")} alterna para o código`}>
   {#if tasks.length}
     <div class="prog" class:all={done === tasks.length}>
       <span><b>{done}</b> de {tasks.length} concluído{tasks.length > 1 ? "s" : ""}</span>

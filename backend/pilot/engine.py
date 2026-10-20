@@ -478,6 +478,35 @@ def poll_issues():
         state.update(issues=out, issueErrors=errors, lastIssuePoll=now_iso())
 
 
+_browse = {}   # (escopo, estado) → (quando, resultado): a tela troca de filtro sem refazer todas as consultas
+
+
+def browse_issues(scope="all", state="open", fresh=False):
+    """Issues e work items sob demanda, para a tela (além dos meus abertos, que a leitura de fundo mantém): todos os
+    dos projetos/repositórios ou um escopo meu, abertos, fechados ou ambos."""
+    import time
+    if scope not in ("all", "mine", "assigned", "created", "mentioned") or state not in ("open", "closed", "all"):
+        raise ValueError("Filtro inválido")
+    k = (scope, state)
+    hit = _browse.get(k)
+    if hit and not fresh and time.time() - hit[0] < 120:
+        return hit[1]
+    scopes = ("all",) if scope == "all" else ("assigned", "created", "mentioned") if scope == "mine" else (scope,)
+    out, errors = [], {}
+    for src_name, acc in _sources():
+        try:
+            got = acc.fetch_issues(scopes, state, 1000) if isinstance(acc, github.GitHub) else acc.fetch_work_items(scopes, state, 5000 if scope == "all" else 1000)
+            for i in got:
+                i.setdefault("account", acc.login if isinstance(acc, github.GitHub) else None)
+            out.extend(tracking.apply(got, "issues"))
+        except Exception as e:  # noqa: BLE001
+            errors[src_name] = str(e)[:240]
+    out.sort(key=lambda i: i.get("updated") or "", reverse=True)
+    r = {"issues": out, "errors": errors, "at": now_iso()}
+    _browse[k] = (time.time(), r)
+    return r
+
+
 POLL_STEP = {"poll_prs": "pull requests", "poll_builds": "builds", "poll_deploys": "deploys", "poll_issues": "issues e tarefas"}
 
 

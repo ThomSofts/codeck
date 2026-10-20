@@ -283,35 +283,3 @@ def upload(repo_id, rel, data="", offset=0, task_id=None, folder=False):
     return {"path": rel, "size": offset + len(raw)}
 
 
-def empty_dirs(repo_id, task_id=None, known=()):
-    """Pastas sem nenhum arquivo (o `git ls-files` não lista pasta vazia): a "Nova pasta" aparece na árvore na hora."""
-    root = _root(repo_id, task_id)
-    out = git.run(root, "ls-files", "-o", "--directory", "--exclude-standard", "-z", timeout=30, check=False)
-    prefixes = set()
-    for f in known:
-        i = f.find("/")
-        while i > 0:
-            prefixes.add(f[:i + 1])
-            i = f.find("/", i + 1)
-    found = []
-
-    def walk(full, rel, depth):
-        # só desce enquanto a pasta tem apenas subpastas; com arquivo dentro (ignorado, já que o git não listou) para ali
-        found.append(rel)
-        if depth > 12 or len(found) > 500:
-            return
-        try:
-            entries = list(os.scandir(full))
-        except OSError:
-            return
-        if any(not e.is_dir(follow_symlinks=False) for e in entries):
-            return
-        for e in entries:
-            walk(e.path, rel + e.name + "/", depth + 1)
-
-    for d in out.split("\0"):
-        if d.endswith("/") and d not in prefixes and len(found) <= 500:
-            full = os.path.join(root, d)
-            if os.path.isdir(full) and not os.path.islink(full):
-                walk(full, d, 0)
-    return found

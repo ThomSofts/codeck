@@ -24,6 +24,8 @@ export const PREF_DEFAULTS = {
   "editor.cursorStyle": "line" as "line" | "block" | "underline",
   "editor.cursorBlinking": "smooth" as "blink" | "smooth" | "phase" | "expand" | "solid",
   "editor.bracketPairs": true,
+  /** dicas inline do servidor de linguagem (nome do parâmetro, tipo): segurando ⌃⌥ (como o VS Code), sempre ou nunca */
+  "editor.inlayHints": "offUnlessPressed" as "on" | "off" | "offUnlessPressed" | "onUnlessPressed",
   "editor.gitGutter": true,
   "editor.formatOnSave": false,
   "editor.autoSave": "off" as "off" | "afterDelay" | "onFocusChange",
@@ -64,6 +66,14 @@ export const PREF_DEFAULTS = {
   "vscode.sync": "" as "" | "VS Code" | "Cursor",
   /** assinatura dos ajustes do VS Code na última sincronização (para só importar quando mudarem lá) */
   "vscode.syncSig": "" as string,
+  /** atalhos personalizados (Configurações → Atalhos): id do comando → atalhos; lista vazia = sem atalho */
+  "keybindings": {} as Record<string, string[]>,
+  /** a mesma pessoa com nomes diferentes em cada conta (ex.: "Leonardo" = "Leonardo Thomaz" na Cifal e "leonardo.thomaz"
+   *  na Dematec): o filtro de responsável junta todos — nome → nomes, logins ou e-mails */
+  "people": {} as Record<string, string[]>,
+  /** Issues e tarefas: escopo, estado e responsável escolhidos por último */
+  "issues.scope": "mine" as string,
+  "issues.state": "open" as string,
 };
 export type PrefKey = keyof typeof PREF_DEFAULTS;
 type PrefValue<K extends PrefKey> = (typeof PREF_DEFAULTS)[K];

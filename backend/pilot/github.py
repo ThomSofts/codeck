@@ -466,30 +466,62 @@ class GitHub:
             "comment": comment or ("Aprovado pelo Codeck" if approve else "Rejeitado pelo Codeck")})
 
     # ------------------------------------------------------------ issues
-    def fetch_issues(self):
-        base = "is:open is:issue archived:false"
-        queries = {"assigned": f"{base} assignee:@me", "created": f"{base} author:@me", "mentioned": f"{base} mentions:@me"}
-        parts = [f'{k}: search(query: ${k}, type: ISSUE, first: 50) {{ nodes {{ ...issue }} }}' for k in queries]
-        data = self.gql(f"query({', '.join(f'${k}: String!' for k in queries)}) {{ {' '.join(parts)} }}" + ISSUE_FRAGMENT, queries)
-        out, seen = [], set()
-        for reason in queries:
-            for n in data[reason]["nodes"]:
-                if not n or "number" not in n:
-                    continue
-                key = f"gh:{n['repository']['nameWithOwner']}#i{n['number']}"
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append({
-                    "key": key, "provider": "github", "org": n["repository"]["owner"]["login"],
-                    "repo": n["repository"]["nameWithOwner"], "number": n["number"], "title": n["title"], "state": n["state"],
-                    "type": "Issue", "updated": n["updatedAt"], "created": n["createdAt"], "author": (n.get("author") or {}).get("login", ""),
-                    "labels": [{"name": l["name"], "color": f"#{l['color']}"} for l in n["labels"]["nodes"]],
-                    "assignees": [{"login": a["login"], "avatar": a["avatarUrl"]} for a in n["assignees"]["nodes"]],
-                    "comments": n["comments"]["totalCount"], "reason": reason, "url": n["url"],
-                })
+    def fetch_issues(self, scopes=("assigned", "created", "mentioned"), state="open", limit=500):
+        """Issues por escopo — atribuídas a mim, criadas por mim, que me mencionam ou todas (dos meus repositórios e
+        das minhas organizações) — e estado (open, closed, all). Todas as páginas da busca (100 por página; a busca
+        do GitHub para em 1000 por consulta). Cada issue diz por que veio (`reasons`)."""
+        base = "is:issue archived:false" + {"open": " is:open", "closed": " is:closed"}.get(state, "")
+        queries = []
+        for scope in list(dict.fromkeys(list(scopes) + (["assigned", "created", "mentioned"] if "all" in scopes else []))):
+            if scope == "all":
+                owners = [self.identity()["login"]] + [o["login"] for o in self.paged("user/orgs", limit=100)]
+                queries += [("all", f"{base} {'user' if k == 0 else 'org'}:{o}") for k, o in enumerate(owners) if o]
+            else:
+                queries.append((scope, f"{base} " + {"assigned": "assignee:@me", "created": "author:@me", "mentioned": "mentions:@me"}[scope]))
+        out, by = [], {}
+        for reason, q in queries:
+            after, got = None, 0
+            while got < limit:
+                data = self.gql("query($q: String!, $after: String) { search(query: $q, type: ISSUE, first: 100, after: $after) "
+                                "{ pageInfo { hasNextPage endCursor } nodes { ...issue } } }" + ISSUE_FRAGMENT, {"q": q, "after": after})["search"]
+                for n in data["nodes"]:
+                    got += 1
+                    if not n or "number" not in n:
+                        continue
+                    key = f"gh:{n['repository']['nameWithOwner']}#i{n['number']}"
+                    if key in by:
+                        if reason != "all" and reason not in by[key]["reasons"]:
+                            by[key]["reasons"].append(reason)
+                            by[key]["reason"] = by[key]["reasons"][0]
+                        continue
+                    by[key] = {
+                        "key": key, "provider": "github", "org": n["repository"]["owner"]["login"],
+                        "repo": n["repository"]["nameWithOwner"], "number": n["number"], "title": n["title"], "state": n["state"],
+                        "type": "Issue", "updated": n["updatedAt"], "created": n["createdAt"], "author": (n.get("author") or {}).get("login", ""),
+                        "labels": [{"name": l["name"], "color": f"#{l['color']}"} for l in n["labels"]["nodes"]],
+                        "assignees": [{"login": a["login"], "avatar": a["avatarUrl"]} for a in n["assignees"]["nodes"]],
+                        "comments": n["comments"]["totalCount"], "reason": reason if reason != "all" else "other",
+                        "reasons": [reason] if reason != "all" else [], "url": n["url"],
+                    }
+                    out.append(by[key])
+                if not data["pageInfo"]["hasNextPage"]:
+                    break
+                after = data["pageInfo"]["endCursor"]
         return out
 
+    def issue(self, repo, number):
+        """Uma issue inteira, para ler no app: corpo (Markdown), etiquetas, responsáveis e os comentários."""
+        i = self.req("GET", f"repos/{repo}/issues/{int(number)}")
+        comments = self.paged(f"repos/{repo}/issues/{int(number)}/comments", limit=300) if i.get("comments") else []
+        return {"provider": "github", "number": i["number"], "title": i["title"], "state": i["state"], "type": "Issue", "project": repo,
+                "author": (i.get("user") or {}).get("login", ""), "assignee": ", ".join(a["login"] for a in i.get("assignees") or []),
+                "created": i.get("created_at"), "updated": i.get("updated_at"), "milestone": (i.get("milestone") or {}).get("title"),
+                "labels": [l["name"] for l in i.get("labels") or []], "markdown": i.get("body") or "",
+                "comments": [{"author": (c.get("user") or {}).get("login", ""), "created": c.get("created_at"), "markdown": c.get("body") or ""} for c in comments],
+                "relations": [], "url": i["html_url"]}
+
+    def comment_issue(self, repo, number, text):
+        self.req("POST", f"repos/{repo}/issues/{int(number)}/comments", {"body": text})
 
 # ---------------------------------------------------------------- login: código de dispositivo e gh CLI
 device_flows = {}   # id -> {status, userCode, verificationUri, expires, interval, error, account}

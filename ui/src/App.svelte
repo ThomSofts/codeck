@@ -10,6 +10,7 @@
   import RepoHub from "./components/repo/RepoHub.svelte";
   import { applyDensity } from "./lib/density";
   import { prefs } from "./lib/prefs.svelte";
+  import { kb, syncKeybindings } from "./lib/keybindings.svelte";
   import { extensions } from "./lib/extensions.svelte";
   import Projects from "./views/Projects.svelte";
   import Kanban from "./views/Kanban.svelte";
@@ -53,6 +54,8 @@
     go((map[t] ?? `/${t}/`) + (map[t] === "/history" ? "" : key));
   };
 
+  // atalhos personalizados que chegaram de outra janela (pelo /api/state): o editor recebe as regras novas
+  $effect(() => { void prefs.get("keybindings"); untrack(() => syncKeybindings()); });
   // densidade da interface (Configurações → Aparência)
   $effect(() => { void prefs.get("ui.density"); applyDensity(); });
   // tema de cores/ícones e snippets das extensões do VS Code: assim que as preferências chegam do backend
@@ -97,6 +100,8 @@
     if (!store.s.configured && !["settings", "work", "solo", "projects", "board"].includes(router.view) && !work.projects.length) go("/settings/accounts");
   });
 </script>
+
+<svelte:window onkeydown={(e) => kb.dispatch(e)} />
 
 <div class="shell">
   {#if router.view !== "solo"}<Sidebar />{/if}

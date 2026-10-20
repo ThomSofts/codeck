@@ -546,12 +546,75 @@ def _safe(root, rel):
     return full
 
 
-def files(repo_id, task_id=None):
-    """Todos os arquivos do projeto (versionados + novos não ignorados), como o ⌘P precisa."""
+# o que o explorador esconde (o files.exclude padrão do VS Code)
+HIDE = {".git", ".hg", ".svn", ".DS_Store", "Thumbs.db"}
+# pastas pesadas que nunca são percorridas de uma vez, mesmo sem estar no .gitignore: abrem sob demanda
+HEAVY = {"node_modules", ".dart_tool", ".gradle", "Pods", ".venv", "venv", "__pycache__", ".next", ".nuxt", ".turbo"}
+MAX_TREE = 200_000
+
+
+def _ignored(repo_dir):
+    """O que o .gitignore deste repositório ignora (pasta ignorada inteira vem com a barra no fim: "bin/")."""
+    out = git.run(repo_dir, "ls-files", "-o", "-i", "--exclude-standard", "--directory", "-z", timeout=30, check=False)
+    return {x for x in out.split("\0") if x}
+
+
+def files(repo_id, task_id=None, under=None):
+    """Todos os arquivos do projeto, como o explorador do VS Code: inclusive os ignorados pelo .gitignore (vão em
+    `ignored`, a tela mostra apagados) e os repositórios dentro dele — uma pasta "workspace" que reúne vários repos
+    (cada um no .gitignore do orquestrador) mostra os arquivos de todos. Pasta ignorada inteira (bin/, obj/,
+    node_modules/…) não é percorrida: vem em `lazy` e a tela lê o conteúdo ao abrir (under=<pasta>/, um nível)."""
     root = _root(repo_id, task_id)
-    out = git.run(root, "ls-files", "-co", "--exclude-standard", "-z", timeout=30)
-    names = [x for x in out.split("\0") if x]
-    return {"root": root, "files": names[:60000], "truncated": len(names) > 60000}
+    out = {"root": root, "files": [], "dirs": [], "ignored": [], "lazy": [], "truncated": False}
+    if under:
+        full = _safe(root, under)
+        rel = os.path.relpath(full, root).replace(os.sep, "/") + "/"
+        try:
+            entries = sorted(os.scandir(full), key=lambda e: e.name)
+        except OSError:
+            return out
+        for e in entries:
+            if e.name in HIDE:
+                continue
+            (out["lazy"] if e.is_dir() else out["files"]).append(rel + e.name + ("/" if e.is_dir() else ""))
+        return out
+    count = [0]
+
+    def visit(full, rel, base, ign):
+        try:
+            entries = [e for e in os.scandir(full) if e.name not in HIDE]
+        except OSError:
+            return
+        if not entries and rel:
+            out["dirs"].append(rel)
+        for e in entries:
+            count[0] += 1
+            if count[0] > MAX_TREE:
+                out["truncated"] = True
+                return
+            r, inrepo = rel + e.name, rel[len(base):] + e.name
+            try:
+                isdir = e.is_dir()
+            except OSError:
+                continue
+            if not isdir:
+                out["files"].append(r)
+                if inrepo in ign:
+                    out["ignored"].append(r)
+                continue
+            d = r + "/"
+            if os.path.exists(os.path.join(e.path, ".git")):   # outro repositório aqui dentro (workspace de repos, submódulo)
+                visit(e.path, d, d, _ignored(e.path))
+            elif inrepo + "/" in ign or e.is_symlink() or e.name in HEAVY:
+                out["lazy"].append(d)
+                if inrepo + "/" in ign:
+                    out["ignored"].append(d)
+            else:
+                visit(e.path, d, base, ign)
+
+    visit(root, "", "", _ignored(root))
+    out["files"].sort()
+    return out
 
 
 def read_file(repo_id, rel, task_id=None):
