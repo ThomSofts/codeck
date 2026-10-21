@@ -228,17 +228,73 @@ def copy(repo_id, paths, dest, task_id=None):
     return {"copied": out}
 
 
-def delete(repo_id, rel=None, task_id=None, paths=None):
-    """Exclui (vai para a Lixeira). Uma entrada (`rel`) ou várias (`paths`)."""
+def _remove(full):
+    """Exclusão definitiva (sem Lixeira). Link simbólico: só o link."""
+    if os.path.isdir(full) and not os.path.islink(full):
+        def unlock(fn, path, _exc):   # Windows: arquivo somente leitura (objetos do Git, node_modules…) não sai sem isto
+            os.chmod(path, 0o700)
+            fn(path)
+        shutil.rmtree(full, onerror=unlock)
+    else:
+        os.unlink(full)
+
+
+def delete(repo_id, rel=None, task_id=None, paths=None, permanent=False):
+    """Exclui (vai para a Lixeira). Uma entrada (`rel`) ou várias (`paths`). O que a Lixeira recusar (disco de rede,
+    volume sem Lixeira, sem permissão) volta em `failed` sem ser apagado — a tela pergunta e repete com `permanent`."""
     root = _root(repo_id, task_id)
-    out = []
+    out, failed, err = [], [], None
     for p in (paths or [rel]):
         full, p = _entry(root, p)
         if not os.path.lexists(full):
             raise LookupError(f"Não existe: {p}")
-        _trash(full)
+        if full == root:
+            raise ValueError("Não dá para excluir a pasta do projeto")
+        if permanent:
+            _remove(full)
+        else:
+            try:
+                _trash(full)
+            except Exception as e:  # noqa: BLE001 — sem Lixeira aqui: a tela decide
+                if not os.path.lexists(full):   # foi, mesmo com o erro
+                    out.append(p)
+                    continue
+                failed.append(p)
+                err = str(e) or "a Lixeira recusou"
+                continue
         out.append(p)
-    return {"path": out[0] if out else None, "paths": out}
+    return {"path": out[0] if out else None, "paths": out, "failed": failed, "error": err}
+
+
+def clipboard(text):
+    """Texto na área de transferência do sistema (quando a WebView não deixa: janela sem foco, sem gesto do usuário)."""
+    text = str(text or "")
+    if sys.platform == "darwin":
+        subprocess.run(["pbcopy"], input=text.encode("utf-8"), timeout=10, check=True,
+                       env={**os.environ, "LANG": "en_US.UTF-8", "LC_CTYPE": "UTF-8"})
+    elif os.name == "nt":
+        # o clip.exe entende UTF-16 com BOM (acentos e caminhos com espaço chegam inteiros)
+        subprocess.run(["clip"], input=b"\xff\xfe" + text.encode("utf-16-le"), timeout=10, check=True, creationflags=0x08000000)
+    else:
+        raise RuntimeError("Área de transferência não suportada neste sistema")
+    return {"ok": True}
+
+
+def reveal(repo_id, rel="", task_id=None):
+    """Mostra no Finder/Explorer com o item selecionado (pasta do projeto se `rel` vazio)."""
+    root = _root(repo_id, task_id)
+    full = _entry(root, rel)[0] if (rel or "").strip("/\\") else root
+    if not os.path.lexists(full):
+        raise LookupError(f"Não existe: {rel}")
+    detached = {"creationflags": 0x00000008 | 0x08000000} if os.name == "nt" else {"start_new_session": True}
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", full], **detached)
+    elif os.name == "nt":
+        # /select, precisa vir grudado no caminho, num argumento só (o explorer não entende aspas separadas)
+        subprocess.Popen(f'explorer /select,"{full}"', **detached)
+    else:
+        subprocess.Popen(["xdg-open", os.path.dirname(full) if full != root else root], **detached)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- arrastar do Finder/Explorer para a árvore

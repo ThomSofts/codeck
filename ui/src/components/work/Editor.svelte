@@ -5,7 +5,7 @@
   // O mesmo modelo serve o editor e o diff ("Abrir alterações"): editar num aparece no outro.
   import type * as Monaco from "monaco-editor";
   import { get as apiGet, post as apiPost } from "../../lib/api";
-  import { attach } from "../../lib/lsp";
+  import { attach, isPeek } from "../../lib/lsp";
   import { modelUri } from "../../lib/editorstate.svelte";
   export type Doc = { model: Monaco.editor.ITextModel; mtime: number; saved: number; view: Monaco.editor.ICodeEditorViewState | null; root: string;
     repoId: string; taskId: string | null; rel: string };
@@ -27,7 +27,10 @@
     if (f.binary || f.tooLarge) return { note: f.binary ? "Arquivo binário — não dá para editar aqui." : `Arquivo grande demais (${Math.round(f.size / 1e6)} MB).` };
     if (docs.has(k)) return docs.get(k)!;   // outro editor abriu enquanto este lia
     const uri = monaco.Uri.parse(modelUri(repoId, taskId, rel));
-    const model = monaco.editor.getModel(uri) || monaco.editor.createModel(f.text, undefined, uri);
+    const ex2 = monaco.editor.getModel(uri);
+    // o modelo já existia só para espiar (peek das referências): vira o da aba, com o texto atual do disco
+    if (ex2 && isPeek(ex2) && ex2.getValue() !== f.text) ex2.setValue(f.text);
+    const model = ex2 || monaco.editor.createModel(f.text, undefined, uri);
     if (f.crlf) model.setEOL(monaco.editor.EndOfLineSequence.CRLF);
     const d: Doc = { model, mtime: f.mtime, saved: model.getAlternativeVersionId(), view: null, root: f.root, repoId, taskId, rel };
     model.onDidChangeContent(() => { dirty[k] = model.getAlternativeVersionId() !== d.saved; });
@@ -48,7 +51,7 @@
 <script lang="ts">
   import { ChevronRight } from "@lucide/svelte";
   import { kb } from "../../lib/keybindings.svelte";
-  import { documentSymbols, gotoDefinition, openInApp, type Sym } from "../../lib/lsp";
+  import { documentSymbols, openInApp, type Sym } from "../../lib/lsp";
   import { loadMonaco, monacoTheme, onThemeChange } from "../../lib/monaco";
   import { lineHunks } from "../../lib/linediff";
   import { edState, trackMarkers } from "../../lib/editorstate.svelte";
@@ -60,6 +63,14 @@
   import FileIcon from "./FileIcon.svelte";
   import MarkdownView from "./MarkdownView.svelte";
   import { scanTasks } from "./md/render";
+
+  /** Roda uma ação do editor. No Monaco 0.52 a navegação (definição, tipo, implementação) virou comando (Action2) e o
+   *  editor.getAction não a acha mais — o F12 do app não fazia nada: vai pelo serviço de comandos do próprio editor. */
+  function runEditorCommand(ed: Monaco.editor.ICodeEditor, id: string) {
+    const a = ed.getAction(id);
+    if (a) return void a.run();
+    (ed as any)._commandService?.executeCommand(id).catch(() => {});
+  }
 
   let { repoId, taskId = null, gitRepo = null, path, line = 0, onreveal, onpin }:
     { repoId: string; taskId?: string | null; gitRepo?: string | null; path: string; line?: number; onreveal?: (dir: string) => void; onpin?: () => void } = $props();
@@ -264,12 +275,10 @@
         // como o VS Code: cores pelo significado, ocorrências do símbolo, lâmpada de correção, colchetes e dobras
         "semanticHighlighting.enabled": true, occurrencesHighlight: "singleFile", lightbulb: { enabled: "onCode" as any }, renderLineHighlight: "all",
         matchBrackets: "always", showFoldingControls: "mouseover", foldingHighlight: true, linkedEditing: true, colorDecorators: true,
-        suggest: { preview: true, showStatusBar: true, insertMode: "replace" }, hover: { delay: 300, sticky: true }, parameterHints: { enabled: true, cycle: true },
+        suggest: { preview: true, showStatusBar: true, insertMode: "replace" }, find: { seedSearchStringFromSelection: "always", autoFindInSelection: "multiline" }, hover: { delay: 300, sticky: true }, parameterHints: { enabled: true, cycle: true },
         scrollbar: { verticalScrollbarSize: 12, horizontalScrollbarSize: 12, useShadows: true }, ...editorPrefs() } as Monaco.editor.IStandaloneEditorConstructionOptions);
-      // salvar, Markdown, ir para a definição…: pelos atalhos (lib/keybindings), no editor em foco
-      editor.onMouseDown(e => {
-        if ((e.event.metaKey || e.event.ctrlKey) && e.target.position) gotoDefinition(editor!, e.target.position);
-      });
+      // salvar, Markdown, ir para a definição…: pelos atalhos (lib/keybindings), no editor em foco. O ⌘-clique (Ctrl no
+      // Windows) é o do próprio Monaco: sublinha ao passar o mouse e, em outro arquivo, o lib/lsp abre a aba
       subs.push(editor.onDidChangeCursorPosition(publish), editor.onDidChangeCursorSelection(publish), editor.onDidFocusEditorText(publish),
         editor.onDidChangeModel(publish), editor.onDidChangeModelLanguage(publish), editor.onDidChangeModelOptions(publish));
       // editar fixa a aba de visualização e atualiza as marcas do Git; salvar automático (se ligado)
@@ -301,8 +310,10 @@
     const offs = [
       kb.on("workbench.action.files.save", () => { if (!mine() || note) return false; save(); }),
       kb.on("markdown.showPreviewToSide", () => { if (!mine() || !isMd) return false; toggleMd(); }),
-      // ir para a definição pelo servidor de linguagem — inclusive em outro arquivo, que abre numa aba
-      kb.on("codeck.gotoDefinition", () => { const pos = editor?.getPosition(); if (!mine() || !pos) return false; gotoDefinition(editor!, pos); }),
+      // ir para a definição / todas as referências pelo servidor de linguagem — inclusive em outro arquivo, que abre
+      // numa aba (várias definições ou as referências: o peek com a lista, como no VS Code)
+      kb.on("codeck.gotoDefinition", () => { if (!mine()) return false; editor!.focus(); runEditorCommand(editor!, "editor.action.revealDefinition"); }),
+      kb.on("codeck.findAllReferences", () => { if (!mine()) return false; editor!.focus(); runEditorCommand(editor!, "editor.action.referenceSearch.trigger"); }),
       kb.on("editor.action.toggleWordWrap", () => { if (!mine()) return false; prefs.set("editor.wordWrap", !prefs.get("editor.wordWrap")); }),
       kb.on("editor.action.toggleMinimap", () => { if (!mine()) return false; prefs.set("editor.minimap", !prefs.get("editor.minimap")); }),
     ];
@@ -318,7 +329,7 @@
       fontFamily: (fam ? `"${fam.replace(/"/g, "")}", ` : "") + '"JetBrains Mono Variable", ui-monospace, Menlo, Consolas, monospace',
       fontLigatures: !!prefs.get("editor.ligatures"),
       minimap: { enabled: !!prefs.get("editor.minimap"), renderCharacters: true, showSlider: "mouseover", maxColumn: 100 },
-      inlayHints: { enabled: prefs.get("editor.inlayHints") },
+      inlayHints: { enabled: prefs.get("editor.inlayHints") }, codeLens: !!prefs.get("editor.codeLens"),
       wordWrap: (prefs.get("editor.wordWrap") ? "on" : "off") as "on" | "off", lineNumbers: (prefs.get("editor.lineNumbers") ? "on" : "off") as "on" | "off",
       stickyScroll: { enabled: !!prefs.get("editor.stickyScroll") }, renderWhitespace: prefs.get("editor.renderWhitespace"),
       cursorStyle: prefs.get("editor.cursorStyle"), cursorBlinking: prefs.get("editor.cursorBlinking"), cursorSmoothCaretAnimation: "on",

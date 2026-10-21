@@ -15,6 +15,7 @@
   import { PREF_DEFAULTS, prefs, type PrefKey } from "../lib/prefs.svelte";
   import { go, router } from "../lib/router.svelte";
   import { store } from "../lib/store.svelte";
+  import type { Source } from "../lib/types";
   import { ui } from "../lib/ui.svelte";
   import Avatar from "../components/Avatar.svelte";
   import Page from "../components/Page.svelte";
@@ -63,7 +64,7 @@
   // ------------------------------------------------------------ linhas de ajuste (também o índice da busca)
   type Opt = { value: string; label: string; icon?: any };
   type Row = { sec: SecId; id: string; label: string; desc?: string; kw?: string;
-    kind: "pref-switch" | "pref-select" | "pref-seg" | "pref-text" | "rule-switch" | "auto" | "theme" | "ext-theme" | "ext-icons" | "vscode-import" | "vscode-sync" | "ext-editor" | "poll" | "note" | "data-dir" | "diag" | "security" | "link";
+    kind: "pref-switch" | "pref-select" | "pref-seg" | "pref-text" | "rule-switch" | "auto" | "theme" | "ext-theme" | "ext-icons" | "vscode-import" | "vscode-sync" | "ext-editor" | "poll" | "poll-adaptive" | "live" | "note" | "data-dir" | "diag" | "security" | "link";
     key?: string; options?: Opt[]; when?: () => boolean };
   const sizes = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => ({ value: String(a + i), label: `${a + i} px` }));
   const ROWS: Row[] = [
@@ -92,6 +93,7 @@
       options: [{ value: "none", label: "Nunca" }, { value: "boundary", label: "Nas bordas" }, { value: "selection", label: "Na seleção" }, { value: "all", label: "Sempre" }], kw: "whitespace espaço tab" },
     { sec: "editor", id: "inlay", kind: "pref-seg", key: "editor.inlayHints", label: "Dicas inline", desc: `Nome do parâmetro e tipo inferido, do servidor de linguagem. "Segurando" = aparecem com ${isMac() ? "⌃⌥" : "Ctrl+Alt"} pressionados, como no VS Code.`,
       options: [{ value: "offUnlessPressed", label: "Segurando" }, { value: "on", label: "Sempre" }, { value: "off", label: "Nunca" }], kw: "inlay hints parametro tipo" },
+    { sec: "editor", id: "codeLens", kind: "pref-switch", key: "editor.codeLens", label: "Contagem de referências", desc: "\"N referências\" em cima de classes, funções e métodos; clicar lista onde são usados.", kw: "codelens referências references" },
     { sec: "editor", id: "brackets", kind: "pref-switch", key: "editor.bracketPairs", label: "Colchetes coloridos", desc: "Cada par de ( ) [ ] { } numa cor, como no VS Code.", kw: "bracket pair colorization" },
     { sec: "editor", id: "gutter", kind: "pref-switch", key: "editor.gitGutter", label: "Alterações do Git na margem", desc: "Faixa verde (novo), azul (alterado) e o triângulo vermelho (apagado) ao lado dos números de linha.", kw: "git gutter diff margem" },
     { sec: "editor", id: "formatSave", kind: "pref-switch", key: "editor.formatOnSave", label: "Formatar ao salvar", desc: "Usa o formatador do servidor de linguagem (ou do Monaco) a cada ⌘S.", kw: "format prettier salvar" },
@@ -129,11 +131,15 @@
     { sec: "notifications", id: "nMine", kind: "rule-switch", key: "notifyMyPrs", label: "Problema nas minhas PRs", desc: "Conflito, build vermelho, voto de recusa ou espera nas PRs que você abriu.", kw: "pull request conflito" },
     { sec: "notifications", id: "nBuild", kind: "rule-switch", key: "notifyBuildFailures", label: "Build falhou", desc: "Em branch protegida ou disparado por você.", kw: "actions pipeline" },
     { sec: "notifications", id: "nDeploy", kind: "rule-switch", key: "notifyDeploys", label: "Deploy esperando você", desc: "Release, environment ou permissão de pipeline aguardando aprovação.", kw: "release aprovação" },
+    { sec: "notifications", id: "nCascade", kind: "rule-switch", key: "notifyCascade", label: "PR acompanhada até o deploy", desc: "A cada passo — integrada, build passou ou falhou, deploy aguardando aprovação, concluído ou falhou.", kw: "cascata merge build deploy" },
     { sec: "notifications", id: "nAuto", kind: "rule-switch", key: "notifyAuto", label: "O piloto agiu sozinho", desc: "Quando uma regra aprova uma PR ou libera um deploy.", kw: "automação regra" },
     { sec: "notifications", id: "nDone", kind: "pref-switch", key: "notify.agentDone", label: "Agente terminou", desc: "A tarefa ficou pronta para revisar.", kw: "ia claude" },
     { sec: "notifications", id: "nNeeds", kind: "pref-switch", key: "notify.agentNeedsYou", label: "Agente precisa de você", desc: "Pediu permissão ou fez uma pergunta.", kw: "ia claude permissão" },
     // leitura e automação
-    { sec: "network", id: "poll", kind: "poll", label: "Intervalo de leitura", desc: "De quanto em quanto tempo o piloto consulta Azure e GitHub e roda as regras automáticas (15 s a 10 min). Sem internet, tenta a cada 10 s.", kw: "polling atualizar" },
+    { sec: "network", id: "live", kind: "live", label: "Tempo real (local)", desc: "Vigia os repositórios ativos (projetos abertos, suas PRs, revisões pedidas e PRs acompanhadas até o deploy) a cada poucos segundos e relê só o que mudou. Roda inteiro nesta máquina, com o seu PAT/login do GitHub: nada vai para outro servidor além do próprio GitHub e Azure DevOps. No GitHub usa ETag — “nada mudou” não gasta a cota. Espaça com a janela escondida ou na economia de bateria e para com a tela bloqueada.", kw: "tempo real live realtime vigiar etag local webhook rápido" },
+    { sec: "network", id: "poll", kind: "poll", label: "Intervalo de leitura", desc: "De quanto em quanto tempo o piloto consulta Azure e GitHub — cada tipo no seu ritmo (as regras automáticas rodam junto com PRs e deploys). Sem internet, tenta a cada 10 s; com o limite de chamadas no fim, espera a conta liberar.", kw: "polling atualizar intervalo prs builds deploys issues tarefas tempo real" },
+    { sec: "network", id: "pollAdaptive", kind: "poll-adaptive", label: "Ritmo automático", desc: "Com build rodando ou deploy em andamento, lê mais rápido (20–30 s); com a janela escondida ou a tela bloqueada, espaça (até 3×) e, ao voltar, relê na hora o que ficou velho. Contas do GitHub também avisam mudanças pelas notificações (sem gastar cota).", kw: "adaptativo foco economia tempo real notificações" },
+    { sec: "network", id: "cascade", kind: "rule-switch", key: "cascadeOnApprove", label: "Ao aprovar uma PR, acompanhar até o deploy", desc: "Segue a PR em poucos segundos: merge → build do commit integrado → deploy (environments do GitHub, estágios do YAML ou releases do Azure). Vale para a sua aprovação e a das regras. Em qualquer PR dá para começar à mão.", kw: "cascata seguir merge build deploy tempo real acompanhar" },
     { sec: "network", id: "auto", kind: "auto", label: "Automação ativa", desc: "Desligada, nenhuma regra aprova ou arquiva nada sozinha — a tela continua igual.", kw: "pausar regras piloto" },
     { sec: "network", id: "power", kind: "pref-select", key: "power.mode", label: "Com a tela bloqueada, protetor de tela ou o computador ocioso",
       desc: `Continuar: o ${OS} não suspende por ociosidade enquanto o app estiver aberto (o monitor apaga normalmente) — agentes, execuções, regras e o quadro seguem. Só com algo rodando: o mesmo, enquanto houver agente trabalhando, projeto executando ou regra ativa. Pausar: deixa o computador dormir e retoma ao desbloquear. Ao acordar, tudo é relido na hora.${isMac() ? " Com a tampa fechada na bateria, o Mac dorme de qualquer jeito." : ""}`,
@@ -258,6 +264,19 @@
     try { await post("github/remove", { id: a.id }); await load(); store.refreshSoon(); } catch (e) { ui.error(e); }
   }
 
+  // intervalo de cada fonte (backend: engine.POLL_KINDS). O valor atual entra na lista mesmo fora das opções (migrado).
+  const POLL_SRC: [Source, string][] = [["prs", "Pull requests"], ["builds", "Builds e Actions"], ["deploys", "Deploys"], ["issues", "Issues e tarefas"]];
+  const POLL_OPTS: Record<Source, number[]> = { prs: [15, 30, 60, 120, 300, 600], builds: [15, 30, 60, 120, 300, 600],
+    deploys: [15, 30, 60, 120, 300, 600], issues: [30, 60, 180, 300, 600, 900, 1800] };
+  const pollOpts = (k: Source) => [...new Set([...POLL_OPTS[k], Number(cfg?.pollIntervals?.[k]) || 0])].filter(Boolean).sort((a, b) => a - b);
+  const secs = (s: number) => (s < 60 ? `${s} s` : s % 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s / 60} min`);
+
+  const live = $derived(store.s?.schedule?.live);
+  async function saveLive(patch: { liveWatch?: boolean; liveSeconds?: number }) {
+    await savePrefs(patch);
+    cfg = { ...cfg, live: { on: patch.liveWatch ?? cfg?.live?.on ?? true, seconds: patch.liveSeconds ?? cfg?.live?.seconds ?? 10 } };
+  }
+
   async function savePrefs(patch: Record<string, unknown>) {
     try { await post("prefs", patch); cfg = { ...cfg, ...patch }; flashSaved(); } catch (e) { ui.error(e); }
   }
@@ -273,7 +292,7 @@
       `Sistema: ${navigator.userAgent}`,
       `Contas: Azure ${s?.orgs.length ?? 0} · GitHub ${s?.githubAccounts.length ?? 0}`,
       `Itens: PRs ${(s?.prs.length ?? 0) + (s?.myPrs.length ?? 0)} · builds ${s?.builds.length ?? 0} · deploys ${s?.deploys.length ?? 0} · issues ${s?.issues.length ?? 0}`,
-      `Leitura: a cada ${s?.pollSeconds ?? "?"} s · última ${s?.lastPoll || "nunca"} · ${s?.pollMs ?? "?"} ms${s?.offline ? ` · offline desde ${s.offline}` : ""}`,
+      `Leitura: ${POLL_SRC.map(([k, l]) => `${l} ${s?.pollIntervals?.[k] ?? "?"} s`).join(" · ")}${cfg?.pollAdaptive === false ? "" : " (automático)"}${s?.schedule?.live?.on ? ` · tempo real ${s.schedule.live.every} s em ${s.schedule.live.repos} repo(s)` : ""} · última ${s?.lastPoll || "nunca"} · ${s?.pollMs ?? "?"} ms${s?.offline ? ` · offline desde ${s.offline}` : ""}`,
       `Erros de leitura: ${Object.keys({ ...(s?.errors || {}), ...(s?.buildErrors || {}), ...(s?.deployErrors || {}), ...(s?.issueErrors || {}) }).length}`,
       `Automação: ${s?.rules.settings.paused ? "pausada" : "ativa"} · ${s?.rules.rules.length ?? 0} regra(s) de PR · ${s?.rules.deployRules.length ?? 0} de deploy`,
       `Tela: ${window.innerWidth}×${window.innerHeight} · densidade ${prefs.get("ui.density")} · tema ${s?.theme || "?"}`,
@@ -332,9 +351,30 @@
       {#each cfg?.editors || [] as ed (ed.id)}<option value={ed.id}>{ed.name}</option>{:else}<option value="">nenhum editor encontrado</option>{/each}
     </select>
   {:else if r.kind === "poll"}
-    <select class="input" value={String(cfg?.pollSeconds)} onchange={(e) => savePrefs({ pollSeconds: Number((e.target as HTMLSelectElement).value) })}>
-      {#each [15, 30, 60, 120, 300, 600] as s (s)}<option value={String(s)}>{s < 60 ? `${s} s` : `${s / 60} min`}</option>{/each}
-    </select>
+    <div class="polls">
+      {#each POLL_SRC as [k, l] (k)}
+        {@const sch = store.s?.schedule?.[k]}
+        <label><span>{l}</span>
+          <select class="input" value={String(cfg?.pollIntervals?.[k])} onchange={(e) => savePrefs({ pollIntervals: { ...cfg.pollIntervals, [k]: Number((e.target as HTMLSelectElement).value) } })}>
+            {#each pollOpts(k) as s (s)}<option value={String(s)}>{secs(s)}</option>{/each}
+          </select>
+          {#if live?.on}<em title={`Tempo real (local): ${live.repos} repositório(s) ativo(s) · ${live.callsMin} consultas no último minuto, ${live.freeMin} sem gastar cota (304). A leitura completa segue como reserva.`}>tempo real · {live.every} s{#if live.why !== "tempo real"} ({live.why}){/if}</em>
+          {:else if sch && sch.why !== "intervalo"}<em title="Ritmo desta leitura agora">agora {secs(sch.every)} · {sch.why}</em>{/if}
+        </label>
+      {/each}
+    </div>
+  {:else if r.kind === "live"}
+    <div class="row" style="gap:8px">
+      {#if cfg?.live?.on}
+        <select class="input sm-sel" value={String(cfg.live.seconds)} title="De quanto em quanto tempo olhar (Azure: no mínimo 15 s)"
+          onchange={(e) => saveLive({ liveSeconds: Number((e.target as HTMLSelectElement).value) })}>
+          {#each [5, 10, 15, 20, 30, 60] as v (v)}<option value={String(v)}>a cada {v} s</option>{/each}
+        </select>
+      {/if}
+      <Switch checked={cfg?.live?.on !== false} onchange={(v) => saveLive({ liveWatch: v })} />
+    </div>
+  {:else if r.kind === "poll-adaptive"}
+    <Switch checked={cfg?.pollAdaptive !== false} onchange={(v) => savePrefs({ pollAdaptive: v })} />
   {:else if r.kind === "data-dir"}
     <button class="btn sm" onclick={openData} disabled={!cfg?.dataDir}><FolderOpen size={14} /> Abrir pasta</button>
   {:else if r.kind === "diag"}
@@ -552,6 +592,11 @@
   .pc { flex: none; display: flex; align-items: center; }
   .pc select { width: 220px; }
   .pref select { width: 220px; }
+  .pref select.sm-sel { width: 130px; }
+  .polls { display: grid; grid-template-columns: repeat(2, minmax(150px, 1fr)); gap: 8px 10px; }
+  .polls label { display: grid; gap: 3px; font-size: 11.5px; color: var(--muted); }
+  .polls select { width: 100%; }
+  .polls em { font-style: normal; font-size: 11px; color: var(--accent); }
   .sel { user-select: text; word-break: break-all; }
   .pc :global(.shield) { color: var(--good); }
   .test { border-top: 1px solid var(--line); padding-top: 10px; }

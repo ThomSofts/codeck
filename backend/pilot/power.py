@@ -45,6 +45,41 @@ def paused():
         return mode() == "pause" and bool(_away)
 
 
+def away():
+    """O usuário está fora (tela bloqueada, protetor, monitor apagado ou suspenso), em qualquer modo."""
+    with _lock:
+        return bool(_away)
+
+
+_saver = {"at": 0.0, "on": False}
+
+
+def saver():
+    """Economia de bateria ligada (macOS: Modo de Pouca Energia; Windows: Economia de bateria)? Lido a cada 60 s."""
+    if time.monotonic() - _saver["at"] < 60:
+        return _saver["on"]
+    on = False
+    try:
+        import sys
+        if sys.platform == "darwin":
+            import subprocess
+            out = subprocess.run(["pmset", "-g"], capture_output=True, text=True, timeout=3).stdout
+            on = any(ln.split()[:2] == ["lowpowermode", "1"] for ln in out.splitlines())
+        elif sys.platform == "win32":
+            import ctypes
+
+            class _Status(ctypes.Structure):
+                _fields_ = [("ac", ctypes.c_ubyte), ("flag", ctypes.c_ubyte), ("pct", ctypes.c_ubyte), ("saver", ctypes.c_ubyte),
+                            ("life", ctypes.c_ulong), ("full", ctypes.c_ulong)]
+            st = _Status()
+            if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(st)):
+                on = st.saver == 1
+    except Exception:  # noqa: BLE001 — sem a informação, segue no ritmo normal
+        on = False
+    _saver.update(at=time.monotonic(), on=on)
+    return on
+
+
 def wait_resume(timeout):
     """Dorme até voltar (ou o tempo acabar). Para os laços que respeitam a pausa."""
     _resumed.wait(timeout)

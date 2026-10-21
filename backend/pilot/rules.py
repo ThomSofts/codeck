@@ -16,6 +16,8 @@ DEFAULT_SETTINGS = {
     "notifyDeploys": True,    # release/permissão/deploy esperando você
     "notifyMyPrs": True,      # minha PR com conflito, build vermelho ou voto de recusa/espera
     "notifyBuildFailures": True,  # build falhou em branch protegida ou disparado por mim
+    "cascadeOnApprove": True,     # aprovou uma PR (você ou uma regra): acompanha até o deploy (merge → build → deploy)
+    "notifyCascade": True,        # cada passo do acompanhamento em cascata (merge, build, deploy, falhas)
 }
 # Regra: listas vazias = "qualquer". targets vazio = qualquer branch NÃO protegida.
 DEFAULT_RULES = {"protectedTargets": ["master", "main"], "settings": DEFAULT_SETTINGS, "rules": [], "deployRules": []}

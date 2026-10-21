@@ -83,12 +83,37 @@ export function loadMonaco(): Promise<typeof Monaco> {
       const r = await get<{ servers: Record<string, string> }>("lsp");
       for (const l of ["typescript", "javascript"]) if (r.servers[l]) builtinOff(monaco, l);
     } catch { /* sem a lista: fica o embutido */ }
+    await ptMenu();
     loaded = monaco;
     kb.attachMonaco(monaco);   // atalhos do VS Code (e os personalizados) também dentro do editor
     if (ext) monaco.editor.defineTheme("cd-ext", ext.data);
     return monaco;
   })();
   return loading;
+}
+
+// O menu de contexto do Monaco vem em inglês (não há tradução para o português): os itens de navegação e edição
+// ganham o nome do VS Code em português. Mexe no registro interno de menus — se a versão mudar, só fica em inglês.
+const PT: Record<string, string> = {
+  "editor.action.revealDefinition": "Ir para a definição", "editor.action.revealDeclaration": "Ir para a declaração",
+  "editor.action.goToTypeDefinition": "Ir para a definição de tipo", "editor.action.goToImplementation": "Ir para as implementações",
+  "editor.action.goToReferences": "Ir para as referências", "editor.action.referenceSearch.trigger": "Localizar todas as referências",
+  "editor.action.peekDefinition": "Espiar a definição", "editor.action.peekDeclaration": "Espiar a declaração",
+  "editor.action.peekTypeDefinition": "Espiar a definição de tipo", "editor.action.peekImplementation": "Espiar as implementações",
+  "editor.action.rename": "Renomear o símbolo", "editor.action.changeAll": "Alterar todas as ocorrências",
+  "editor.action.formatDocument": "Formatar o documento", "editor.action.formatSelection": "Formatar a seleção",
+  "editor.action.quickCommand": "Paleta de comandos", "editor.action.refactor": "Refatorar…", "editor.action.sourceAction": "Ação de origem…",
+  "editor.action.clipboardCutAction": "Recortar", "editor.action.clipboardCopyAction": "Copiar", "editor.action.clipboardPasteAction": "Colar",
+};
+async function ptMenu() {
+  try {
+    // @ts-ignore — módulo interno do Monaco (sem tipos)
+    const { MenuRegistry, MenuId } = await import("monaco-editor/esm/vs/platform/actions/common/actions.js");
+    for (const id of [MenuId.EditorContext, MenuId.EditorContextPeek]) for (const it of MenuRegistry.getMenuItems(id)) {
+      if (it.command && PT[it.command.id]) it.command.title = PT[it.command.id];
+      else if (it.submenu === MenuId.EditorContextPeek) it.title = "Espiar";
+    }
+  } catch { /* fica em inglês */ }
 }
 
 // ------------------------------------------------------------ tema de cores (o do Codeck ou o de uma extensão do VS Code)

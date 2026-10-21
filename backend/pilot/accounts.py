@@ -17,6 +17,10 @@ def public_config():
     cfg = load_json(CONFIG_FILE, {})
     return {
         "pollSeconds": cfg.get("pollSeconds", 60),
+        "pollIntervals": engine.intervals(cfg),
+        "pollAdaptive": cfg.get("pollAdaptive", True),
+        "live": engine.watch.settings(cfg),   # tempo real (local): {"on", "seconds"}
+        "pollLimits": {k: {"default": d, "min": lo, "max": hi} for k, (d, lo, hi) in engine.POLL_KINDS.items()},
         "editor": cfg.get("editor") or "vscode",
         "theme": cfg.get("theme") or "system",
         "workspaceRoots": cfg.get("workspaceRoots") or [],
@@ -135,9 +139,22 @@ def test_github(body):
 
 def save_prefs(body):
     cfg = load_json(CONFIG_FILE, {})
-    poll_changed = "pollSeconds" in body and engine.clamp_poll(body.get("pollSeconds")) != cfg.get("pollSeconds", 60)
-    if "pollSeconds" in body:
+    before = (engine.intervals(cfg), cfg.get("pollAdaptive", True))
+    if "pollSeconds" in body:   # tela antiga: um intervalo só vale para PRs, builds e deploys (issues a cada 3)
         cfg["pollSeconds"] = engine.clamp_poll(body.get("pollSeconds"))
+        cfg["pollIntervals"] = {**engine.intervals(cfg), **{k: cfg["pollSeconds"] for k in ("prs", "builds", "deploys")},
+                                "issues": engine.clamp_poll(cfg["pollSeconds"] * 3, "issues")}
+    if isinstance(body.get("pollIntervals"), dict):   # um intervalo por fonte
+        cur = engine.intervals(cfg)
+        cfg["pollIntervals"] = {k: engine.clamp_poll(body["pollIntervals"].get(k, cur[k]), k) for k in engine.POLL_KINDS}
+        cfg["pollSeconds"] = cfg["pollIntervals"]["prs"]   # compatível com quem ainda lê o valor único
+    if "pollAdaptive" in body:
+        cfg["pollAdaptive"] = bool(body["pollAdaptive"])
+    if "liveWatch" in body:   # tempo real (local): vigia rápida dos repositórios ativos (watch.py)
+        cfg["liveWatch"] = bool(body["liveWatch"])
+    if "liveSeconds" in body:
+        cfg["liveSeconds"] = engine.watch.settings({"liveSeconds": body["liveSeconds"]})["seconds"]
+    poll_changed = (engine.intervals(cfg), cfg.get("pollAdaptive", True)) != before
     if body.get("editor") in git.EDITORS:
         cfg["editor"] = body["editor"]
     if body.get("theme") in THEMES:

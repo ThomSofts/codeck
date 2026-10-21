@@ -25,6 +25,8 @@ SERVERS = {
     "html": [["vscode-html-language-server", "--stdio"]],
     "css": [["vscode-css-language-server", "--stdio"]],
     "json": [["vscode-json-language-server", "--stdio"]],
+    # Dart/Flutter: o analysis server do próprio SDK (no PATH, ou o `dart` que vem dentro do Flutter)
+    "dart": [["dart", "language-server", "--protocol=lsp", "--client-id=codeck"]],
 }
 _found = {"at": 0, "map": {}}
 
@@ -50,8 +52,42 @@ def available():
             if exe:
                 out[lang] = {"cmd": [exe] + c[1:], "name": c[0]}
                 break
+    if "dart" not in out:   # só o Flutter no PATH: o Dart vem dentro dele (flutter/bin/cache/dart-sdk)
+        fl = shutil.which("flutter", path=path)
+        exe = fl and _sdk_dart(os.path.dirname(os.path.dirname(os.path.realpath(fl))))
+        if exe:
+            out["dart"] = {"cmd": [exe] + SERVERS["dart"][0][1:], "name": "dart"}
     _found.update(at=time.time(), map=out, path=path)
     return out
+
+
+def _sdk_dart(sdk):
+    """O executável `dart` de um SDK do Flutter (o binário de verdade em bin/cache/dart-sdk; senão o wrapper de bin/)."""
+    win = os.name == "nt"
+    for p in (os.path.join(sdk, "bin", "cache", "dart-sdk", "bin", "dart.exe" if win else "dart"), os.path.join(sdk, "bin", "dart.bat" if win else "dart")):
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _project_dart(root):
+    """Flutter fixado pelo projeto (FVM, dart.flutterSdkPath): o servidor de Dart tem de ser o desse SDK — o do PATH
+    pode ser de outra versão e acusar erros falsos. O app pode estar numa subpasta (monorepo): procura o pubspec."""
+    from . import launch
+    dirs = [root]
+    try:
+        dirs += [os.path.join(root, d) for d in sorted(os.listdir(root)) if os.path.isfile(os.path.join(root, d, "pubspec.yaml"))][:5]
+    except OSError:
+        pass
+    for d in dirs:
+        try:
+            sdk, _ = launch.flutter_sdk(d, root)
+        except Exception:  # noqa: BLE001
+            sdk = None
+        exe = sdk and _sdk_dart(sdk)
+        if exe:
+            return [exe] + SERVERS["dart"][0][1:]
+    return None
 
 
 class Bridge:
@@ -59,6 +95,9 @@ class Bridge:
 
     def __init__(self, lang, root, sock):
         spec = available().get(lang)
+        if lang == "dart":
+            cmd = _project_dart(root)
+            spec = {"cmd": cmd, "name": "dart"} if cmd else spec
         if not spec:
             raise LookupError(f"Nenhum servidor de linguagem instalado para {lang}")
         env = terminals.clean_env({"PATH": _found.get("path") or os.environ.get("PATH", "")})

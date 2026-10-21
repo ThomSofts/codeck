@@ -48,10 +48,20 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
   aberta. "Mais opções" abre o formulário completo (issue, só planejar, planejar → aprovar → implementar).
 - **Pular permissões (bypass)** por projeto, em Ajustes do projeto (desligado por padrão): os agentes abrem sem pedir
   permissão (Claude, Codex, Gemini, Cursor). Um escudo na aba mostra os projetos com bypass.
-- **Tarefas em worktree:** "Nova tarefa" cria a branch, o worktree, copia os arquivos locais que o Git não leva
-  (`workspace.local.json`, `nuget.config`, `.env`… — e garante que eles nunca entrem num commit), roda a preparação e
-  abre o(s) agente(s) com o prompt. Vários agentes no mesmo pedido = cada um no seu worktree; **Comparar** mostra o que
-  cada um mudou e **Ficar com este** descarta os outros.
+- **Tarefas:** "Nova tarefa" abre o agente **no seu checkout** (com uma branch nova, se quiser — só com o checkout
+  limpo) ou, se pedido, num **worktree separado**: cria a branch, o worktree, copia os arquivos locais que o Git não
+  leva (`workspace.local.json`, `nuget.config`, `.env`… — e garante que eles nunca entrem num commit), roda a
+  preparação e abre o(s) agente(s) com o prompt. Vários agentes no mesmo pedido = cada um no seu worktree;
+  **Comparar** mostra o que cada um mudou e **Ficar com este** descarta os outros. **Limpar tarefas** (🧹) lista os
+  worktrees com o estado (já na base, sem commit, agente aberto) e os órfãos, e remove de uma vez — já vêm marcados
+  os que saem sem perder nada.
+- **Fechar é encerrar:** fechar o terminal de um agente (ou o projeto) mata o processo **e os filhos** (servidores MCP,
+  shells das ferramentas — no Windows, a árvore inteira) e limpa a sessão: contexto, estado e a oferta de retomar.
+  Sair do app continua guardando as conversas para retomar.
+- **Arquivos de referência no terminal:** arraste arquivos do Finder/Explorer (ou da árvore) para cima de um terminal
+  ou agente — metade de cima = **temporário** (apagado ao fechar o terminal), metade de baixo = **fixo no projeto**
+  (`.codeck/refs`). Ficam dentro da pasta (o agente lê sem pedir permissão), fora do Git, e o caminho é digitado no
+  prompt; o 📎 no canto lista para reinserir ou apagar.
 - **Contas de IA:** Claude Code (cada `~/.claude-*` é uma conta), Codex (`CODEX_HOME`), Cursor Agent, Gemini CLI,
   OpenCode. O login é o da própria CLI; o app nunca lê token de IA.
 - **Contexto, limite e reset:** por sessão, o modelo, o contexto usado, o custo e o estado (trabalhando, terminou,
@@ -80,6 +90,9 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
     parâmetro, propriedade), ocorrências do símbolo, **lâmpada de correção rápida** (⌘.), **F2 renomeia** em todos os
     arquivos, referências (⇧F12), implementação, símbolos do arquivo (⌘⇧O), formatar, dicas de parâmetros e **dicas
     inline** (segurando ⌃⌥);
+  - **⌘/Ctrl+clique e F12 navegam entre arquivos** (abre a aba no ponto exato); as referências abrem no peek com o
+    trecho de cada arquivo, e "**N referências**" aparece em cima de classes, funções e métodos (desliga em
+    Configurações → Editor). **Dart/Flutter** com o servidor de linguagem do SDK do projeto (FVM incluso);
   - **atalhos do VS Code** (cerca de 100: editor, abas, painéis, terminal ⌃\`, depuração F5/F10/F11, explorador),
     todos trocáveis em Configurações → Atalhos (busca por nome/tecla, acordes como ⌘K ⌘F, conflitos, voltar ao padrão);
     a paleta (⌘⇧P) lista os comandos com `>`;
@@ -148,13 +161,21 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
   Thomaz* na Cifal e *leonardo.thomaz* na Dematec) vira um filtro só (o app sugere juntar). Clicar num item abre a
   descrição, os campos, os ligados e a discussão (dá para comentar) e **Implementar com IA** no projeto certo, com o
   conteúdo inteiro no pedido. "Não acompanhar issues de…" num item desliga só as issues daquele repositório/projeto.
+  **Editar ali mesmo**: título, estado (os do tipo, no Azure), responsáveis, labels/tags, descrição e, no Azure,
+  sprint, área e prioridade — aparece na hora e volta se o servidor recusar.
+- **Arquivos modificados** na PR: a lista com +/− e o diff lado a lado (↑↓ ou J/K trocam de arquivo).
+- **Acompanhar até o deploy**: ao aprovar uma PR (ou em "Acompanhar"), o app segue merge → build → deploy a cada
+  10–15 s, numa linha do tempo na PR e num painel no canto, com notificação em cada etapa e na falha.
 - **Automação**: regras por prioridade — PR (criador → branch → aprovar/arquivar/notificar), deploy (pipeline →
   estágio → branch, com *"só se eu já aprovei a PR de origem"*) e permissão (pipeline → recurso), com prévia do que
   cada regra pegaria.
 - **Análise** (lead time, aprovações, criadores, repositórios) e **Histórico** de tudo que você e o piloto fizeram.
 
 **Leitura em tempo real, por fonte**: PRs, builds, deploys e issues são lidos cada um no próprio ciclo — o que chega
-primeiro já aparece. Cada tela mostra "lendo…" ou "atualizado há X" no cabeçalho (com ↻ para reler só ela), a barra
+primeiro já aparece —, com o intervalo de cada um em Configurações → Leitura e automação (mais lento com a janela
+escondida, pausa com a tela bloqueada, respeita o limite de chamadas). O **tempo real (local)** vigia os repositórios
+ativos a cada ~10 s (GitHub, com ETag: "nada mudou" não gasta cota) e ~15 s (Azure) e relê só o que mudou — tudo na
+sua máquina, com o seu PAT; nada passa por servidor nenhum além do GitHub e do Azure. Cada tela mostra "lendo…" ou "atualizado há X" no cabeçalho (com ↻ para reler só ela), a barra
 lateral marca o item que está lendo, e o fio de progresso do topo fica só para as ações que você dispara.
 
 **Sem internet**: o app continua mostrando o que já tinha lido (PRs, builds, listas de repositórios) com um alerta

@@ -382,7 +382,14 @@
     const ed = M().editor.getEditors().find(e => e.getModel()?.uri.path.endsWith("main.ts"));
     ed.focus(); ed.setPosition({ lineNumber: 3, column: 25 });   // em cima de "soma"
     await press("F12"); await sleep(2500);
-    if (!txt($(".tab.on")).includes("util.ts")) throw new Error("F12 não abriu util.ts (aba: " + txt($(".tab.on")) + ")");
+    if (!txt($(".tab.on")).includes("util.ts")) {
+      // diagnóstico: a tecla não chegou ou a navegação falhou? roda a ação direto e lista os modelos
+      const focused = ed.hasTextFocus();
+      ed.focus(); ed.setPosition({ lineNumber: 3, column: 25 });
+      await ed._commandService.executeCommand("editor.action.revealDefinition").catch(() => {}); await sleep(2500);
+      const models = M().editor.getModels().map(m => m.uri.toString().split("/").slice(-1)[0]).join(",");
+      throw new Error(`F12 não abriu util.ts (aba: ${txt($(".tab.on"))}; foco=${focused}; modelos: ${models})`);
+    }
     await shot("07-lsp");
     return `erro: "${err.message.slice(0, 60)}" + F12 abriu util.ts`;
   });
@@ -394,6 +401,7 @@
     const inp = await waitFor(".form input.input");
     inp.focus(); await type(taskTitle);
     for (const a of $$(".acc.on")) click(a);   // sem agente nesta etapa
+    click(byText(".seg button", "Worktree separado")); await sleep(200);   // o padrão agora é o checkout
     click(byText(".btn.primary", "Criar tarefa"));
     await waitFor(() => byText(".sc.task", taskTitle), 20000);
     const st = await api("ws");

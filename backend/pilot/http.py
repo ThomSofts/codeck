@@ -8,12 +8,14 @@ import hmac
 import json
 import mimetypes
 import os
+import socket
+import struct
 import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import accounts, agents, analytics, azure, catalogs, debug, dotnet, editor, engine, extensions, git, github, kanban, launch, library, lsp, power, rules, terminals, tracking, update, workspace, ws
+from . import accounts, agents, analytics, azure, cascade, catalogs, debug, dotnet, editor, engine, extensions, git, github, kanban, launch, library, lsp, power, rules, terminals, tracking, update, workspace, ws
 from .core import (APP_BUILD, APP_PLATFORM, APP_VERSION, ARCHIVE_FILE, CONFIG_FILE, DATA, DEFAULT_PORT, PRODUCT, RULES_FILE, OfflineError,
                    STATIC_DIR, TOKEN, ctx, load_json, lock, log_activity, log_build, log_deploy, notifications, notify_seq,
                    now_iso, pr_summary, read_activity, save_json, state, wake)
@@ -51,6 +53,9 @@ def get_state(qs, body):
                                  for a in ctx.gh.values()]
     payload["sources"] = sorted({p["org"] for p in payload["prs"] + payload["myPrs"] + payload["builds"]} | set(ctx.orgs), key=str.lower)
     payload["pollSeconds"] = ctx.config.get("pollSeconds", 60)
+    payload["pollIntervals"] = engine.intervals()   # um por fonte; schedule = próxima leitura de cada uma e por quê
+    payload["schedule"] = dict(state.get("schedule") or {})
+    payload["cascade"] = cascade.public()           # PRs acompanhadas até o deploy
     payload["editor"] = ctx.config.get("editor") or "vscode"
     payload["theme"] = ctx.config.get("theme") or "system"
     payload["ui"] = accounts.ui_prefs(ctx.config)
@@ -122,6 +127,28 @@ def post_refresh(qs, body):
         engine.refresh(body["source"])
     else:
         wake.set()
+        cascade.poke()
+    return {"ok": True}
+
+
+@route("POST", "/api/presence")
+def post_presence(qs, body):
+    """A tela avisa foco/visibilidade: sem ninguém olhando, as leituras espaçam; ao voltar, relê o que envelheceu."""
+    return engine.set_presence(body.get("focused", True), body.get("visible", True))
+
+
+# ---------------------------------------------------------------- acompanhar em cascata (PR → merge → build → deploy)
+@route("POST", "/api/cascade/follow")
+def post_cascade_follow(qs, body):
+    pr = find_item("pr", body.get("key"))
+    if not pr:
+        raise ValueError("PR não está mais na lista — atualize")
+    return cascade.follow(pr, "manual")
+
+
+@route("POST", "/api/cascade/stop")
+def post_cascade_stop(qs, body):
+    cascade.stop(body.get("key"))
     return {"ok": True}
 
 
@@ -138,6 +165,8 @@ def post_vote(qs, body):
     with lock:
         pr["myVote"] = vote
     log_activity("manual", "vote", pr, vote=vote)
+    if vote >= 5:
+        cascade.on_approved(pr, "approve")   # "Acompanhar até o deploy ao aprovar" (Configurações → Leitura e automação)
     return {"ok": True}
 
 
@@ -559,6 +588,80 @@ def post_issue_comment(qs, body):
     return {"ok": True}
 
 
+def _patch_issue_lists(key, d):
+    """Depois de editar: a issue nas listas da memória (a leitura de fundo e a consulta sob demanda) já com o que
+    mudou — a tela relê o estado e não volta a mostrar o antigo até a próxima leitura."""
+    if not key:
+        return
+    fields = {"title": d.get("title"), "state": d.get("state"), "updated": d.get("updated") or now_iso(),
+              "labels": [{"name": n, "color": None} for n in d.get("labels") or []]}
+    who = [a.strip() for a in (d.get("assignee") or "").split(",") if a.strip()]
+    with lock:
+        pools = [state.get("issues") or []] + [hit[1].get("issues") or [] for hit in getattr(engine, "_browse", {}).values()]
+        for pool in pools:
+            for i in pool:
+                if i.get("key") != key:
+                    continue
+                colors = {l["name"]: l.get("color") for l in i.get("labels") or []}
+                i.update(fields, labels=[{"name": l["name"], "color": colors.get(l["name"])} for l in fields["labels"]])
+                old = {a.get("login"): a for a in i.get("assignees") or []}
+                i["assignees"] = [old.get(n) or {"login": n, "avatar": None} for n in who]
+
+
+@route("POST", "/api/issue/edit")
+def post_issue_edit(qs, body):
+    changes = body.get("changes") or {}
+    if not isinstance(changes, dict) or not changes:
+        raise ValueError("Nada para salvar")
+    acc = _issue_acc(body)
+    if body.get("provider") == "github":
+        d = acc.edit_issue(body.get("repo"), body.get("number"), changes)
+    else:
+        d = acc.edit_work_item(body.get("number"), changes)
+    _patch_issue_lists(body.get("key"), d)
+    return d
+
+
+@route("GET", "/api/issue/options")
+def get_issue_options(qs, body):
+    q = {k: q1(qs, k) for k in ("provider", "account", "org", "repo", "project", "type")}
+    acc = _issue_acc(q)
+    return acc.issue_options(q["repo"]) if q["provider"] == "github" else acc.work_item_options(q["project"] or q["repo"], q["type"] or "Task")
+
+
+# ---------------------------------------------------------------- PR: arquivos modificados e o diff de cada um
+def _pr_of(key):
+    pr = find_item("pr", key)
+    if not pr:
+        raise LookupError("PR não está mais na lista — atualize")
+    return pr, engine.account_for_item(pr)
+
+
+@route("GET", "/api/pr/files")
+def get_pr_files(qs, body):
+    pr, acc = _pr_of(q1(qs, "key"))
+    if pr.get("provider") == "github":
+        return acc.pr_files(pr["project"], pr["prId"])
+    return acc.pr_files(pr["project"], pr["repoId"], pr["prId"])
+
+
+@route("GET", "/api/pr/file")
+def get_pr_file(qs, body):
+    """O arquivo na base e na cabeça da PR (cada lado vazio se não existe nele), para o diff lado a lado."""
+    pr, acc = _pr_of(q1(qs, "key"))
+    path, old, base, head = q1(qs, "path"), q1(qs, "oldPath") or q1(qs, "path"), q1(qs, "base"), q1(qs, "head")
+    if not path or not base or not head:
+        raise ValueError("Faltou o arquivo ou os commits")
+    if pr.get("provider") == "github":
+        a, b = acc.file_at(pr["project"], old, base), acc.file_at(pr["project"], path, head)
+    else:
+        a, b = acc.file_at(pr["project"], pr["repoId"], old, base), acc.file_at(pr["project"], pr["repoId"], path, head)
+    binary = any(x is not None and "\0" in x[:8000] for x in (a, b))
+    big = any(x is not None and len(x) > 3_000_000 for x in (a, b))
+    return {"original": "" if binary or big or a is None else a, "modified": "" if binary or big or b is None else b,
+            "binary": binary, "tooBig": big, "existsBefore": a is not None, "existsAfter": b is not None}
+
+
 @route("GET", "/api/kanban")
 def get_kanban(qs, body):
     return kanban.view()
@@ -668,7 +771,23 @@ def post_term_new(qs, body):
 
 @route("POST", "/api/terms/close")
 def post_term_close(qs, body):
-    terminals.close(body.get("id"))
+    workspace.close_terminal(body.get("id"))
+    return {"ok": True}
+
+
+@route("POST", "/api/terms/drop")
+def post_term_drop(qs, body):
+    return workspace.drop_file(body.get("id"), body.get("name"), body.get("data"), bool(body.get("keep")))
+
+
+@route("GET", "/api/terms/refs")
+def get_term_refs(qs, body):
+    return {"refs": workspace.drop_refs(q1(qs, "id"))}
+
+
+@route("POST", "/api/terms/refs/remove")
+def post_term_refs_remove(qs, body):
+    workspace.drop_remove(body.get("id"), body.get("path"))
     return {"ok": True}
 
 
@@ -760,6 +879,23 @@ def post_ws_settings(qs, body):
 def post_ws_task(qs, body):
     terminals.hint_size(body.get("cols"), body.get("rows"))
     return workspace.create_task(body.get("repoId"), body)
+
+
+@route("POST", "/api/ws/task/here")
+def post_ws_task_here(qs, body):
+    terminals.hint_size(body.get("cols"), body.get("rows"))
+    return workspace.start_in_checkout(body.get("repoId"), body)
+
+
+@route("GET", "/api/ws/task/cleanup")
+def get_ws_task_cleanup(qs, body):
+    return workspace.cleanup_info(q1(qs, "repoId"))
+
+
+@route("POST", "/api/ws/task/cleanup")
+def post_ws_task_cleanup(qs, body):
+    return workspace.cleanup(body.get("repoId"), body.get("taskIds") or [], body.get("orphans") or [],
+                             bool(body.get("deleteBranch")), bool(body.get("force")))
 
 
 @route("POST", "/api/ws/task/update")
@@ -855,7 +991,17 @@ def post_ws_fs_rename(qs, body):
 
 @route("POST", "/api/ws/fs/delete")
 def post_ws_fs_delete(qs, body):
-    return editor.delete(body.get("repoId"), body.get("path"), body.get("taskId"), body.get("paths"))
+    return editor.delete(body.get("repoId"), body.get("path"), body.get("taskId"), body.get("paths"), bool(body.get("permanent")))
+
+
+@route("POST", "/api/ws/fs/reveal")
+def post_ws_fs_reveal(qs, body):
+    return editor.reveal(body.get("repoId"), body.get("path") or "", body.get("taskId"))
+
+
+@route("POST", "/api/ws/fs/clipboard")
+def post_ws_fs_clipboard(qs, body):
+    return editor.clipboard(body.get("text"))
 
 
 @route("POST", "/api/ws/fs/move")
@@ -1250,6 +1396,15 @@ def get_remote_repos(qs, body):
 
 
 # ---------------------------------------------------------------- servidor
+def _send_deadline(conn, secs):
+    """Prazo para cada envio no socket (só no envio — a leitura do WebSocket espera o quanto for preciso)."""
+    try:
+        val = struct.pack("I", secs * 1000) if os.name == "nt" else struct.pack("ll", secs, 0)
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, val)
+    except (OSError, AttributeError, struct.error):
+        pass
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -1324,21 +1479,40 @@ class Handler(BaseHTTPRequestHandler):
         except LookupError:
             return self.send(404, {"error": "Terminal não encontrado"})
         sock = ws.WebSocket.accept(self, proto or None)
+        # quem manda a saída ao vivo é a thread que lê o PTY: uma tela que parou de ler (janela suspensa, conexão
+        # meio morta) travava essa thread no envio — o processo parava de ser lido, o agente travava na escrita e
+        # nem os pedidos colados chegavam mais. Com prazo, a conexão cai e a tela reconecta de onde parou.
+        _send_deadline(self.connection, 15)
+        gate = threading.Lock()
+
+        def hang_up():
+            try:
+                self.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
         def out(data):
-            if data is None:
-                sock.send_text(json.dumps({"t": "exit", "code": term.exit}))
-            else:
-                sock.send_bytes(data)
+            # a saída ao vivo espera o "hello" e o histórico (ver abaixo); antes chegava ANTES deles quando o processo
+            # escrevia logo após assinar (agente recém-aberto): a tela apagava (reset) o que já tinha e ficava preta
+            with gate:
+                try:
+                    if data is None:
+                        sock.send_text(json.dumps({"t": "exit", "code": term.exit}))
+                    else:
+                        sock.send_bytes(data)
+                except ws.Closed:
+                    hang_up()
+                    raise
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         since = q1(qs, "from")
-        history, start, resumed = term.attach(out, int(since) if since and since.isdigit() else None)
         try:
-            sock.send_text(json.dumps({"t": "hello", "start": start, "resume": resumed, **term.info()}))
-            if history:
-                sock.send_bytes(history)
-            if not term.alive:
-                sock.send_text(json.dumps({"t": "exit", "code": term.exit}))
+            with gate:
+                history, start, resumed = term.attach(out, int(since) if since and since.isdigit() else None)
+                sock.send_text(json.dumps({"t": "hello", "start": start, "resume": resumed, **term.info()}))
+                if history:
+                    sock.send_bytes(history)
+                if not term.alive:
+                    sock.send_text(json.dumps({"t": "exit", "code": term.exit}))
             while True:
                 op, data = sock.recv()
                 if op == ws.BINARY:

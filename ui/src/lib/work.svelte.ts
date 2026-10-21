@@ -4,6 +4,7 @@ import { get, post } from "./api";
 import { repos } from "./repos.svelte";
 import { go, router } from "./router.svelte";
 import { ui } from "./ui.svelte";
+import { drop } from "../components/work/Terminal.svelte";
 
 export type Provider = "claude" | "codex" | "cursor" | "gemini" | "opencode";
 export interface AiAccount {
@@ -145,7 +146,7 @@ class Work {
   async close(repoId: string) {
     const p = this.projects.find(x => x.id === repoId);
     const running = p ? [...p.terms, ...p.tasks.flatMap(t => t.terms)].filter(t => t.alive).length : 0;
-    if (running && !(await ui.ask({ title: `Fechar ${p!.name}?`, message: `${running} terminal(is)/agente(s) deste projeto serão encerrados. As tarefas e os worktrees continuam.`, confirm: "Fechar", danger: true }))) return;
+    if (running && !(await ui.ask({ title: `Fechar ${p!.name}?`, message: `${running} terminal(is)/agente(s) deste projeto serão encerrados e as sessões de IA limpas (não ficam para retomar). As tarefas e os worktrees continuam.`, confirm: "Fechar", danger: true }))) return;
     // sai da rota do projeto ANTES de fechar: a tela reabre o projeto que está na rota (por isso ele "voltava").
     // A rota só muda no quadro seguinte (transição de tela) — até lá o "closing" impede a reabertura.
     this.closing.add(repoId);
@@ -156,6 +157,8 @@ class Work {
     if (this.active === repoId) this.active = rest.length ? rest[rest.length - 1].id : null;
     try { await post("ws/close", { repoId }); }
     finally { setTimeout(() => this.closing.delete(repoId), 1500); }
+    // os terminais do projeto saem da tela também (xterm + conexão): antes ficavam vivos na memória, reconectando
+    if (p) for (const t of [...p.terms, ...p.tasks.flatMap(k => k.terms)]) drop(t.id);
     await this.load();
   }
   async activate(repoId: string) {

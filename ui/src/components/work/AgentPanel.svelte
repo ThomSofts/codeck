@@ -19,7 +19,7 @@
   import LimitRing from "../ai/LimitRing.svelte";
   import Fuel from "../ai/Fuel.svelte";
   import AgentIcon from "./AgentIcon.svelte";
-  import { clock, rank, tone, type Rec } from "../ai/limits.svelte";
+  import { ACC_STATE, clock, rank, tone, type Rec } from "../ai/limits.svelte";
 
   type Started = { projectId: string; taskId: string | null; termId?: string };
   let { project, task = null, term = null, onremoved, onreview, onstarted, onmore }:
@@ -179,11 +179,13 @@
   /** vale sugerir a troca: a do projeto está no limite / sem leitura, ou a recomendada tem bem mais fôlego */
   // só com grupo: sem ele não dá para saber se a outra conta é do mesmo cliente
   const nudge = $derived(group && rec && account && rec.a.id !== accountId && (!mine || mine.free == null || mine.blocked || rec.free! - mine.free >= 15) ? rec : null);
-  const shown = $derived.by(() => {
-    const l = ranked.filter(r => r.free != null || r.a.id === accountId || r.a.id === acc?.id);
-    const extra = acc && !l.some(r => r.a.id === acc.id) ? rank([acc], now) : [];
-    return [...extra, ...l];
+  // em destaque: a conta da sessão aberta (se for de outra conta) ou a do projeto; as outras do grupo, da mais livre
+  // para a mais apertada — as sem leitura de limite vão para o fim
+  const mainRec = $derived.by(() => {
+    const id = acc?.id || accountId;
+    return ranked.find(r => r.a.id === id) || (acc ? rank([acc], now)[0] : mine) || null;
   });
+  const others = $derived(ranked.filter(r => r.a.id !== mainRec?.a.id && (r.free != null || r.a.id === accountId)));
 
   const EV: Record<string, string> = { UserPromptSubmit: "pedido recebido", Stop: "terminou", SessionStart: "sessão aberta", PreCompact: "compactando", SubagentStop: "subagente terminou" };
   const ctxSize = (n: number) => (n >= 1e6 ? `${n / 1e6}M` : `${Math.round(n / 1000)}k`);
@@ -215,7 +217,7 @@
           {#if account}
             <button class="chip" title={`Conta de IA do projeto: ${account.label} · ${account.name}${account.email ? " · " + account.email : ""} — clique para trocar`} onclick={pickAccount}>
               <AgentIcon provider={account.provider} size={13} /><span class="ell">{account.name}</span>
-              {#if mine?.free != null}<span class="cf {mine.tone}">{Math.round(mine.free)}%</span>{/if}<ChevronDown size={11} /></button>
+              {#if mine?.free != null}<span class="cf {mine.tone}" title="limite livre desta conta">{Math.round(mine.free)}%</span>{/if}<ChevronDown size={11} /></button>
           {:else}
             <span class="tiny muted">Nenhuma CLI de IA — Contas e ajustes → IA</span>
           {/if}
@@ -229,7 +231,7 @@
       {#if nudge && !targetTerm}
         <div class="nudge">
           <AccountAvatar a={nudge.a} size={20} />
-          <span class="grow"><b>{nudge.a.name}</b> está mais livre: {Math.round(nudge.free!)}%{mine?.free != null ? ` × ${Math.round(mine.free)}%` : ""}</span>
+          <span class="grow"><b>{nudge.a.name}</b> tem {Math.round(nudge.free!)}% livre{mine?.free != null ? ` (a atual, ${Math.round(mine.free)}%)` : ""}</span>
           <button class="btn sm" onclick={() => work.setAccount(project.id, nudge!.a.id)}>Usar</button>
         </div>
       {/if}
@@ -322,31 +324,49 @@
     </section>
   {/if}
 
-  <!-- fôlego das contas -->
+  <!-- contas: a do projeto em destaque (uso por janela e reset); as outras numa lista curta, todas em "% livre" -->
   <section class="limits" class:shut={!limitsOpen}>
     <button class="lh" onclick={() => { limitsOpen = !limitsOpen; LSset("codeck.limitsOpen", limitsOpen ? "1" : "0"); }} aria-expanded={limitsOpen}>
-      <h4>Fôlego das contas{#if group}<span class="n">{group}</span>{/if}</h4><ChevronDown size={13} class="chev {limitsOpen ? '' : 'rot'}" /></button>
+      <h4>Contas de IA{#if group}<span class="n">{group}</span>{/if}</h4>
+      {#if !limitsOpen && mainRec?.free != null}<span class="lf sm {mainRec.tone}">{Math.round(mainRec.free)}% livre</span>{/if}
+      <ChevronDown size={13} class="chev {limitsOpen ? '' : 'rot'}" /></button>
     {#if limitsOpen}
-    {#each shown as r (r.a.id)}
-      {@const a = r.a}
-      {@const st = work.activity[a.id]?.state}
-      <div class="lim" class:cur={a.id === (acc?.id || accountId)}>
-        <div class="lr">
-          <AccountAvatar {a} state={st === "working" || st === "needs-you" ? st : null} size={26} />
-          <div class="lt">
-            <b class="ell">{a.name}{#if a.id === acc?.id}<span class="this">esta sessão</span>{:else if a.id === accountId}<span class="this">do projeto</span>{:else if a.id === rec?.a.id}<span class="this good">recomendada</span>{/if}</b>
-            {#if r.free == null && a.provider === "claude"}
-              <button class="tiny readlim" disabled={!!work.probing[a.id]} onclick={() => work.probe(a.id)}>{work.probing[a.id] ? "lendo o limite…" : work.activity[a.id]?.probeError ? work.activity[a.id]!.probeError!.error : "limite não lido — ler agora"}</button>
-            {:else}<span class="tiny muted ell" title={r.why}>{r.why}</span>{/if}
+      {#if mainRec}
+        {@const a = mainRec.a}
+        {@const st = work.activity[a.id]?.state}
+        <div class="main">
+          <div class="lr">
+            <AccountAvatar {a} state={st === "working" || st === "needs-you" ? st : null} size={28} />
+            <div class="lt">
+              <b class="ell">{a.name}</b>
+              <span class="tiny muted">{acc && acc.id !== accountId ? "conta desta sessão" : "conta do projeto"}{#if st && ACC_STATE[st] && st !== "free"} · {ACC_STATE[st][0]}{/if}</span>
+            </div>
+            {#if mainRec.free != null}<span class="lf {mainRec.tone}" title="quanto ainda dá para usar na janela mais gasta">{Math.round(mainRec.free)}%<small>livre</small></span>{/if}
           </div>
-          {#if r.free != null}<span class="lf {r.tone}">{Math.round(r.free)}%</span>{/if}
-          {#if a.id !== accountId && r.free != null && !r.blocked}
-            <button class="use" title={`Usar ${a.name} neste projeto`} onclick={() => work.setAccount(project.id, a.id)}>usar</button>
-          {/if}
+          {#if mainRec.free != null}
+            <div class="uso"><span class="tiny muted">usado por janela · reset</span><Fuel {a} /></div>
+          {:else if a.provider === "claude"}
+            <button class="tiny readlim" disabled={!!work.probing[a.id]} onclick={() => work.probe(a.id)}>{work.probing[a.id] ? "lendo o limite…" : work.activity[a.id]?.probeError ? work.activity[a.id]!.probeError!.error : "limite ainda não lido — ler agora"}</button>
+          {:else}<span class="tiny muted">{mainRec.why}</span>{/if}
         </div>
-        {#if r.free != null}<div class="lfu"><Fuel {a} compact /></div>{/if}
-      </div>
-    {:else}<div class="small muted">Nenhuma conta de IA. Configure em Contas e ajustes → IA.</div>{/each}
+      {/if}
+      {#if others.length}
+        <ul class="others" aria-label="Outras contas">
+          {#each others as r (r.a.id)}
+            {@const a = r.a}
+            {@const st = work.activity[a.id]?.state}
+            <li>
+              <AccountAvatar {a} state={st === "working" || st === "needs-you" ? st : null} size={20} />
+              <span class="ell nm" title={r.why}>{a.name}{#if a.id === rec?.a.id}<span class="this good">mais livre</span>{/if}</span>
+              <span class="lf sm {r.tone}" title={r.why}>{r.free != null ? `${Math.round(r.free)}%` : "—"}</span>
+              {#if a.id !== accountId}
+                <button class="use" title={`Passar a usar ${a.name} em ${project.name}`} onclick={() => work.setAccount(project.id, a.id)}>usar</button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      {#if !mainRec && !others.length}<div class="small muted">Nenhuma conta de IA. Configure em Contas e ajustes → IA.</div>{/if}
     {/if}
   </section>
 </div>
@@ -438,22 +458,26 @@
   .danger-text { color: var(--bad); }
   a { color: var(--accent); }
 
-  /* ---------- limites */
-  .limits { gap: 2px; }
+  /* ---------- contas */
+  .limits { gap: 6px; }
   .limits.shut { padding-bottom: 0; }
-  .lh { display: flex; align-items: center; justify-content: space-between; width: 100%; border: 0; background: none; padding: 0 0 6px; cursor: pointer; color: var(--muted); }
+  .lh { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; padding: 0; cursor: pointer; color: var(--muted); }
+  .lh h4 { flex: 1; }
   .lh :global(.chev) { transition: transform var(--t); }
   .lh :global(.chev.rot) { transform: rotate(-90deg); }
-  .lim { display: grid; gap: 6px; padding: 8px; margin: 0 -8px; border-radius: var(--r-sm); min-width: 0; transition: background var(--t-fast); }
-  .lim:hover { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
-  .lim.cur { background: var(--surface-2); }
+  .main { display: grid; gap: 8px; padding: 10px; border-radius: var(--r-sm); background: var(--surface-2); border: 1px solid var(--line); min-width: 0; }
   .lr { display: flex; align-items: center; gap: 9px; min-width: 0; }
-  .lfu { padding-left: 35px; }
-  .lf { font: 700 14px/1 var(--font); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--good); flex: none; }
-  .lf.warn { color: var(--warn); } .lf.bad { color: var(--bad); }
-  .use { flex: none; height: 20px; padding: 0 7px; border-radius: 6px; border: 1px solid var(--line-2); background: none; color: var(--text-2); font: 600 11px var(--font);
-    cursor: pointer; opacity: 0; transition: opacity var(--t-fast), background var(--t-fast); }
-  .lim:hover .use, .use:focus-visible { opacity: 1; }
+  .uso { display: grid; gap: 4px; }
+  .lf { display: inline-flex; align-items: baseline; gap: 3px; font: 700 16px/1 var(--font); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--good); flex: none; }
+  .lf small { font: 500 10.5px/1 var(--font); color: var(--muted); letter-spacing: 0; }
+  .lf.sm { font-size: 12px; font-weight: 650; }
+  .lf.warn { color: var(--warn); } .lf.bad { color: var(--bad); } .lf.muted { color: var(--muted); }
+  .others { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+  .others li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 4px 4px 2px; border-radius: var(--r-xs); font-size: 12px; }
+  .others li:hover { background: var(--surface-2); }
+  .nm { flex: 1; display: flex; align-items: center; gap: 6px; color: var(--text-2); }
+  .use { flex: none; height: 20px; padding: 0 7px; border-radius: 6px; border: 1px solid var(--line-2); background: none; color: var(--text-2); font: 600 11px var(--font); cursor: pointer;
+    transition: background var(--t-fast), color var(--t-fast); }
   .use:hover { background: var(--surface-3); color: var(--text); }
   .this.good { color: var(--good); }
   .cf { font: 650 10.5px/1 var(--font); font-variant-numeric: tabular-nums; color: var(--good); }

@@ -73,6 +73,35 @@ def shell_argv(command=None, shell=None, win=None):
 
 
 # ---------------------------------------------------------------- PTY por plataforma
+def _descendants(pid):
+    """Todos os descendentes de um processo (POSIX), pela tabela do `ps` — filhos, netos…"""
+    import subprocess
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    kids = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+    found, todo = [], [pid]
+    while todo:
+        for c in kids.get(todo.pop(), []):
+            if c not in found:
+                found.append(c)
+                todo.append(c)
+    return found
+
+
+def _running(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
 class _PosixPty:
     def __init__(self, argv, cwd, env, cols, rows):
         import fcntl
@@ -83,13 +112,14 @@ class _PosixPty:
         self._fcntl, self._termios, self._struct = fcntl, termios, struct
         self.master, slave = pty.openpty()
         self.resize(cols, rows, fd=slave)
-        def controlling_tty():
-            # sessão nova (setsid) + o PTY como terminal de CONTROLE dela. Sem isto o processo não tinha terminal de
-            # controle: o sistema nunca entregava o SIGWINCH ao redimensionar, e programas de tela inteira (Claude
-            # Code, vim, htop…) continuavam desenhando no tamanho antigo — a tela embaralhava e cortava as linhas.
-            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-        self.proc = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, cwd=cwd, env=env,
-                                     start_new_session=True, close_fds=True, preexec_fn=controlling_tty)
+        # sessão nova (setsid) + o PTY como terminal de CONTROLE dela. Sem isto o processo não tinha terminal de
+        # controle: o sistema nunca entregava o SIGWINCH ao redimensionar, e programas de tela inteira (Claude Code,
+        # vim, htop…) continuavam desenhando no tamanho antigo — a tela embaralhava e cortava as linhas.
+        # Feito num Python pequeno que depois vira o shell (exec), e não num preexec_fn: código Python entre o fork e
+        # o exec, com outras threads rodando, podia travar o filho — e o Popen (o pedido de abrir o agente) junto.
+        stub = "import fcntl,os,sys,termios; fcntl.ioctl(0, termios.TIOCSCTTY, 0); os.execvp(sys.argv[1], sys.argv[1:])"
+        self.proc = subprocess.Popen([sys.executable, "-I", "-S", "-c", stub, *argv], stdin=slave, stdout=slave, stderr=slave,
+                                     cwd=cwd, env=env, start_new_session=True, close_fds=True)
         os.close(slave)
 
     def read(self):
@@ -99,8 +129,11 @@ class _PosixPty:
             return b""
 
     def write(self, data):
+        # o os.write pode escrever só uma parte (pedido longo colado no agente): sem o resto, o agente ficava esperando
+        # o fim da colagem para sempre
         try:
-            os.write(self.master, data)
+            while data:
+                data = data[os.write(self.master, data):]
         except OSError:
             pass
 
@@ -119,13 +152,23 @@ class _PosixPty:
 
     def kill(self):
         import signal
-        try:
-            os.killpg(self.proc.pid, signal.SIGHUP)
-            time.sleep(0.2)
-            if self.proc.poll() is None:
-                os.killpg(self.proc.pid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            pass
+        # os filhos que saíram do grupo (servidores MCP, `node` destacado, o shell de uma ferramenta do agente) não
+        # recebem o sinal do grupo e ficavam vivos depois de fechar o terminal: vão pela árvore de processos
+        kids = _descendants(self.proc.pid)
+        for sig in (signal.SIGHUP, signal.SIGKILL):
+            try:
+                os.killpg(self.proc.pid, sig)
+            except (OSError, ProcessLookupError):
+                pass
+            for pid in kids:
+                try:
+                    os.kill(pid, sig)
+                except (OSError, ProcessLookupError):
+                    pass
+            if sig == signal.SIGHUP:
+                end = time.time() + 0.5
+                while time.time() < end and (self.proc.poll() is None or any(_running(p) for p in kids)):
+                    time.sleep(0.05)
         try:
             os.close(self.master)
         except OSError:
@@ -215,6 +258,7 @@ class _WinPty:
                                   env_block, cwd, ctypes.byref(si), ctypes.byref(pi)):
             raise OSError(ctypes.get_last_error(), f"não abriu {argv[0]}")
         self.hproc = pi.hProcess
+        self.pid = pi.dwProcessId
         k32.CloseHandle(pi.hThread)
         self._closed = False
         self._out_closed = False
@@ -271,6 +315,14 @@ class _WinPty:
         if self._closed:
             return
         self._closed = True
+        # o agente roda DENTRO do PowerShell/cmd do terminal: matar só o shell deixava o claude/node órfão, ainda
+        # trabalhando. O taskkill /T leva a árvore inteira.
+        import subprocess
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.pid)], capture_output=True, timeout=5,
+                           creationflags=0x08000000)   # CREATE_NO_WINDOW
+        except (OSError, subprocess.SubprocessError):
+            pass
         self.k32.TerminateProcess(self.hproc, 1)
         self._close_pc()
         self.k32.CloseHandle(self.in_write)
@@ -418,18 +470,30 @@ def close_all():
     with _lock:
         items = list(_terms.values())
         _terms.clear()
+    kids = []
     if not IS_WIN:
         import signal
         for t in items:
             try:
+                kids += _descendants(t.pty.proc.pid)   # antes do sinal: depois os órfãos já não têm o pai na árvore
                 os.killpg(t.pty.proc.pid, signal.SIGHUP)
             except (OSError, ProcessLookupError, AttributeError):
+                pass
+        for pid in kids:
+            try:
+                os.kill(pid, signal.SIGHUP)
+            except (OSError, ProcessLookupError):
                 pass
         end = time.time() + 1.0
         while time.time() < end and any(t.pty.alive() for t in items):
             time.sleep(0.05)
+        for pid in kids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
     for t in items:
-        t.kill()   # quem sobrou: SIGKILL (POSIX) / TerminateProcess (Windows)
+        t.kill()   # quem sobrou: SIGKILL (POSIX) / taskkill da árvore + TerminateProcess (Windows)
 
 
 def rename(tid, title):

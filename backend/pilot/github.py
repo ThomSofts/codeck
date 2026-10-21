@@ -85,6 +85,7 @@ class GitHub:
         self.me = None
         self.scopes = None
         self.rate = {}
+        self.retry_until = 0   # limite secundário/Retry-After: a leitura de fundo pula a conta até essa hora (epoch)
         self._etags = {}
         self._lock = threading.Lock()
         self.auth_error = None   # {"at", "message"} quando o GitHub recusou o token e não deu para renovar sozinho
@@ -185,6 +186,8 @@ class GitHub:
         if h and h.get("X-RateLimit-Remaining"):
             self.rate = {"remaining": int(h["X-RateLimit-Remaining"]), "limit": int(h.get("X-RateLimit-Limit") or 0),
                          "reset": int(h.get("X-RateLimit-Reset") or 0)}
+        if h and (h.get("Retry-After") or "").isdigit():   # limite secundário (403/429): o GitHub diz quanto esperar
+            self.retry_until = time.time() + int(h["Retry-After"])
 
     def gql(self, query, variables=None):
         res = self.req("POST", "graphql", {"query": query, "variables": variables or {}})
@@ -522,6 +525,58 @@ class GitHub:
 
     def comment_issue(self, repo, number, text):
         self.req("POST", f"repos/{repo}/issues/{int(number)}/comments", {"body": text})
+
+    def edit_issue(self, repo, number, changes):
+        """Edita a issue pelo app: título, corpo, estado (open/closed), responsáveis e etiquetas. Só manda o que mudou;
+        devolve a issue inteira de novo (como `issue`), para a tela trocar o otimista pelo que o GitHub gravou."""
+        body = {}
+        for k in ("title", "body", "assignees", "labels"):
+            if k in changes:
+                body[k] = changes[k]
+        if changes.get("state") in ("open", "closed"):
+            body["state"] = changes["state"]
+            if changes["state"] == "closed":
+                body["state_reason"] = "not_planned" if changes.get("stateReason") == "not_planned" else "completed"
+        if body.get("title") is not None and not str(body["title"]).strip():
+            raise ValueError("O título não pode ficar vazio")
+        if body:
+            self.req("PATCH", f"repos/{repo}/issues/{int(number)}", body)
+        return self.issue(repo, number)
+
+    def issue_options(self, repo):
+        """O que dá para escolher ao editar uma issue do repositório: as etiquetas (com cor) e quem pode ser responsável."""
+        labels = self.paged(f"repos/{repo}/labels", limit=300)
+        people = self.paged(f"repos/{repo}/assignees", limit=300)
+        return {"states": [{"name": "open", "label": "Aberta", "category": "Proposed"}, {"name": "closed", "label": "Fechada", "category": "Completed"}],
+                "labels": [{"name": l["name"], "color": f"#{l.get('color') or '888888'}"} for l in labels],
+                "people": [{"id": u["login"], "name": u["login"], "avatar": u.get("avatar_url")} for u in people]}
+
+    # ------------------------------------------------------------ arquivos da PR
+    def pr_files(self, full, number):
+        """Arquivos modificados da PR: caminho, status e +/- (100 por página; o GitHub para em 3000). A base do diff é a
+        base do merge (como na aba "Files changed"), não a ponta atual da branch de destino."""
+        pr = self.req("GET", f"repos/{full}/pulls/{int(number)}")
+        head, base = pr["head"]["sha"], pr["base"]["sha"]
+        try:
+            base = (self.req("GET", f"repos/{full}/compare/{base}...{head}?per_page=1").get("merge_base_commit") or {}).get("sha") or base
+        except Exception:  # noqa: BLE001 — sem compare (fork apagado, histórico enorme): compara com a ponta do destino
+            pass
+        st = {"added": "A", "removed": "D", "modified": "M", "renamed": "R", "copied": "C", "changed": "M", "unchanged": "M"}
+        files = [{"path": f["filename"], "oldPath": f.get("previous_filename"), "status": st.get(f.get("status"), "M"),
+                  "add": f.get("additions", 0), "del": f.get("deletions", 0), "binary": "patch" not in f and f.get("changes", 0) == 0 and f.get("status") != "renamed"}
+                 for f in self.paged(f"repos/{full}/pulls/{int(number)}/files", limit=3000)]
+        return {"files": files, "base": base, "head": head, "total": pr.get("changed_files", len(files)),
+                "additions": pr.get("additions"), "deletions": pr.get("deletions")}
+
+    def file_at(self, full, path, sha):
+        """O texto do arquivo num commit (None se ele não existe lá)."""
+        try:
+            return self.req("GET", f"repos/{full}/contents/{urllib.parse.quote(path)}?ref={urllib.parse.quote(sha)}", raw=True,
+                            accept="application/vnd.github.raw+json")
+        except RuntimeError as e:
+            if str(e).startswith("HTTP 404"):
+                return None
+            raise
 
 # ---------------------------------------------------------------- login: código de dispositivo e gh CLI
 device_flows = {}   # id -> {status, userCode, verificationUri, expires, interval, error, account}

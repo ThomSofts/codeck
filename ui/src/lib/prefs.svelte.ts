@@ -26,6 +26,8 @@ export const PREF_DEFAULTS = {
   "editor.bracketPairs": true,
   /** dicas inline do servidor de linguagem (nome do parâmetro, tipo): segurando ⌃⌥ (como o VS Code), sempre ou nunca */
   "editor.inlayHints": "offUnlessPressed" as "on" | "off" | "offUnlessPressed" | "onUnlessPressed",
+  /** "N referências" em cima de classes, funções e métodos (servidor de linguagem) */
+  "editor.codeLens": true,
   "editor.gitGutter": true,
   "editor.formatOnSave": false,
   "editor.autoSave": "off" as "off" | "afterDelay" | "onFocusChange",

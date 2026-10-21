@@ -24,7 +24,8 @@
   // Explorador (como o do VS Code): todos os arquivos do projeto/tarefa, inclusive os ignorados pelo .gitignore (apagados)
   // e os repositórios dentro dele, em árvore — pasta ignorada inteira (bin/, obj/, node_modules/) é lida ao abrir —, com as cores do Git (M alterado, U novo, D apagado, A adicionado, ! conflito — a pasta herda a
   // cor), ícones do tema de ícones, menu de contexto (novo, recortar/copiar/colar, duplicar, renomear, excluir, caminho,
-  // abrir alterações) e teclado (↑↓ ←→ Enter F2 ⌘X ⌘C ⌘V ⌘⌫ — Ctrl no Windows). Seleção múltipla com ⌘/⇧-clique.
+  // abrir alterações) e teclado (↑↓ ←→, renomear com F2 — e Enter no Mac, onde ⌘↓ abre —, ⌘X ⌘C ⌘V ⌘⌫ ⌘Z — Ctrl no
+  // Windows). Seleção múltipla com ⌘/⇧-clique. Depois do menu de contexto e dos diálogos o foco volta para a árvore.
   // Arrastar move (com ⌥/Ctrl copia) para outra pasta; arrastar do Finder/Explorer copia para dentro do projeto.
   // Clique abre em "visualização" (a aba é reaproveitada); duplo clique fixa. Também a busca no conteúdo.
   // Pastas abrem sob demanda e a árvore é indexada uma vez por leitura — projeto com dezenas de milhares de arquivos continua leve.
@@ -290,9 +291,10 @@
       if (r.dir && open[r.path]) toggleDir(r.path, false);
       else { const parent = r.path.replace(/[^/]+\/?$/, ""); const pi = visible.findIndex(x => x.dir && x.path === parent); if (pi >= 0) move(pi); }
     }
-    else if (e.key === "Enter" && r) { e.preventDefault(); if (r.dir) toggleDir(r.path); else onopen(r.path, undefined, { preview: false }); }
-    else if (e.key === " " && r && !r.dir) { e.preventDefault(); onopen(r.path, undefined, { preview: true }); }
+    // no Mac o Enter renomeia e ⌘↓ abre, como no VS Code (o atalho de renomear é personalizável)
     else if (kb.is(e, "renameFile") && r) { done(); startRename(r.path); }
+    else if ((e.key === "Enter" || (isMac() && isKey(e, "mod+arrowdown"))) && r) { e.preventDefault(); if (r.dir) toggleDir(r.path); else onopen(r.path, undefined, { preview: false }); }
+    else if (e.key === " " && r && !r.dir) { e.preventDefault(); onopen(r.path, undefined, { preview: true }); }
     else if (kb.is(e, "deleteFile") && (r || sel.length)) { done(); remove(targets(cursor)); }
     else if (kb.is(e, "filesExplorer.copy") && (r || sel.length)) { done(); toClip(targets(cursor), false); }
     else if (kb.is(e, "filesExplorer.cut") && (r || sel.length)) { done(); toClip(targets(cursor), true); }
@@ -303,8 +305,20 @@
     else if (kb.is(e, "copyFilePath") && (r || sel.length)) { done(); copy(targets(cursor).map(abs).join("\n"), "Caminho copiado"); }
     else if (kb.is(e, "copyRelativeFilePath") && (r || sel.length)) { done(); copy(targets(cursor).map(strip).join("\n"), "Caminho relativo copiado"); }
     else if (isKey(e, "mod+a")) { done(); sel = visible.map(x => x.path); }
+    else if (isKey(e, "mod+z") && undoable) { done(); undo(); }
     else if (e.key === "Escape" && (clip?.cut || sel.length > 1)) { done(); if (clip?.cut) clip = null; else if (cursor) sel = [cursor]; }
   }
+
+  /** O foco volta para a árvore (depois do menu de contexto ou de um diálogo ele ficava no <body> e ⌘V/F2/⌫ não
+   *  chegavam mais aqui) — a não ser que outro lugar tenha pegado (o editor abriu o arquivo, o campo de nome). */
+  function back() {
+    setTimeout(() => {
+      const a = document.activeElement;
+      if (!edit && listEl?.isConnected && (!a || a === document.body || listEl.contains(a))) listEl.focus({ preventScroll: true });
+    }, 0);
+  }
+  /** Itens do menu de contexto: depois de escolher, o teclado continua na árvore */
+  const refocus = <T extends { onclick?: () => unknown }>(items: T[]) => items.map(it => (it.onclick ? { ...it, onclick: () => { const r = it.onclick!(); back(); if (r instanceof Promise) r.finally(back); } } : it));
 
   // ------------------------------------------------------------ arquivos: criar, renomear, mover, copiar, excluir
   const dirOf = (p: string, dir: boolean) => (dir ? p : p.replace(/[^/]+$/, ""));
@@ -329,6 +343,22 @@
     let g = ghosts;
     for (const c of changes) g = g.flatMap(x => (within(strip(x), c.from) ? (c.to === null ? [] : [c.to + strip(x).slice(c.from.length) + "/"]) : [x]));
     ghosts = g;
+  }
+  // desfazer (⌘Z/Ctrl+Z na árvore) a última renomeação/movimentação feita aqui: volta cada item para onde estava
+  let undoable = $state<{ from: string; to: string }[] | null>(null);
+  function remember(moves: { from: string; to: string }[]) { undoable = moves.length ? moves : null; }
+  async function undo() {
+    const ms = undoable;
+    if (!ms) return;
+    undoable = null;
+    if (!(await saveBefore(ms.map(m => m.to)))) return;
+    const back_: FsChange[] = [];
+    try {
+      for (const m of [...ms].reverse()) { await post("ws/fs/rename", { repoId, taskId, from: m.to, to: m.from }); back_.push({ from: m.to, to: m.from }); }
+      ui.toast(ms.length === 1 ? `Desfeito: ${base(ms[0].from)} voltou` : `Desfeito: ${ms.length} itens voltaram`);
+    } catch (e) { ui.error(e); }
+    changed(back_);
+    await landed(back_.map(c => c.to!), new Set(back_.filter(c => index.dirs.has(c.from + "/")).map(c => c.to!)));
   }
   function changed(changes: FsChange[]) {
     if (!changes.length) return;
@@ -359,7 +389,13 @@
   /** Campo de nome: pega o foco (o `autofocus` do Svelte não tira o foco da lista, então o F2 não deixava digitar) e
    *  seleciona o nome sem a extensão, como no VS Code */
   function grab(i: HTMLInputElement) {
-    requestAnimationFrame(() => { i.focus(); const dot = i.value.lastIndexOf("."); i.setSelectionRange(0, dot > 0 ? dot : i.value.length); });
+    // já (a ação roda com o campo na página) e de novo depois que o menu de contexto fecha e devolve o foco. Sem depender
+    // do requestAnimationFrame: com a janela coberta/minimizada a WebView não o chama, e o campo ficava sem foco
+    // o nome sem a extensão vem selecionado (no próximo ciclo: o valor do bind:value ainda não está no campo agora)
+    const focus = () => { if (i.isConnected && document.activeElement !== i) i.focus({ preventScroll: true }); };
+    focus();
+    setTimeout(() => { focus(); const dot = i.value.lastIndexOf("."); i.setSelectionRange(0, dot > 0 ? dot : i.value.length); }, 0);
+    setTimeout(focus, 80);
   }
   function startRename(path: string) {
     edit = { at: dirOf(strip(path), false), kind: "rename", path, value: base(path) };
@@ -377,6 +413,7 @@
         if (!(await saveBefore([from]))) return;
         await post("ws/fs/rename", { repoId, taskId, from, to });
         changed([{ from, to }]);
+        remember([{ from, to }]);
         await landed([to], new Set(e.path!.endsWith("/") ? [to] : []));
       } else {
         const path = strip(e.at + v);
@@ -393,14 +430,28 @@
     const unsaved = dirtyIn(paths).length;
     if (!(await ui.ask({ title: one ? `Excluir ${base(paths[0])}${dir ? " e tudo dentro dela" : ""}?` : `Excluir ${paths.length} itens?`,
       message: "Vai para a Lixeira — dá para recuperar de lá." + (unsaved ? ` ${unsaved === 1 ? "Um arquivo aberto tem" : `${unsaved} arquivos abertos têm`} alterações não salvas, que serão perdidas.` : ""),
-      detail: one ? undefined : paths.slice(0, 12).map(strip), confirm: "Mover para a Lixeira", danger: true }))) return;
+      detail: one ? undefined : paths.slice(0, 12).map(strip), confirm: "Mover para a Lixeira", danger: true }))) return back();
     try {
-      const r = await post<{ paths: string[] }>("ws/fs/delete", { repoId, taskId, paths: paths.map(strip) });
-      changed(r.paths.map(p => ({ from: p, to: null })));
+      type Del = { paths: string[]; failed?: string[]; error?: string | null };
+      const r = await post<Del>("ws/fs/delete", { repoId, taskId, paths: paths.map(strip) });
+      let gone = r.paths, forever: string[] = [];
+      // a Lixeira recusou (disco de rede, volume sem Lixeira): pergunta antes de apagar de vez
+      if (r.failed?.length) {
+        const n = r.failed.length;
+        if (await ui.ask({ title: n === 1 ? `${base(r.failed[0])} não pode ir para a Lixeira` : `${n} itens não podem ir para a Lixeira`,
+          message: `${r.error ? r.error + ". " : ""}Excluir definitivamente? Não dá para desfazer.`, detail: n === 1 ? undefined : r.failed.slice(0, 12),
+          confirm: "Excluir definitivamente", danger: true })) {
+          forever = (await post<Del>("ws/fs/delete", { repoId, taskId, paths: r.failed, permanent: true })).paths;
+          gone = [...gone, ...forever];
+        }
+      }
+      changed(gone.map(p => ({ from: p, to: null })));
       sel = [];
       await reload(); touched();
-      ui.toast(one ? "Movido para a Lixeira" : `${r.paths.length} itens movidos para a Lixeira`);
+      if (gone.length) ui.toast(forever.length ? `${gone.length === 1 ? "Excluído" : gone.length + " itens excluídos"}${forever.length < gone.length ? ` (${forever.length} definitivamente)` : " definitivamente"}`
+        : one ? "Movido para a Lixeira" : `${gone.length} itens movidos para a Lixeira`);
     } catch (e) { ui.error(e); await reload(); }
+    back();
   }
   function toClip(paths: string[], cut: boolean) {
     if (!paths.length) return;
@@ -445,10 +496,12 @@
       if (r.conflicts.length) {
         const one = r.conflicts.length === 1;
         if (!(await ui.ask({ title: one ? `Já existe ${base(r.conflicts[0])} em ${dest ? base(dest) : "raiz do projeto"}` : `${r.conflicts.length} itens já existem em ${dest ? base(dest) : "raiz do projeto"}`,
-          message: "Substituir? O que está lá vai para a Lixeira.", detail: one ? undefined : r.conflicts.slice(0, 12), confirm: "Substituir", danger: true }))) return false;
+          message: "Substituir? O que está lá vai para a Lixeira.", detail: one ? undefined : r.conflicts.slice(0, 12), confirm: "Substituir", danger: true }))) { back(); return false; }
         r = await post("ws/fs/move", { ...body, overwrite: true });
       }
       changed(r.moved.map(m => ({ from: m.from, to: m.to })));
+      remember(r.moved.map(m => ({ from: m.from, to: m.to })));
+      back();
       await landed(r.moved.map(m => m.to), new Set(r.moved.filter(m => index.dirs.has(m.from + "/") || ghosts.includes(m.to + "/")).map(m => m.to)));
       return true;
     } catch (e) { ui.error(e); await reload(); return false; }
@@ -457,7 +510,9 @@
   // ------------------------------------------------------------ arrastar e soltar
   // De dentro da árvore: move para a pasta sob o cursor (⌥ no Mac / Ctrl no Windows copia). De fora (Finder/Explorer): a
   // WebView entrega só o conteúdo (File), sem caminho — as pastas são percorridas aqui e enviadas em pedaços ao backend.
-  const DRAG = "application/x-codeck-paths";
+  // DRAG: caminhos relativos ao projeto (entre árvores do app); PATHS: absolutos no sistema, para quem está fora da
+  // árvore (o terminal escreve os caminhos no prompt ao receber)
+  const DRAG = "application/x-codeck-tree", PATHS = "application/x-codeck-paths";
   const MAX_DROP = 200 * 1024 * 1024, MAX_ITEMS = 5000, CHUNK = 2 * 1024 * 1024;
   let dragging = $state<string[] | null>(null);
   let dropAt = $state<string | null>(null);   // pasta de destino em destaque ("" = raiz)
@@ -471,7 +526,8 @@
     const paths = targets(r.path);
     dragging = paths;
     e.dataTransfer?.setData(DRAG, JSON.stringify(paths));
-    e.dataTransfer?.setData("text/plain", paths.map(abs).join("\n"));   // soltar no terminal/editor escreve o caminho
+    e.dataTransfer?.setData(PATHS, JSON.stringify(paths.map(abs)));
+    e.dataTransfer?.setData("text/plain", paths.map(abs).join("\n"));   // soltar no editor/outro app escreve o caminho
     if (e.dataTransfer) e.dataTransfer.effectAllowed = "copyMove";
   }
   function dragEnd() { dragging = null; dropAt = null; clearTimeout(hoverTimer); hoverDir = null; }
@@ -547,9 +603,13 @@
     const prog = ui.progress("Lendo o que foi solto…");
     try {
       // cada item solto ganha um nome livre na pasta de destino ("nome copy.ext" se já existe) — nunca sobrescreve
-      const tops: { name: string; items: Incoming[] }[] = [];
-      if (entries) for (const en of entries) { const items: Incoming[] = []; await walk(en, en.name, items); tops.push({ name: en.name, items }); }
-      else for (const f of files) tops.push({ name: f.name, items: [{ rel: f.name, file: f }] });
+      let tops: { name: string; items: Incoming[] }[] = [];
+      const flat = () => files.map(f => ({ name: f.name, items: [{ rel: f.name, file: f }] }));
+      if (entries) {
+        // pastas vêm pelas entradas; se a WebView não deixar ler por elas (NotFoundError), vão os arquivos soltos
+        try { for (const en of entries) { const items: Incoming[] = []; await walk(en, en.name, items); tops.push({ name: en.name, items }); } }
+        catch (e) { if (!files.length || String(e).includes("Mais de")) throw e; tops = flat(); }
+      } else tops = flat();
       const items = tops.flatMap(t => t.items);
       const total = items.reduce((n, x) => n + (x.file?.size || 0), 0);
       if (!items.length) return prog.done("Nada para copiar");
@@ -586,11 +646,25 @@
   });
 
   const abs = (p: string) => (root.replace(/[\\/]$/, "") + "/" + p.replace(/\/$/, "")).replace(/\//g, root.includes("\\") ? "\\" : "/");
-  async function copy(t: string, msg: string) { try { await navigator.clipboard.writeText(t); ui.toast(msg); } catch (e) { ui.error(e); } }
+  /** Texto para a área de transferência do sistema. A API da WebView recusa sem foco/gesto do usuário: aí vai pelo
+   *  backend (pbcopy/clip) e, por último, pelo execCommand("copy") de um campo escondido. */
+  async function copy(t: string, msg: string) {
+    try { await navigator.clipboard.writeText(t); ui.toast(msg); return; } catch { /* tenta o outro jeito */ }
+    // pelo backend (pbcopy/clip): não depende do foco da janela nem do gesto do usuário
+    try { await post("ws/fs/clipboard", { text: t }, { quiet: true }); ui.toast(msg); return; } catch { /* último recurso */ }
+    const ta = document.createElement("textarea");
+    ta.value = t; ta.setAttribute("readonly", ""); ta.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+    document.body.appendChild(ta); ta.select();
+    const ok = (() => { try { return document.execCommand("copy"); } catch { return false; } })();
+    ta.remove(); back();
+    if (ok) ui.toast(msg); else ui.toast("Não consegui copiar para a área de transferência", "error");
+  }
+  /** Mostra no Finder/Explorer com o item selecionado */
+  const reveal = (p: string) => post("ws/fs/reveal", { repoId, taskId, path: strip(p) }, { quiet: true }).catch(ui.error);
   function rowMenu(r: Row) {
     if (!sel.includes(r.path)) pick(r.path);
     const at = dirOf(r.path, r.dir), d = decor.get(r.path), ts = targets(r.path), many = ts.length > 1;
-    return [
+    return refocus([
       ...(!r.dir && !many ? [{ label: "Abrir", onclick: () => onopen(r.path, undefined, { preview: false }) }] : []),
       ...(!r.dir && !many && d && ondiff ? [{ label: "Abrir alterações", icon: GitCompareArrows, onclick: () => ondiff!(r.path) }] : []),
       { separator: true },
@@ -607,22 +681,22 @@
       { separator: true },
       { label: many ? "Copiar caminhos" : "Copiar caminho", icon: Copy, kbd: kb.label("copyFilePath"), onclick: () => copy(ts.map(abs).join("\n"), many ? "Caminhos copiados" : "Caminho copiado") },
       { label: many ? "Copiar caminhos relativos" : "Copiar caminho relativo", icon: Copy, kbd: kb.label("copyRelativeFilePath"), onclick: () => copy(ts.map(strip).join("\n"), "Caminho relativo copiado") },
-      { label: `Revelar no ${fileManagerName()}`, icon: FolderOpen, onclick: () => post("open", { path: abs(r.path), target: "files" }).catch(ui.error) },
+      { label: `Revelar no ${fileManagerName()}`, icon: FolderOpen, onclick: () => reveal(r.path) },
       ...(onterminal ? [{ label: "Abrir no terminal integrado", icon: SquareTerminal, onclick: () => onterminal!(strip(at)) }] : []),
-    ];
+    ]);
   }
   /** Clique direito no vazio da lista: ações na raiz do projeto */
   function rootMenu(e: MouseEvent) {
     if ((e.target as HTMLElement).closest("[data-p], input")) return;
     e.stopPropagation();
-    ui.contextMenu(e, [
+    ui.contextMenu(e, refocus([
       { label: "Novo arquivo…", icon: FilePlus2, onclick: () => startNew("file", baseDir) },
       { label: "Nova pasta…", icon: FolderPlus, onclick: () => startNew("folder", baseDir) },
       { separator: true },
       { label: "Colar", icon: ClipboardPaste, kbd: kb.label("filesExplorer.paste"), disabled: !clip?.paths.length, onclick: () => paste(baseDir) },
       { separator: true },
-      { label: `Revelar no ${fileManagerName()}`, icon: FolderOpen, onclick: () => post("open", { path: baseDir ? abs(baseDir) : root, target: "files" }).catch(ui.error) },
-    ]);
+      { label: `Revelar no ${fileManagerName()}`, icon: FolderOpen, onclick: () => reveal(baseDir) },
+    ]));
   }
   /** Ações na pasta-base (o Gerenciador de Soluções chama pelo nó do projeto) */
   export function newIn(kind: "file" | "folder") { startNew(kind, baseDir); }
@@ -630,6 +704,8 @@
   export const canPaste = () => !!clip?.paths.length;
 
   // ------------------------------------------------------------ busca no conteúdo
+  /** ⌘⇧F com texto selecionado no editor: a busca já vem preenchida e roda na hora (como no VS Code) */
+  export function search(text: string) { sq = text; runSearch(); }
   function runSearch() {
     clearTimeout(sTimer);
     sTimer = setTimeout(async () => {
@@ -662,7 +738,7 @@
   <div class="n editing" style="--d:{depth}">
     <span class="sp"></span>
     <FileIcon name={edit?.kind === "folder" ? "pasta" : edit?.value || "arquivo"} dir={edit?.kind === "folder"} size={15} />
-    <input class="ren" use:grab bind:value={edit!.value} placeholder={edit?.kind === "folder" ? "nome da pasta" : edit?.kind === "file" ? "nome do arquivo (pode ter pastas/)" : ""}
+    <input class="ren" use:grab bind:value={() => edit?.value ?? "", (v) => { if (edit) edit.value = v; }} placeholder={edit?.kind === "folder" ? "nome da pasta" : edit?.kind === "file" ? "nome do arquivo (pode ter pastas/)" : ""}
       onkeydown={(e) => { if (e.key === "Enter" || e.key === "Escape") { if (e.key === "Enter") commitEdit(); else edit = null; listEl?.focus({ preventScroll: true }); } e.stopPropagation(); }}
       onblur={commitEdit} />
   </div>

@@ -81,20 +81,40 @@ def _registry_path():
 
 
 def get(force=False):
-    """PATH completo do usuário (cache de 10 min)."""
-    with _lock:
-        if not force and _cache["path"] and time.time() - _cache["at"] < TTL:
-            return _cache["path"]
-        base = _registry_path() if os.name == "nt" else _shell_path()
-        seen, out = set(), []
-        for p in (base.split(os.pathsep) if base else []) + (os.environ.get("PATH") or "").split(os.pathsep) + _known_dirs():
-            p = p.strip().strip('"')
-            key = os.path.normcase(os.path.normpath(p)) if p else ""
-            if p and key not in seen and os.path.isdir(p):
-                seen.add(key)
-                out.append(p)
-        _cache.update(at=time.time(), path=os.pathsep.join(out))
+    """PATH completo do usuário (cache de 10 min). Vencido, devolve o que já tem e relê em segundo plano: reler abre um
+    shell interativo (.zshrc com nvm, oh-my-zsh… leva segundos) e isso acontecia DENTRO do pedido de abrir um agente
+    ou terminal — o painel ficava parado esperando."""
+    if not force and _cache["path"]:
+        if time.time() - _cache["at"] >= TTL and not _cache.get("busy"):
+            _cache["busy"] = True
+            threading.Thread(target=_refresh, daemon=True).start()
         return _cache["path"]
+    with _lock:
+        if not force and _cache["path"]:
+            return _cache["path"]
+        return _read()
+
+
+def _refresh():
+    try:
+        with _lock:
+            _read()
+    finally:
+        _cache["busy"] = False
+
+
+def _read():
+    """Relê o PATH (chame com o _lock)."""
+    base = _registry_path() if os.name == "nt" else _shell_path()
+    seen, out = set(), []
+    for p in (base.split(os.pathsep) if base else []) + (os.environ.get("PATH") or "").split(os.pathsep) + _known_dirs():
+        p = p.strip().strip('"')
+        key = os.path.normcase(os.path.normpath(p)) if p else ""
+        if p and key not in seen and os.path.isdir(p):
+            seen.add(key)
+            out.append(p)
+    _cache.update(at=time.time(), path=os.pathsep.join(out))
+    return _cache["path"]
 
 
 def which(name, force=False):

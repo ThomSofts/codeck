@@ -78,8 +78,11 @@ def open_project(repo_id=None, path=None):
         d["open"].append(r["id"])
     d["active"] = r["id"]
     _touch(d, r["id"], opened=True)
-    _proj(d, r["id"])
+    p = _proj(d, r["id"])
     _save(d)
+    live = {x["id"] for x in terminals.list_all()}
+    for path in [r["path"]] + [t["path"] for t in p["tasks"]]:
+        _sweep_drops(path, live)   # sobras de quando o app fechou com terminais abertos
     return {"id": r["id"]}
 
 
@@ -96,8 +99,14 @@ def close_project(repo_id):
     if d.get("active") == repo_id:
         d["active"] = d["open"][-1] if d["open"] else None
     _save(d)
-    for t in terminals.list_all(project=repo_id):
-        terminals.close(t["id"])
+    # todos ao mesmo tempo (cada um espera até ~0,5 s o processo sair): fechar um projeto com vários agentes não segura
+    # a resposta
+    import threading
+    ths = [threading.Thread(target=close_terminal, args=(t["id"],), daemon=True) for t in terminals.list_all(project=repo_id)]
+    for th in ths:
+        th.start()
+    for th in ths:
+        th.join(5)
 
 
 def activate(repo_id):
@@ -355,6 +364,100 @@ def create_task(repo_id, body):
     return task
 
 
+def start_in_checkout(repo_id, body):
+    """Tarefa SEM worktree (o mais comum): o agente trabalha no seu checkout. Com `branch`, cria a branch a partir da
+    base e troca para ela antes — só com o checkout limpo, para não levar alterações de outra coisa junto."""
+    repo = git.get_repo(repo_id)
+    title = (body.get("title") or "").strip()
+    if not title:
+        raise ValueError("Diga o que é a tarefa")
+    branch = None
+    if body.get("newBranch"):
+        kind = body.get("kind") if body.get("kind") in ("feature", "fix", "review", "plan", "chore") else "feature"
+        branch = body.get("branch") or f"{kind}/{slugify(body.get('slug') or title)}"
+        st = git.status(path=repo["path"])
+        if st["staged"] or st["unstaged"] or st["conflicts"]:
+            raise ValueError("O checkout tem alterações não commitadas — commite/guarde antes de trocar de branch, "
+                             "ou rode sem branch nova")
+        try:
+            git.run(repo["path"], "fetch", "origin", "--prune", timeout=30, auth=git.auth_for(repo))
+        except Exception:  # noqa: BLE001 — sem rede (ou demorou): segue com o que tem
+            pass
+        if git.run(repo["path"], "branch", "--list", branch).strip():
+            git.checkout(repo_id, branch)
+        else:
+            git.checkout(repo_id, None, create=branch, start=body.get("base") or _default_base(repo))
+    terms = [start_agent(repo_id, None, aid, body.get("prompt") or title, body.get("mode"), title=title[:40])
+             for aid in (body.get("agents") or [])]
+    return {"id": None, "branch": branch, "terms": [t["id"] for t in terms]}
+
+
+def cleanup_info(repo_id):
+    """Para a faxina dos worktrees: cada tarefa com o estado (pasta existe? alterações? branch já entrou na base? agente
+    vivo?) e os worktrees órfãos — os que o Git conhece na pasta de worktrees mas nenhuma tarefa usa."""
+    d = _load()
+    repo = git.get_repo(repo_id)
+    p = _proj(d, repo_id)
+    out = []
+    for t in p["tasks"]:
+        exists = os.path.isdir(t["path"])
+        dirty = 0
+        if exists:
+            try:
+                st = git.status(path=t["path"])
+                dirty = len(st["staged"]) + len(st["unstaged"]) + len(st["untracked"]) + len(st["conflicts"])
+            except Exception:  # noqa: BLE001
+                dirty = 0
+        base = t.get("base") or _default_base(repo)
+        try:   # a branch já entrou na base (código de saída 0): dá para apagar sem perder nada
+            git.run(repo["path"], "merge-base", "--is-ancestor", t["branch"], base)
+            merged = True
+        except git.GitError:
+            merged = False
+        alive = any(x["alive"] for x in terminals.list_all(task=t["id"]))
+        out.append({"id": t["id"], "title": t["title"], "branch": t["branch"], "path": t["path"], "exists": exists,
+                    "dirty": dirty, "merged": merged, "agents": alive, "createdAt": t.get("createdAt")})
+    known = {os.path.normcase(os.path.realpath(t["path"])) for t in p["tasks"]}
+    known |= {os.path.normcase(os.path.realpath(x["path"])) for t in p["tasks"] for x in t.get("linked") or []}
+    root = os.path.normcase(os.path.realpath(_worktree_root(repo, p["settings"])))
+    orphans = []
+    for line in git.run(repo["path"], "worktree", "list", "--porcelain", check=False).splitlines():
+        if line.startswith("worktree "):
+            wt = line[9:].strip()
+            n = os.path.normcase(os.path.realpath(wt))
+            if n.startswith(root + os.sep) and n not in known:
+                orphans.append({"path": wt, "exists": os.path.isdir(wt)})
+    return {"tasks": out, "orphans": orphans}
+
+
+def cleanup(repo_id, task_ids=(), orphans=(), delete_branch=False, force=False):
+    """Remove de uma vez as tarefas escolhidas (worktree + terminais) e os worktrees órfãos. A branch local só sai junto
+    (com `delete_branch`) se já entrou na base — a de trabalho não terminado fica. Devolve o que falhou."""
+    info = cleanup_info(repo_id)
+    merged = {t["id"] for t in info["tasks"] if t["merged"]}
+    failed = []
+    for tid in task_ids:
+        try:
+            remove_task(repo_id, tid, force=force, delete_branch=delete_branch and tid in merged)
+        except Exception as e:  # noqa: BLE001
+            failed.append({"id": tid, "error": str(e)})
+    repo = git.get_repo(repo_id)
+    allowed = {o["path"] for o in info["orphans"]}   # só órfãos de verdade, nunca um caminho qualquer
+    for path in orphans:
+        if path not in allowed:
+            continue
+        try:
+            if os.path.isdir(path):
+                _remove_worktree(repo["path"], path, force)
+            for r in git._repos():
+                if os.path.normcase(os.path.realpath(r["path"])) == os.path.normcase(os.path.realpath(path)):
+                    git.remove_repo(r["id"])
+        except Exception as e:  # noqa: BLE001
+            failed.append({"path": path, "error": str(e)})
+    git.run(repo["path"], "worktree", "prune", check=False)
+    return {"failed": failed}
+
+
 def _default_base(repo):
     try:
         return git.run(repo["path"], "symbolic-ref", "--short", "refs/remotes/origin/HEAD").strip()
@@ -369,8 +472,9 @@ def _make_worktree(repo, settings, slug, branch, base):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     _exclude_from_enclosing_repo(os.path.dirname(os.path.dirname(path)))
     try:
-        git.run(repo["path"], "fetch", "origin", "--prune", timeout=180, auth=git.auth_for(repo))
-    except Exception:  # noqa: BLE001 — sem rede: segue com o que tem
+        # só o que a base precisa e com prazo curto: rede lenta segurava o "criar tarefa" por até 3 min
+        git.run(repo["path"], "fetch", "origin", "--prune", timeout=30, auth=git.auth_for(repo))
+    except Exception:  # noqa: BLE001 — sem rede (ou demorou): segue com o que tem
         pass
     if git.run(repo["path"], "branch", "--list", branch).strip():
         git.run(repo["path"], "worktree", "add", path, branch, timeout=120)
@@ -387,7 +491,7 @@ def _close_terms_and_wait(task_id, timeout=6):
     import time
     terms = [terminals.get(x["id"]) for x in terminals.list_all(task=task_id)]
     for t in terms:
-        terminals.close(t.id)
+        close_terminal(t.id)
     end = time.time() + timeout
     while time.time() < end and any(t.pty.alive() for t in terms):
         time.sleep(0.2)
@@ -472,6 +576,102 @@ def _cwd(repo_id, task_id=None):
 
 def _settings(repo_id):
     return _proj(_load(), repo_id)["settings"]
+
+
+# ---------------------------------------------------------------- arquivos de referência soltos no terminal
+# Arrastar arquivos (do Finder/Explorer ou da árvore) para cima de um terminal: eles vão para DENTRO da pasta do
+# terminal — o agente lê sem pedir permissão de pasta extra — e o caminho é digitado no prompt. Temporários ficam em
+# .codeck/tmp/<terminal> e somem ao fechar o terminal; os fixos ficam em .codeck/refs, para usar de novo. A pasta
+# .codeck/ vai para o exclude do Git: nunca entra num commit.
+DROP_MAX = 50 * 1024 * 1024
+
+
+def _drop_dir(cwd, term_id=None, keep=False):
+    return os.path.join(cwd, ".codeck", "refs") if keep else os.path.join(cwd, ".codeck", "tmp", term_id)
+
+
+def _exclude_codeck(cwd):
+    try:
+        excl = git.run(cwd, "rev-parse", "--git-path", "info/exclude").strip()
+    except Exception:  # noqa: BLE001 — pasta fora de um repositório: nada a excluir
+        return
+    excl = excl if os.path.isabs(excl) else os.path.join(cwd, excl)
+    os.makedirs(os.path.dirname(excl), exist_ok=True)
+    current = open(excl, encoding="utf-8").read().split("\n") if os.path.exists(excl) else []
+    if ".codeck/" not in current and "/.codeck/" not in current:
+        with open(excl, "a", encoding="utf-8") as fh:
+            fh.write(("\n" if current and current[-1] else "") + "# referências soltas nos terminais do Codeck (não versionar)\n.codeck/\n")
+
+
+def drop_file(term_id, name, data_b64, keep=False):
+    """Grava um arquivo solto no terminal e devolve o caminho relativo à pasta dele (o que vai no prompt)."""
+    import base64
+    t = terminals.get(term_id)
+    data = base64.b64decode(data_b64 or "")
+    if len(data) > DROP_MAX:
+        raise ValueError("Arquivo grande demais para referência (máx. 50 MB)")
+    name = os.path.basename((name or "").replace("\\", "/")).strip().lstrip(".") or "arquivo"
+    name = re.sub(r'[<>:"|?*\x00-\x1f]', "_", name)[:120]
+    folder = _drop_dir(t.cwd, term_id, keep)
+    os.makedirs(folder, exist_ok=True)
+    _exclude_codeck(t.cwd)
+    stem, ext = os.path.splitext(name)
+    path, n = os.path.join(folder, name), 1
+    while os.path.exists(path):
+        n += 1
+        path = os.path.join(folder, f"{stem} ({n}){ext}")
+    with open(path, "wb") as f:
+        f.write(data)
+    return {"path": os.path.relpath(path, t.cwd).replace("\\", "/"), "abs": path, "keep": bool(keep)}
+
+
+def drop_refs(term_id):
+    """As referências do terminal: as temporárias dele e as fixas da pasta."""
+    t = terminals.get(term_id)
+    out = []
+    for keep in (False, True):
+        folder = _drop_dir(t.cwd, term_id, keep)
+        if os.path.isdir(folder):
+            out += [{"name": n, "path": os.path.relpath(os.path.join(folder, n), t.cwd).replace("\\", "/"), "keep": keep}
+                    for n in sorted(os.listdir(folder)) if os.path.isfile(os.path.join(folder, n))]
+    return out
+
+
+def drop_remove(term_id, rel):
+    t = terminals.get(term_id)
+    full = _safe(os.path.realpath(t.cwd), rel)
+    if f"{os.sep}.codeck{os.sep}" not in full:
+        raise ValueError("Só dá para apagar referências")
+    os.remove(full)
+
+
+def _sweep_drops(cwd, live=()):
+    """Apaga as referências temporárias de terminais que já não existem (o app fechou com eles abertos)."""
+    base = os.path.join(cwd, ".codeck", "tmp")
+    if not os.path.isdir(base):
+        return
+    for d in os.listdir(base):
+        if d not in live:
+            shutil.rmtree(os.path.join(base, d), ignore_errors=True)
+    try:
+        os.rmdir(base)   # vazia: sai também
+    except OSError:
+        pass
+
+
+def close_terminal(term_id):
+    """Fechar um terminal de propósito: mata o processo (e os filhos dele) e, se for agente, limpa a sessão — estado,
+    contexto e a oferta de retomar. Sair do app não passa por aqui (lá as conversas continuam retomáveis)."""
+    try:
+        t = terminals.get(term_id)
+        sid, cwd = t.meta.get("sid"), t.cwd
+    except LookupError:
+        sid = cwd = None
+    terminals.close(term_id)
+    agents.discard(sid)
+    if cwd:   # as referências temporárias soltas nele vão junto
+        shutil.rmtree(_drop_dir(cwd, term_id), ignore_errors=True)
+        _sweep_drops(cwd, {x["id"] for x in terminals.list_all()})
 
 
 def start_shell(repo_id, task_id=None, title=None, command=None):

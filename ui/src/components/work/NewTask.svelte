@@ -1,6 +1,7 @@
 <script lang="ts">
-  // Nova tarefa: branch + worktree próprio + (opcional) um ou mais agentes já com o prompt.
-  // Vários agentes = fan-out: cada um no SEU worktree, para comparar e ficar com o melhor.
+  // Nova tarefa: por padrão no seu checkout (opcional: uma branch nova nele) + o agente já com o prompt. Worktree
+  // próprio só quando pedido — ou com vários agentes (fan-out: cada um no SEU worktree, para comparar), ou com a
+  // tarefa em outros repositórios.
   import { GitBranch, Rocket, ShieldOff, Sparkles } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { get, post } from "../../lib/api";
@@ -28,6 +29,13 @@
   let workItem = $state<any>(untrack(() => preset?.workItem || null));
   let linked = $state<string[]>([]);
   let linkQ = $state("");
+  // worktree separado: lembrado para a próxima vez (o padrão é o checkout — na maioria das vezes não precisa)
+  const WT = "codeck.task.worktree";
+  let wtPick = $state(untrack(() => { try { return localStorage.getItem(WT) === "1"; } catch { return false; } }));
+  $effect(() => { const w = wtPick; try { localStorage.setItem(WT, w ? "1" : "0"); } catch { /* sem armazenamento */ } });
+  const forcedWt = $derived(chosen.length > 1 || linked.length > 0);
+  const worktree = $derived(wtPick || forcedWt);
+  let newBranch = $state(true);
   // outros repositórios para a mesma tarefa (sem os worktrees, que também ficam registrados)
   const others = $derived(repos.local.filter(r => r.exists && r.id !== project.id && !/[\\/]\.worktrees[\\/]/.test(r.path)
     && (!linkQ || r.name.toLowerCase().includes(linkQ.toLowerCase()))).slice(0, 30));
@@ -50,6 +58,7 @@
 
   async function create() {
     if (!title.trim()) return ui.toast("Diga o que é a tarefa", "info");
+    if (!worktree) return createHere();
     busy = true;
     const prog = ui.progress(chosen.length > 1 ? `Criando ${chosen.length} worktrees…` : "Criando o worktree…");
     try {
@@ -71,17 +80,41 @@
     } catch (e) { prog.fail(e); }
     busy = false;
   }
+  /** Sem worktree: no checkout do projeto (com a branch nova, se marcada) e o agente já com o pedido. */
+  async function createHere() {
+    busy = true;
+    const prog = ui.progress(newBranch ? `Criando a branch ${kind}/${slug}…` : "Abrindo o agente…");
+    try {
+      await post<any>("ws/task/here", { repoId: project.id, title: title.trim(), kind, slug, base, newBranch, prompt: prompt.trim() || title.trim(),
+        agents: chosen.slice(0, 1), mode });
+      prog.done(chosen.length ? "O agente já está trabalhando no checkout" : `Branch ${kind}/${slug} criada`);
+      await work.load();
+      oncreated([]);
+    } catch (e) { prog.fail(e); }
+    busy = false;
+  }
 </script>
 
-<Drawer title="Nova tarefa" subtitle={`${project.name} — branch e worktree próprios, sem mexer no seu checkout`} {onclose} width={620}>
+<Drawer title="Nova tarefa" subtitle={worktree ? `${project.name} — branch e worktree próprios, sem mexer no seu checkout` : `${project.name} — no seu checkout`} {onclose} width={620}>
   <div class="form">
     <label class="label">O que fazer<input class="input" bind:value={title} placeholder="ex.: Ajustar o cálculo do frete no carrinho" /></label>
+    <div class="row2">
+      <span class="small muted">Onde</span>
+      <Segmented size="sm" value={worktree ? "wt" : "here"} onchange={(x: string) => (wtPick = x === "wt")}
+        options={[{ value: "here", label: "No checkout" }, { value: "wt", label: "Worktree separado" }]} />
+      {#if forcedWt}<span class="tiny muted">{chosen.length > 1 ? "vários agentes: cada um no seu worktree" : "outros repositórios: um worktree em cada"}</span>{/if}
+    </div>
+    {#if !worktree}
+      <label class="chk small"><input type="checkbox" bind:checked={newBranch} /> Criar uma branch nova no checkout (precisa estar sem alterações)</label>
+    {/if}
+    {#if worktree || newBranch}
     <div class="row2">
       <Segmented size="sm" bind:value={kind} options={[{ value: "feature", label: "feature/" }, { value: "fix", label: "fix/" }, { value: "review", label: "review/" }]} />
       <span class="branch mono"><GitBranch size={12} /> {kind}/{slug}</span>
     </div>
     <label class="label">A partir de
       <select class="input" bind:value={base}>{#each branches as b (b)}<option value={b}>{b}</option>{/each}</select></label>
+    {/if}
 
     {#if items.length}
       <details class="wi" open={!!workItem}>
@@ -124,7 +157,7 @@
     {#if project.settings.bypass}<p class="small byp"><ShieldOff size={12} /> Pular permissões está ligado neste projeto: o agente não pergunta nada{mode === "plan" ? " depois que você aprovar o plano" : ""} (Ajustes do projeto).</p>{/if}
   </div>
   {#snippet footer()}
-    <span class="small muted">{chosen.length ? `${chosen.length} agente(s)` : "sem agente — só o worktree"}</span>
+    <span class="small muted">{chosen.length ? `${chosen.length} agente(s)` : worktree ? "sem agente — só o worktree" : "sem agente — só a branch"}</span>
     <span class="spacer"></span>
     <button class="btn" onclick={onclose}>Cancelar</button>
     <button class="btn primary" disabled={busy || !title.trim()} onclick={create}>{#if chosen.length > 1}<Sparkles size={14} />{:else}<Rocket size={14} />{/if} {chosen.length > 1 ? `Disparar ${chosen.length} agentes` : "Criar tarefa"}</button>
@@ -133,7 +166,8 @@
 
 <style>
   .form { display: grid; gap: 14px; padding-top: 12px; }
-  .row2 { display: flex; align-items: center; gap: 12px; }
+  .row2 { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .chk { display: flex; align-items: center; gap: 8px; color: var(--text-2); cursor: pointer; }
   .branch { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-2); }
   textarea { resize: vertical; min-height: 90px; font: 13px/1.5 var(--font); padding: 8px 10px; height: auto; }
   .accs { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; }

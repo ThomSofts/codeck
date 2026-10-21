@@ -1,7 +1,11 @@
+<script lang="ts" module>
+  let lastTab: "info" | "files" = "info";   // a aba escolhida vale para a próxima PR aberta
+</script>
+
 <script lang="ts">
   // Painel de detalhes da PR: ações de voto, descrição, revisores e checks/policies. Atalhos para o histórico: o do app
   // filtrado nesta PR (votos, aprovações do piloto, comentários — H) e os commits da branch no clone local (C).
-  import { AlertTriangle, Archive, Bot, ExternalLink, GitBranch, GitCommitHorizontal, History } from "@lucide/svelte";
+  import { AlertTriangle, Archive, Bot, ExternalLink, FileDiff, GitBranch, GitCommitHorizontal, History, Info } from "@lucide/svelte";
   import { work } from "../../lib/work.svelte";
   import { repos } from "../../lib/repos.svelte";
   import { go, router } from "../../lib/router.svelte";
@@ -9,14 +13,20 @@
   import { store } from "../../lib/store.svelte";
   import { ui } from "../../lib/ui.svelte";
   import { archive } from "../../lib/actions";
-  import { ago, dateTime } from "../../lib/format";
+  import { dateTime } from "../../lib/format";
+  import Ago from "../Ago.svelte";
+  import PrFiles from "./PrFiles.svelte";
   import type { PR } from "../../lib/types";
   import Avatar from "../Avatar.svelte";
   import ProviderIcon from "../ProviderIcon.svelte";
   import { POLICY, VOTES } from "./votes";
   import VoteButton from "./VoteButton.svelte";
+  import CascadeTrack from "../cascade/CascadeTrack.svelte";
 
   let { pr, mine = false, leaves = false }: { pr: PR; mine?: boolean; leaves?: boolean } = $props();
+  let tab = $state<"info" | "files">(lastTab);
+  let nfiles = $state<number | null>(null);
+  function setTab(t: "info" | "files") { tab = lastTab = t; }
 
   function reviewWithAi() {
     work.startTask({ provider: pr.provider, org: pr.provider === "github" ? pr.project.split("/")[0] : pr.org, repo: pr.provider === "github" ? pr.project : pr.repo }, {
@@ -38,7 +48,7 @@
   function onKey(e: KeyboardEvent) {
     if (router.view !== "prs" && router.view !== "inbox") return;   // dentro do projeto o teclado é do terminal/editor
     if (e.metaKey || e.ctrlKey || e.altKey || e.repeat || ui.dialog || store.hold) return;
-    if ((e.target as HTMLElement)?.closest?.("input, textarea, select, [contenteditable], .xterm, .monaco-editor")) return;
+    if ((e.target as HTMLElement)?.closest?.("input, textarea, select, [contenteditable], .xterm, .monaco-editor") || document.querySelector(".drawer")) return;
     const k = e.key.toLowerCase();
     if (k === "h") { e.preventDefault(); openHistory(); }
     else if (k === "c" && !e.shiftKey) { e.preventDefault(); openCommits(); }
@@ -62,7 +72,7 @@
   <h2>{pr.title}</h2>
   <div class="meta">
     <span class="branch"><GitBranch size={11} />{pr.source} → <b>{pr.target}</b></span>
-    <span class="row" style="gap:6px"><Avatar name={pr.creatorName} src={pr.creatorAvatar} size={16} />{pr.creatorName} · {ago(pr.created)}</span>
+    <span class="row" style="gap:6px"><Avatar name={pr.creatorName} src={pr.creatorAvatar} size={16} />{pr.creatorName} · <Ago iso={pr.created} /></span>
   </div>
   <div class="acts">
     {#if !mine}
@@ -76,7 +86,16 @@
     <button class="btn sm" title="Abre um worktree na branch da PR com um agente revisando" onclick={reviewWithAi}><Bot size={13} /> Revisar com IA</button>
     {#if !mine}<button class="btn sm ghost" onclick={doArchive}><Archive size={13} /> {pr.archived ? "Restaurar" : "Arquivar"}</button>{/if}
   </div>
+  <CascadeTrack {pr} />
 </div>
+<div class="tabs" role="tablist">
+  <button role="tab" aria-selected={tab === "info"} class:on={tab === "info"} onclick={() => setTab("info")}><Info size={13} /> Visão geral</button>
+  <button role="tab" aria-selected={tab === "files"} class:on={tab === "files"} onclick={() => setTab("files")}><FileDiff size={13} /> Arquivos modificados
+    {#if nfiles !== null}<em>{nfiles}</em>{/if}</button>
+</div>
+{#if tab === "files"}
+<div class="pane-b files"><PrFiles {pr} bind:count={nfiles} /></div>
+{:else}
 <div class="pane-b">
   {#if pr.mergeStatus === "conflicts"}
     <div class="warnbox"><AlertTriangle size={15} /><span><b>{pr.source}</b> tem conflito com <b>{pr.target}</b>. O merge fica bloqueado até o autor atualizar a branch — aprovar não resolve.</span></div>
@@ -97,6 +116,7 @@
     <div class="kv"><span>{p.name}{#if !p.blocking && pr.provider === "azure"} <span class="small muted">(opcional)</span>{/if}</span><span class="pill {st[1]}">{st[0]} {p.status}</span></div>
   {:else}<div class="small muted">Nenhum check.</div>{/each}
 </div>
+{/if}
 
 <style>
   .pane-h { padding: 16px 18px 14px; border-bottom: 1px solid var(--line); }
@@ -113,7 +133,18 @@
   @media (max-width: 560px) { .hb kbd { display: none; } }
   h2 { margin: 6px 0 8px; font-size: 16.5px; line-height: 1.35; letter-spacing: -0.015em; }
   .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-  .pane-b { padding: 6px 18px 18px; }
+  .pane-b { padding: 6px 18px 18px; animation: fade 0.2s var(--ease); }
+  .pane-b.files { padding-top: 12px; }
+  .tabs { display: flex; gap: 2px; padding: 6px 12px 0; border-bottom: 1px solid var(--line); }
+  .tabs button { position: relative; display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border: 0; background: none; color: var(--muted);
+    font: 550 12.5px/1 var(--font); cursor: pointer; transition: color var(--t-fast); }
+  .tabs button:hover { color: var(--text); }
+  .tabs button.on { color: var(--text); }
+  .tabs button.on::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--accent);
+    animation: grow-x 0.25s var(--ease-out); }
+  .tabs em { font: 600 10.5px/1 var(--font); font-style: normal; padding: 2px 6px; border-radius: 99px; background: var(--surface-3); color: var(--text-2);
+    font-variant-numeric: tabular-nums; animation: pop 0.4s var(--spring); }
+  @keyframes grow-x { from { transform: scaleX(0); } }
   h4 { margin: 18px 0 8px; font: 650 10.5px/1 var(--font); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
   .desc { white-space: pre-wrap; font-size: 13px; color: var(--text-2); max-height: 280px; overflow: auto; background: var(--bg-2); border: 1px solid var(--line);
     border-radius: 10px; padding: 10px 12px; }

@@ -301,7 +301,8 @@
       await waitFor(() => byText(".cm", "Comentário de teste"), 3000);
       const ta = $(".reply textarea"); setInput(ta, "comentário do autoteste"); await sleep(200);
       click(byText(".reply button", "Comentar")); await sleep(1200);
-      if (!posts.length || posts[0].text !== "comentário do autoteste") throw new Error("o comentário não foi enviado");
+      // no Azure o comentário vai formatado (HTML do Markdown)
+      if (!posts.length || posts[0].text.replace(/<[^>]+>/g, "").trim() !== "comentário do autoteste") throw new Error("o comentário não foi enviado: " + JSON.stringify(posts[0]?.text));
       await shot("x4-issue");
       const impl = byText("button", "Implementar com IA");
       if (!impl || impl.disabled) throw new Error("Implementar com IA indisponível");

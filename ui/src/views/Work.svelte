@@ -3,7 +3,7 @@
   // esquerda com os arquivos; no centro, abas de agentes, terminais e arquivos; à direita, o agente e os limites.
   // ⌘/Ctrl+P abre arquivo · ⇧F busca no projeto · T novo terminal · W fecha a aba · 1…9 troca de projeto · ⇧I pede à IA.
   // As abas de projeto podem ficar em GRUPOS (como no navegador): nome, cor, recolher/expandir e quantos estão abertos.
-  import { Bot, GitPullRequest, PanelLeft, Layers, Play, RefreshCw, ChevronDown, Code2, FolderGit2, GitBranch, AppWindow, Columns2, GitCompareArrows, LayoutGrid, PanelRight, Settings2, Plus, Search, SquareTerminal, X, Sparkles, FolderPlus, FolderMinus, Palette, Pencil, FolderOpen, Trash2, ChevronRight, Files, Blocks, Boxes, Copy, Pin, ListX, TriangleAlert, Minus, Minimize2, ShieldOff, Bug, Gauge } from "@lucide/svelte";
+  import { Bot, GitPullRequest, PanelLeft, Layers, Play, RefreshCw, ChevronDown, Code2, FolderGit2, GitBranch, AppWindow, Columns2, GitCompareArrows, LayoutGrid, PanelRight, Settings2, Plus, Search, SquareTerminal, X, Sparkles, FolderPlus, FolderMinus, Palette, Pencil, FolderOpen, Trash2, ChevronRight, Files, Blocks, Boxes, Copy, Pin, ListX, TriangleAlert, Minus, Minimize2, ShieldOff, Bug, Gauge, Brush } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { get, post } from "../lib/api";
   import { send } from "../lib/native";
@@ -39,8 +39,9 @@
   import OpenSwitcher from "../components/hub/OpenSwitcher.svelte";
   import { scm } from "../lib/scm.svelte";
   import { dotnet } from "../lib/dotnet.svelte";
-  import { scopeKey } from "../lib/editorstate.svelte";
+  import { edState, scopeKey } from "../lib/editorstate.svelte";
   import NewTask from "../components/work/NewTask.svelte";
+  import CleanupTasks from "../components/work/CleanupTasks.svelte";
   import Terminal, { drop } from "../components/work/Terminal.svelte";
   import Board from "../components/work/Board.svelte";
   import Compare from "../components/work/Compare.svelte";
@@ -165,6 +166,7 @@
 
   // ------------------------------------------------------------ ações
   let newTask = $state<{ preset?: any } | null>(null);
+  let cleaning = $state(false);
 
   // ------------------------------------------------------------ executar e depurar (RunBar, DebugView, lib/debug)
   let launchOpen = $state(false);
@@ -286,7 +288,7 @@
       const s = work.session(t.term);
       if (t.term!.alive && (t.term!.kind === "agent" || t.term!.kind === "run" || Date.now() / 1000 - t.term!.lastOutput < 5)) {
         const r = await ui.ask({ title: `Encerrar ${t.term!.title}?`, danger: true, confirm: "Encerrar", alt: "Minimizar",
-          message: (s?.status === "working" ? "O agente está trabalhando agora." : "O processo deste terminal será encerrado.") + " Para só tirar da frente, minimize — ele continua rodando e fica no canto, embaixo." });
+          message: (s?.status === "working" ? "O agente está trabalhando agora. " : "") + (t.term!.kind === "agent" ? "O agente será encerrado e a sessão limpa (contexto e retomada)." : "O processo deste terminal será encerrado.") + " Para só tirar da frente, minimize — ele continua rodando e fica no canto, embaixo." });
         if (r === "alt") return minimize(t.term!.id);
         if (!r) return;
       }
@@ -463,7 +465,14 @@
       kb.on("workbench.view.search", () => {
         if (!here()) return false;
         v!.left = "search"; v!.leftOpen = true;
-        setTimeout(() => document.querySelector<HTMLInputElement>(".work .side input")?.focus(), 30);
+        // texto selecionado (numa linha só) no editor: vira a busca e já roda, como no VS Code
+        const ed = edState.editor, m = ed?.getModel(), sel = ed?.getSelection();
+        const seed = m && sel && !sel.isEmpty() && sel.startLineNumber === sel.endLineNumber ? m.getValueInRange(sel) : "";
+        setTimeout(() => {
+          if (seed) fileTree?.search(seed);
+          const inp = document.querySelector<HTMLInputElement>(".work .side input");
+          inp?.focus(); inp?.select();
+        }, 30);
       }),
       kb.on("workbench.view.scm", side("scm")),
       kb.on("workbench.view.debug", side("debug")),
@@ -629,7 +638,7 @@
                   <button class="cardbtn" onclick={() => newAgent(a.id)}><AgentIcon provider={a.provider} size={20} /><span><b>{a.name}</b><span class="tiny muted">{a.label}{a.group ? " · " + a.group : ""}{a.email ? " · " + a.email : ""}</span></span></button>
                 {/each}
                 <button class="cardbtn" onclick={() => newTerm()}><SquareTerminal size={20} /><span><b>Terminal</b><span class="tiny muted">shell na pasta {task ? "da tarefa" : "do projeto"}</span></span></button>
-                {#if !task}<button class="cardbtn accent" onclick={() => (newTask = {})}><Plus size={20} /><span><b>Nova tarefa</b><span class="tiny muted">branch + worktree + agente</span></span></button>{/if}
+                {#if !task}<button class="cardbtn accent" onclick={() => (newTask = {})}><Plus size={20} /><span><b>Nova tarefa</b><span class="tiny muted">agente + branch (worktree opcional)</span></span></button>{/if}
               </div>
               <p class="tiny muted keys"><span class="kbd">{kb.label("workbench.action.quickOpen")}</span> abrir arquivo · <span class="kbd">{kb.label("workbench.view.search")}</span> buscar · <span class="kbd">{kb.label("workbench.action.terminal.new")}</span> terminal · <span class="kbd">{kb.label("workbench.action.closeActiveEditor")}</span> fechar aba</p>
             </div>
@@ -732,7 +741,7 @@
               {#if p.terms.length}<span class="tiny muted">{p.terms.length}</span>{/if}
               <span class="gear" role="button" tabindex="0" title="Ajustes do projeto" onclick={(e) => { e.stopPropagation(); settingsOpen = true; }} onkeydown={(e) => e.key === "Enter" && (settingsOpen = true)}><Settings2 size={13} /></span>
             </button>
-            <div class="sch"><span>Tarefas</span><button class="btn sm ghost" onclick={() => (newTask = {})}><Plus size={13} /> Nova</button></div>
+            <div class="sch"><span>Tarefas</span>{#if p.tasks.length}<button class="btn sm ghost icon" title="Limpar tarefas: remove os worktrees que não servem mais" onclick={() => (cleaning = true)}><Brush size={13} /></button>{/if}<button class="btn sm ghost" onclick={() => (newTask = {})}><Plus size={13} /> Nova</button></div>
             {#each [...new Set(p.tasks.filter(t => t.group).map(t => t.group!))].filter(g => p!.tasks.filter(t => t.group === g).length > 1) as g (g)}
               <button class="cmp" onclick={() => (comparing = g)}><GitCompareArrows size={13} /> Comparar {p.tasks.filter(t => t.group === g).length} soluções · {g}</button>
             {/each}
@@ -743,7 +752,7 @@
                 <span class="ags">{#each t.terms.filter(x => x.kind === "agent") as a (a.id)}<AgentIcon provider={a.meta.provider} size={13} />{/each}</span>
               </button>
             {:else}
-              <div class="none">Nenhuma tarefa. “Nova” cria uma branch e um worktree — o agente trabalha lá sem mexer no seu checkout.</div>
+              <div class="none">Nenhuma tarefa. “Nova” abre o agente no checkout (com uma branch nova, se quiser) ou num worktree separado.</div>
             {/each}
           </div>
           {/if}
@@ -884,8 +893,11 @@
   <AskAi project={p} {task} preset={asking.preset} onclose={() => (asking = null)} ondone={asked} />
 {/if}
 
+{#if cleaning && p}
+  <CleanupTasks project={p} onclose={() => (cleaning = false)} onremoved={(ids) => { if (v?.scope && ids.includes(v.scope)) setScope(null); }} />
+{/if}
 {#if newTask && p}
-  <NewTask project={p} preset={newTask.preset} onclose={() => (newTask = null)} oncreated={(ids) => { newTask = null; setScope(ids[0]); }} />
+  <NewTask project={p} preset={newTask.preset} onclose={() => (newTask = null)} oncreated={(ids) => { newTask = null; setScope(ids[0] || null); }} />
 {/if}
 
 <style>

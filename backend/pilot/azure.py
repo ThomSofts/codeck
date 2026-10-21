@@ -56,6 +56,7 @@ class Org:
         self.cfg = cfg
         self._pat = None
         self.me = None
+        self.retry_until = 0   # Retry-After do limite de uso: a leitura de fundo pula a organização até essa hora (epoch)
         self.vsrm = self.url.replace("://dev.azure.com", "://vsrm.dev.azure.com")
 
     def pat(self):
@@ -84,11 +85,15 @@ class Org:
                 # PAT inválido/expirado: o Azure responde 203 com a página HTML de login, não 401.
                 if resp.status == 203 or (not raw and "json" not in resp.headers.get("Content-Type", "")):
                     raise RuntimeError("PAT inválido ou expirado (Azure devolveu página de login)")
+                if (resp.headers.get("Retry-After") or "").isdigit():   # perto do limite: o Azure já pede para espaçar
+                    self.retry_until = time.time() + int(resp.headers["Retry-After"])
                 data = resp.read(2_000_000) if raw else resp.read()  # limite só para texto (logs); JSON vem inteiro
                 if raw:
                     return data.decode(errors="replace")
                 return json.loads(data) if data else None
         except urllib.error.HTTPError as e:
+            if e.code in (429, 503) and (e.headers.get("Retry-After") or "").isdigit():   # limite de uso (TSTUs)
+                self.retry_until = time.time() + int(e.headers["Retry-After"])
             msg = e.read().decode(errors="replace")[:300]
             raise RuntimeError(f"HTTP {e.code} em {method} {url}: {msg}") from None
         except OSError as e:
@@ -566,6 +571,134 @@ class Org:
         w = self.req("GET", f"_apis/wit/workitems/{int(wid)}?fields=System.TeamProject&{API}")
         proj = urllib.parse.quote((w.get("fields") or {}).get("System.TeamProject") or "")
         self.req("POST", f"{proj}/_apis/wit/workItems/{int(wid)}/comments?api-version=7.0-preview.3", {"text": text})
+
+    # campos que a tela edita (o HTML das seções vem com o nome do campo do Azure; nada fora desta lista é gravado)
+    WI_FIELDS = {"title": "System.Title", "state": "System.State", "assignee": "System.AssignedTo", "iteration": "System.IterationPath",
+                 "area": "System.AreaPath", "priority": "Microsoft.VSTS.Common.Priority"}
+    WI_HTML = ("System.Description", "Microsoft.VSTS.TCM.ReproSteps", "Microsoft.VSTS.Common.AcceptanceCriteria", "Microsoft.VSTS.TCM.SystemInfo")
+
+    def _json_patch(self, path, ops):
+        """PATCH com application/json-patch+json (o `req` manda application/json, que o workitems recusa)."""
+        r = urllib.request.Request(f"{self.url}/{path.lstrip('/')}", data=json.dumps(ops).encode(), method="PATCH")
+        r.add_header("Authorization", "Basic " + base64.b64encode(f":{self.pat()}".encode()).decode())
+        r.add_header("Accept", "application/json")
+        r.add_header("Content-Type", "application/json-patch+json")
+        try:
+            with urllib.request.urlopen(r, timeout=30) as resp:
+                if resp.status == 203:
+                    raise RuntimeError("PAT inválido ou expirado (Azure devolveu página de login)")
+                data = resp.read()
+                return json.loads(data) if data else None
+        except urllib.error.HTTPError as e:
+            msg = e.read().decode(errors="replace")[:300]
+            m = re.search(r'"message"\s*:\s*"(.*?)(?<!\\)"', msg)
+            raise RuntimeError(f"HTTP {e.code}: {m.group(1) if m else msg}") from None
+        except OSError as e:
+            if is_network_error(e):
+                raise OfflineError(e) from None
+            raise
+
+    def edit_work_item(self, wid, changes):
+        """Edita o work item pelo app: título, estado, responsável, tags, sprint, área, prioridade e as seções em HTML
+        (descrição, passos, critérios). Só manda o que mudou; devolve o item inteiro de novo (como `work_item`)."""
+        ops = []
+        for k, ref in self.WI_FIELDS.items():
+            if k in changes:
+                v = changes[k]
+                if k == "title" and not str(v or "").strip():
+                    raise ValueError("O título não pode ficar vazio")
+                ops.append({"op": "add", "path": f"/fields/{ref}", "value": "" if v is None else v})
+        if "labels" in changes:
+            ops.append({"op": "add", "path": "/fields/System.Tags", "value": "; ".join(t.strip() for t in changes["labels"] if t.strip())})
+        for ref, html in (changes.get("html") or {}).items():
+            if ref in self.WI_HTML:
+                ops.append({"op": "add", "path": f"/fields/{ref}", "value": html or ""})
+        if ops:
+            self._json_patch(f"_apis/wit/workitems/{int(wid)}?{API}", ops)
+        return self.work_item(wid)
+
+    def work_item_options(self, project, wtype):
+        """O que dá para escolher ao editar: os estados do tipo (na ordem do processo), as sprints e áreas do projeto,
+        as pessoas dos times e as tags já usadas. Cada parte que falhar (permissão) só fica vazia."""
+        proj = urllib.parse.quote(project)
+
+        def safe(fn):
+            try:
+                return fn()
+            except Exception:  # noqa: BLE001
+                return []
+
+        def tree(kind):
+            root = self.req("GET", f"{proj}/_apis/wit/classificationnodes/{kind}?$depth=6&{API}")
+            out = []
+
+            def walk(n, prefix):
+                path = f"{prefix}\\{n['name']}" if prefix else n["name"]
+                out.append(path)
+                for c in n.get("children") or []:
+                    walk(c, path)
+            walk(root, "")
+            return out
+
+        def people():
+            teams = self.req("GET", f"_apis/projects/{proj}/teams?$top=30&{API}").get("value") or []
+            seen = {}
+            with ThreadPoolExecutor(6) as ex:
+                for ms in ex.map(lambda t: self.req("GET", f"_apis/projects/{proj}/teams/{t['id']}/members?$top=300&{API}").get("value") or [], teams[:12]):
+                    for m in ms:
+                        i = m.get("identity") or {}
+                        if i.get("uniqueName") and not i.get("isContainer"):
+                            seen.setdefault(i["uniqueName"].lower(), {"id": i["uniqueName"], "name": i.get("displayName") or i["uniqueName"], "avatar": None})
+            return sorted(seen.values(), key=lambda p: p["name"].lower())
+
+        states = safe(lambda: [{"name": s["name"], "label": s["name"], "category": s.get("category"), "color": f"#{s['color']}" if s.get("color") else None}
+                               for s in self.req("GET", f"{proj}/_apis/wit/workitemtypes/{urllib.parse.quote(wtype)}/states?{API}").get("value") or []])
+        tags = safe(lambda: [{"name": t["name"], "color": None} for t in self.req("GET", f"{proj}/_apis/wit/tags?{API_PREVIEW}").get("value") or []])
+        return {"states": states, "labels": sorted(tags, key=lambda t: t["name"].lower()), "people": safe(people),
+                "iterations": safe(lambda: tree("Iterations")), "areas": safe(lambda: tree("Areas"))}
+
+    # ------------------------------------------------------------ arquivos da PR
+    def pr_files(self, project, repo_id, pr_id):
+        """Arquivos modificados da PR (última iteração × base do merge, como na aba "Files" do Azure). O Azure não dá
+        +/- por arquivo: a tela conta ao abrir o diff."""
+        base_path = f"{urllib.parse.quote(project)}/_apis/git/repositories/{repo_id}/pullRequests/{int(pr_id)}"
+        its = self.req("GET", f"{base_path}/iterations?{API}").get("value") or []
+        if not its:
+            return {"files": [], "base": None, "head": None, "total": 0}
+        last = its[-1]
+        head = (last.get("sourceRefCommit") or {}).get("commitId")
+        base = (last.get("commonRefCommit") or {}).get("commitId") or (last.get("targetRefCommit") or {}).get("commitId")
+        st = {"rename": "R", "add": "A", "delete": "D", "edit": "M"}   # "rename, edit" é renomeado
+        files, skip = [], 0
+        while len(files) < 3000:
+            r = self.req("GET", f"{base_path}/iterations/{last['id']}/changes?$top=1000&$skip={skip}&$compareTo=0&{API}")
+            entries = r.get("changeEntries") or []
+            for c in entries:
+                it = c.get("item") or {}
+                if it.get("isFolder") or it.get("gitObjectType") == "tree":
+                    continue
+                kind = str(c.get("changeType") or "edit").lower()
+                code = next((v for k, v in st.items() if k in kind), "M")
+                files.append({"path": (it.get("path") or c.get("originalPath") or "").lstrip("/"), "oldPath": (c.get("originalPath") or "").lstrip("/") or None,
+                              "status": code, "add": None, "del": None, "binary": False})
+            if not r.get("nextSkip") or not entries:
+                break
+            skip = r["nextSkip"]
+        return {"files": files, "base": base, "head": head, "total": len(files)}
+
+    def file_at(self, project, repo_id, path, sha):
+        """O texto do arquivo num commit (None se ele não existe lá)."""
+        q = urllib.parse.urlencode({"path": "/" + path.lstrip("/"), "versionDescriptor.version": sha, "versionDescriptor.versionType": "commit",
+                                    "includeContent": "true", "api-version": "7.0"})
+        try:
+            it = self.req("GET", f"{urllib.parse.quote(project)}/_apis/git/repositories/{repo_id}/items?{q}")
+        except RuntimeError as e:
+            if str(e).startswith("HTTP 404"):
+                return None
+            raise
+        if (it.get("contentMetadata") or {}).get("isBinary"):
+            return "\0"
+        return it.get("content") or ""
 
     def comment(self, project, repo_id, pr_id, text):
         """Comentário geral na PR (thread nova, status ativo)."""

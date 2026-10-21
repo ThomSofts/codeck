@@ -1,8 +1,9 @@
 """Engine: contas (Azure DevOps + GitHub), ciclos de leitura, regras automáticas e notificações.
 
-Cada ciclo lê PRs → releases/deploys → builds/Actions (e issues a cada 3 ciclos) das duas plataformas. Os itens têm
-o mesmo formato, então regras, arquivo e notificações valem igual para Azure e GitHub. Uma conta fora do ar não
-derruba as outras: os itens dela ficam como estavam até a próxima leitura dar certo.
+Cada fonte (PRs, releases/deploys, builds/Actions, issues) lê as duas plataformas no próprio laço e no próprio
+intervalo; PRs aprovadas podem ser seguidas até o deploy (cascade.py). Os itens têm o mesmo formato, então regras,
+arquivo e notificações valem igual para Azure e GitHub. Uma conta fora do ar não derruba as outras: os itens dela
+ficam como estavam até a próxima leitura dar certo.
 """
 import os
 import threading
@@ -10,9 +11,9 @@ import time
 import uuid
 from datetime import timedelta
 
-from . import azure, catalogs, git, github, power, secrets, tracking
+from . import azure, cascade, catalogs, git, github, power, secrets, tracking, watch
 from .analytics import analytics_cache
-from .core import (ARCHIVE_FILE, CONFIG_FILE, NOTIFIED_FILE, ctx, load_json, lock, log_activity, log_deploy, notify,
+from .core import (ARCHIVE_FILE, CONFIG_FILE, NOTIFIED_FILE, ctx, http_code, load_json, lock, log_activity, log_deploy, notify,
                    is_network_error, now, now_iso, parse_dt, pr_summary, save_json, state, wake)
 from .rules import get_rules, matching_deploy_rule, matching_rule, protected_set, rule_label
 
@@ -20,13 +21,32 @@ deploy_failures = {}  # key -> ts da última falha automática (não insiste a c
 # Intervalo de leitura: 15 s a 10 min. Mais que isso, a fila e as regras automáticas (aprovar PR/deploy) ficam paradas
 # tempo demais e a tela parece "travada" — versões antigas aceitavam até 1 h.
 POLL_MIN, POLL_MAX, POLL_DEFAULT = 15, 600, 60
+# Cada fonte tem o próprio intervalo (Configurações → Leitura e automação): (padrão, mínimo, máximo) em segundos.
+# Issues e tarefas mudam menos e custam mais (busca do GitHub, WIQL): até 30 min.
+POLL_KINDS = {"prs": (60, 15, 600), "builds": (60, 15, 600), "deploys": (60, 15, 600), "issues": (180, 30, 1800)}
 
 
-def clamp_poll(v):
+def clamp_poll(v, kind=None):
+    default, lo, hi = POLL_KINDS.get(kind) or (POLL_DEFAULT, POLL_MIN, POLL_MAX)
     try:
-        return min(max(int(v or POLL_DEFAULT), POLL_MIN), POLL_MAX)
+        return min(max(int(v or default), lo), hi)
     except (TypeError, ValueError):
-        return POLL_DEFAULT
+        return default
+
+
+def intervals(cfg=None):
+    """Intervalo de cada fonte. Sem `pollIntervals` (versões antigas): sai do `pollSeconds` único — PRs, builds e
+    deploys no mesmo valor, issues a cada 3 (como era o ciclo antigo)."""
+    cfg = ctx.config if cfg is None else cfg
+    got = cfg.get("pollIntervals") if isinstance(cfg.get("pollIntervals"), dict) else {}
+    legacy = cfg.get("pollSeconds")
+    out = {}
+    for k in POLL_KINDS:
+        v = got.get(k)
+        if v is None and legacy:
+            v = legacy * (3 if k == "issues" else 1)
+        out[k] = clamp_poll(v, k)
+    return out
 
 
 # ---------------------------------------------------------------- contas
@@ -50,6 +70,9 @@ def load_accounts():
         fixed = POLL_DEFAULT if isinstance(poll, (int, float)) and poll > POLL_MAX else clamp_poll(poll)
         if poll != fixed:   # 30 min / 1 h das versões antigas voltam para o padrão (1 min)
             cfg["pollSeconds"] = fixed
+            save_json(CONFIG_FILE, cfg, private=True)
+        if cfg and not isinstance(cfg.get("pollIntervals"), dict):   # intervalo único → um por fonte (mesmo ritmo de antes)
+            cfg["pollIntervals"] = intervals(cfg)
             save_json(CONFIG_FILE, cfg, private=True)
         if migrate_plain_secrets(cfg):
             save_json(CONFIG_FILE, cfg, private=True)
@@ -163,8 +186,37 @@ _net = _NetState()
 def _fail(errors, key, e, text=None):
     if is_network_error(e):
         _net["down"] = True
+    elif isinstance(e, Throttled):
+        errors[key] = str(e)
     else:
         errors[key] = text if text is not None else str(e)
+
+
+class Throttled(RuntimeError):
+    """A conta pediu para esperar (GitHub: cota no fim ou limite secundário; Azure: Retry-After). A leitura pula a
+    conta e mantém o que ela já tinha até a hora de voltar."""
+
+
+def throttled(acc):
+    """Segundos até a conta poder ser lida de novo (0 = pode agora). GitHub: Retry-After/limite secundário ou menos
+    de 2% da cota (espera o reset, no máximo 15 min). Azure: Retry-After do limite de uso (TSTUs)."""
+    left = max(0.0, (getattr(acc, "retry_until", 0) or 0) - time.time())
+    rate = getattr(acc, "rate", None) or {}
+    if rate.get("limit") and rate.get("remaining", 1) <= max(10, rate["limit"] * 0.02) and rate.get("reset", 0) > time.time():
+        left = max(left, min(rate["reset"] - time.time(), 900))
+    return int(left)
+
+
+def _check_throttle(acc):
+    left = throttled(acc)
+    if left:
+        back = (now() + timedelta(seconds=left)).astimezone().strftime("%H:%M")
+        raise Throttled(f"limite de chamadas atingido — volta a ler às {back}")
+
+
+def _rate_low():
+    """Alguma conta do GitHub com menos de 15% da cota: as leituras do GitHub desaceleram antes de travar."""
+    return any((a.rate or {}).get("limit") and a.rate.get("remaining", 0) < a.rate["limit"] * 0.15 for a in list(ctx.gh.values()))
 
 
 def poll_prs():
@@ -178,6 +230,7 @@ def poll_prs():
 
     for src_name, acc in _sources():
         try:
+            _check_throttle(acc)
             prs, mine = acc.fetch_prs(watch) if isinstance(acc, github.GitHub) else acc.fetch_prs()
             prs, mine = tracking.apply(prs, "prs"), tracking.apply(mine, "prs")   # só os repositórios acompanhados
             me[src_name] = acc.me
@@ -234,6 +287,7 @@ def poll_prs():
                         pr["myVote"] = 10
                         pr["approvals"] += 1
                         log_activity("auto", "vote", pr, vote=10, detail=rule_label(rules_cfg, pr["rule"]), rule_id=rule["id"])
+                        cascade.on_approved(pr, "auto")
                         if settings["notifyAuto"]:
                             notify("PR aprovada pelo piloto", f"{pr['org']}/{pr['repo']} #{pr['prId']} · {pr['creatorName']} → {pr['target']}",
                                    pr["title"], f"todas/{key}")
@@ -300,6 +354,7 @@ def poll_deploys():
         gh_runs = [b for b in state["builds"] if b.get("provider") == "github"]
     for src_name, acc in _sources():
         try:
+            _check_throttle(acc)
             if isinstance(acc, github.GitHub):
                 items, rels = acc.fetch_pending_deploys([b for b in gh_runs if b.get("account") == acc.login]), []
             else:
@@ -385,6 +440,7 @@ def poll_builds():
     watch = watched_repos()
     for src_name, acc in _sources():
         try:
+            _check_throttle(acc)
             if isinstance(acc, github.GitHub):
                 acc.identity()
                 builds, errs = acc.fetch_runs(watch)
@@ -464,6 +520,7 @@ def poll_issues():
     out, errors = [], {}
     for src_name, acc in _sources():
         try:
+            _check_throttle(acc)
             got = acc.fetch_issues() if isinstance(acc, github.GitHub) else acc.fetch_work_items()
             for i in got:
                 i.setdefault("account", acc.login if isinstance(acc, github.GitHub) else None)
@@ -510,21 +567,51 @@ def browse_issues(scope="all", state="open", fresh=False):
 POLL_STEP = {"poll_prs": "pull requests", "poll_builds": "builds", "poll_deploys": "deploys", "poll_issues": "issues e tarefas"}
 
 
-# fonte → (função, múltiplo do intervalo de leitura, atraso inicial em s). Issues mudam menos: a cada 3 intervalos.
-SOURCES = {"prs": (poll_prs, 1, 0), "builds": (poll_builds, 1, 2), "deploys": (poll_deploys, 1, 4), "issues": (poll_issues, 3, 6)}
+# fonte → (função, atraso inicial em s). O intervalo de cada uma vem de `intervals()` (Configurações).
+SOURCES = {"prs": (poll_prs, 0), "builds": (poll_builds, 2), "deploys": (poll_deploys, 4), "issues": (poll_issues, 6)}
 _wakes = {k: threading.Event() for k in SOURCES}
 _offline = {}
 # laço de cada fonte: geração (o vigia troca um laço travado por um novo; o antigo, se um dia voltar, só sai) e
 # desde quando (monotônico: não conta o tempo dormindo) a leitura atual está rodando
 _gen = {k: 0 for k in SOURCES}
 _busy_since = {}
+_streak = {k: 0 for k in SOURCES}   # leituras seguidas em que TODAS as contas falharam (sem ser rede): espera dobra
 STUCK = 240   # uma leitura leva segundos; 4 min acordado lendo = presa (DNS/socket morto depois de suspender)
+BACKOFF_MAX = 900
+IDLE_AFTER = 120   # janela sem foco/escondida há 2 min (ou tela bloqueada/protetor): modo econômico
+# a tela avisa foco e visibilidade (/api/presence); sem aviso nenhum (tela antiga), conta como em uso
+presence = {"focused": True, "visible": True, "since": time.monotonic()}
 
 
 def refresh(source=None):
     """Lê agora: uma fonte (prs, builds, deploys, issues) ou todas."""
     for k in ([source] if source in _wakes else _wakes):
         _wakes[k].set()
+
+
+def idle():
+    """Ninguém olhando: janela sem foco/escondida há mais de 2 min, ou tela bloqueada/protetor de tela."""
+    if power.away():
+        return True
+    return not (presence["focused"] and presence["visible"]) and time.monotonic() - presence["since"] > IDLE_AFTER
+
+
+def set_presence(focused, visible):
+    """A tela mudou de foco/visibilidade. Voltando depois de um tempo fora, relê na hora as fontes que passaram do
+    intervalo normal (o que mudou enquanto a janela estava escondida aparece logo, como num app em tempo real)."""
+    was_idle = idle()
+    focused, visible = bool(focused), bool(visible)
+    if (focused, visible) != (presence["focused"], presence["visible"]):
+        presence.update(focused=focused, visible=visible, since=time.monotonic())
+    if was_idle and focused and visible:
+        every = intervals()
+        with lock:
+            upd = dict(state["updated"])
+        for k in SOURCES:
+            last = parse_dt(upd.get(k))
+            if not last or (now() - last).total_seconds() > every[k]:
+                refresh(k)
+    return {"idle": idle()}
 
 
 def _fast_builds():
@@ -535,8 +622,34 @@ def _fast_builds():
                    and (parse_dt(b.get("started") or b.get("queued")) or recent) > recent for b in state["builds"])
 
 
+def _deploy_in_flight():
+    """Algum run parado esperando environment ou um deploy acompanhado em cascata: os deploys releem mais rápido."""
+    with lock:
+        waiting = any(b.get("waiting") for b in state["builds"])
+    return waiting or cascade.active_stage("deploy")
+
+
+def next_wait(key):
+    """Quanto a fonte espera até a próxima leitura e por quê (a tela mostra em Configurações)."""
+    base = intervals()[key]
+    hi = max(POLL_KINDS[key][2], base)
+    wait, why = base, "intervalo"
+    adaptive = ctx.config.get("pollAdaptive", True)
+    if adaptive and idle():
+        wait, why = min(base * 3, hi), "sem ninguém olhando"
+    if key == "builds" and _fast_builds() and wait > 20:
+        wait, why = 20, "build rodando"
+    if key == "deploys" and adaptive and _deploy_in_flight() and wait > 30:
+        wait, why = 30, "deploy em andamento"
+    if key in ("prs", "builds") and _rate_low():
+        wait, why = min(wait * 2, hi * 2), "cota do GitHub baixa"
+    if _streak[key]:
+        wait, why = min(wait * 2 ** _streak[key], BACKOFF_MAX), f"falhou {_streak[key]}× seguidas"
+    return int(wait), why
+
+
 def _source_loop(key, gen=0):
-    fn, mult, delay = SOURCES[key]
+    fn, delay = SOURCES[key]
     time.sleep(delay if gen == 0 else 0)   # não sai tudo junto na abertura
     while _gen[key] == gen:
         if power.paused():   # tela bloqueada/protetor/suspenso com "Pausar a automação": nada de ler nem aprovar
@@ -548,15 +661,19 @@ def _source_loop(key, gen=0):
             state["loading"][key] = now_iso()
             state["polling"] = POLL_STEP[fn.__name__]   # compatível: "lendo <etapa>…" na barra lateral
         _busy_since[key] = time.monotonic()
+        crashed = False
         try:
             fn()
         except Exception as e:  # noqa: BLE001
+            crashed = True
             with lock:
                 state["errors"]["_geral"] = f"{fn.__name__}: {e}"
         if _gen[key] != gen:
             return   # o vigia já pôs outro laço no lugar deste (que ficou preso)
         _busy_since.pop(key, None)
         offline = _net["down"] and not _net["ok"]
+        # nenhuma conta respondeu e não foi a rede (token recusado, limite, 5xx): espera dobra a cada vez, até 15 min
+        _streak[key] = min(_streak[key] + 1, 6) if (crashed or (not _net["ok"] and not offline and _sources())) else 0
         with lock:
             state["loading"][key] = None
             state["updated"][key] = now_iso()
@@ -565,12 +682,13 @@ def _source_loop(key, gen=0):
             _offline[key] = offline
             # "offline" guarda DESDE QUANDO está sem rede; volta a None na 1ª leitura que funcionar
             state["offline"] = (state.get("offline") or now_iso()) if all(_offline.get(k) for k in SOURCES) else None
-        # sem rede: tenta de novo a cada 10 s para reconectar logo; com rede, no intervalo escolhido — com build rodando,
-        # os builds releem a cada 20 s (o andamento, a falha e o fim aparecem logo)
-        wait = clamp_poll(ctx.config.get("pollSeconds")) * mult
-        if key == "builds" and _fast_builds():
-            wait = min(wait, 20)
-        _wakes[key].wait(10 if offline else wait)
+        # sem rede: tenta de novo a cada 10 s para reconectar logo; com rede, no intervalo da fonte (mais curto com build
+        # rodando ou deploy em andamento, mais longo sem ninguém olhando, com a cota baixa ou falhando seguido)
+        wait, why = (10, "sem conexão") if offline else next_wait(key)
+        with lock:
+            state.setdefault("schedule", {})[key] = {"every": wait, "why": why,
+                                                     "next": (now() + timedelta(seconds=wait)).isoformat(timespec="seconds")}
+        _wakes[key].wait(wait)
         _wakes[key].clear()
 
 
@@ -598,11 +716,58 @@ def _wake_relay():
         refresh()
 
 
+# ---------------------------------------------------------------- GitHub: notificações como gatilho
+NOTIF_SOURCES = {"PullRequest": ("prs",), "Issue": ("issues",), "CheckSuite": ("builds",), "WorkflowRun": ("builds",),
+                 "Release": ("deploys",)}
+notif_state = {}   # id da conta -> {"since", "every", "at", "off"}: última notificação vista, X-Poll-Interval, desligado por quê
+
+
+def _gh_notifications_loop():
+    """Quase tempo real sem servidor público: o endpoint de notificações do GitHub responde 304 (não gasta cota)
+    enquanto nada muda e diz de quanto em quanto tempo pode ser consultado (X-Poll-Interval, normalmente 60 s).
+    Mudou algo (revisão pedida, PR atualizada, CI, release): relê só a fonte certa na hora, sem esperar o intervalo
+    dela — dá para deixar as PRs (GraphQL, sem ETag) num intervalo maior sem demorar a ver o que chega."""
+    time.sleep(20)
+    while True:
+        for acc in list(ctx.gh.values()):
+            st = notif_state.setdefault(acc.id, {"since": None, "every": 60, "at": 0.0, "off": None})
+            if st["off"] or power.paused() or throttled(acc) or time.monotonic() - st["at"] < st["every"]:
+                continue
+            st["at"] = time.monotonic()
+            h = {}
+            try:
+                items = acc.req("GET", "notifications?all=false&per_page=50", etag=True, headers_out=h) or []
+            except Exception as e:  # noqa: BLE001
+                if http_code(e) in (401, 403, 404, 422):   # token fino sem "notifications": segue só com os intervalos
+                    st["off"] = github.github_message(e)
+                continue
+            if not h:
+                continue   # 304: nada novo desde a última vez
+            try:
+                st["every"] = max(int(h.get("x-poll-interval") or 60), 30)
+            except ValueError:
+                st["every"] = 60
+            newest = max((n.get("updated_at") or "" for n in items), default="")
+            if st["since"] is None:   # 1ª leitura só marca
+                st["since"] = newest or now_iso()
+                continue
+            fresh = [n for n in items if (n.get("updated_at") or "") > st["since"]]
+            st["since"] = max(st["since"], newest)
+            for k in {k for n in fresh for k in NOTIF_SOURCES.get((n.get("subject") or {}).get("type"), ())}:
+                refresh(k)
+            if fresh:
+                cascade.poke()
+        time.sleep(10)
+
+
 def poll_loop():
     for k in SOURCES:
         threading.Thread(target=_source_loop, args=(k,), daemon=True, name=f"poll-{k}").start()
     threading.Thread(target=_watchdog, daemon=True, name="poll-watchdog").start()
     threading.Thread(target=power.clock_loop, daemon=True, name="power-clock").start()
+    threading.Thread(target=cascade.loop, daemon=True, name="cascade").start()
+    threading.Thread(target=_gh_notifications_loop, daemon=True, name="gh-notifications").start()
+    threading.Thread(target=watch.loop, daemon=True, name="live-watch").start()   # tempo real (local), watch.py
     _wake_relay()
 
 

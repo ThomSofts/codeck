@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
+  import CascadeDock from "./components/cascade/CascadeDock.svelte";
   import CommandPalette from "./components/CommandPalette.svelte";
   import DialogHost from "./components/DialogHost.svelte";
   import Sidebar from "./components/Sidebar.svelte";
@@ -8,6 +9,7 @@
   import CloneDialog from "./components/repo/CloneDialog.svelte";
   import AccountEditor from "./components/repo/AccountEditor.svelte";
   import RepoHub from "./components/repo/RepoHub.svelte";
+  import { cascade } from "./lib/cascade.svelte";
   import { applyDensity } from "./lib/density";
   import { prefs } from "./lib/prefs.svelte";
   import { kb, syncKeybindings } from "./lib/keybindings.svelte";
@@ -49,6 +51,7 @@
       const a = work.agents.find(x => x.term.meta.sid === rest[0] || x.term.id === rest[0]);
       return go("/work/" + (a?.project.id || ""));
     }
+    if (t === "cascade") return cascade.show(rest.join("/"));   // passo do "até o deploy": abre a doca naquela PR
     const key = encodeURIComponent(rest.join("/"));
     const map: Record<string, string> = { fila: "/inbox/", minhas: "/prs/mine/", todas: "/prs/all/", builds: "/builds/", historico: "/history", deploys: "/deploys/" };
     go((map[t] ?? `/${t}/`) + (map[t] === "/history" ? "" : key));
@@ -124,6 +127,7 @@
 {#if ui.editAccount}<AccountEditor />{/if}
 {#if ui.repoHub}<RepoHub />{/if}
 <Toaster />
+<CascadeDock />
 
 <style>
   .shell { display: flex; height: 100%; }

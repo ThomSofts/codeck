@@ -80,12 +80,21 @@ class Store {
     // rede caiu/voltou: o banner reage na hora; ao voltar, lê tudo sem esperar o próximo ciclo
     window.addEventListener("offline", () => (this.netDown = true));
     window.addEventListener("online", () => { this.netDown = false; this.refresh(); });
+    // foco e visibilidade da janela: sem ninguém olhando, o backend espaça as leituras; ao voltar, relê o que envelheceu
+    const presence = () => post("presence", { focused: document.hasFocus(), visible: document.visibilityState === "visible" }, { quiet: true })
+      .then(() => { if (document.hasFocus()) this.refreshSoon(1500); }).catch(() => {});
+    window.addEventListener("focus", presence);
+    window.addEventListener("blur", presence);
+    document.addEventListener("visibilitychange", presence);
+    presence();
     const tick = async () => {
       if (!this.held) await this.load();
       // relê rápido até chegar o 1º dado e enquanto o backend estiver no meio de uma leitura (o indicador some na hora certa)
       // lendo alguma fonte: relê rápido (os dados de cada uma aparecem assim que ela termina); parado: a cada 6 s
       const fast = !this.s || !this.s.lastPoll || !this.s.lastBuildPoll || !this.s.lastDeployPoll || this.anyLoading;
-      this.timer = setTimeout(tick, fast ? 1500 : 6000);
+      // PR acompanhada até o deploy: a linha do tempo anda a cada poucos segundos — a tela acompanha (3 s)
+      const following = !!this.s?.cascade?.some(c => c.stage !== "finished");
+      this.timer = setTimeout(tick, fast ? 1500 : following ? 3000 : 6000);
     };
     tick();
   }

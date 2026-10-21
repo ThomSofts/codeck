@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { Bot, Eye, EyeOff, ExternalLink, KanbanSquare, MessageSquare, RefreshCw, Sparkles, Users } from "@lucide/svelte";
-  import { get } from "../lib/api";
+  import { Bot, CheckCircle2, CircleDot, Eye, EyeOff, ExternalLink, KanbanSquare, MessageSquare, RefreshCw, Sparkles, Users } from "@lucide/svelte";
+  import { flip } from "svelte/animate";
+  import { fade } from "svelte/transition";
+  import { get, post } from "../lib/api";
   import { matchesAssignee, people, personOf } from "../lib/people";
   import { prefs } from "../lib/prefs.svelte";
   import type { Issue } from "../lib/types";
@@ -11,7 +13,7 @@
   import { ui } from "../lib/ui.svelte";
   import Menu from "../components/Menu.svelte";
   import { work } from "../lib/work.svelte";
-  import { ago } from "../lib/format";
+  import Ago from "../components/Ago.svelte";
   import { store } from "../lib/store.svelte";
   import Empty from "../components/Empty.svelte";
   import Page from "../components/Page.svelte";
@@ -89,6 +91,19 @@
       projects: local ? [local.id] : [], workItem: { number: i.number, title: i.title, url: i.url, provider: i.provider, key: i.key } });
     if (c) ui.toast("Cartão criado no quadro", "ok", { label: "Abrir", run: () => go("/board/c/" + c.id) });
   }
+  // fechar/reabrir uma issue do GitHub direto da lista (otimista: a linha muda na hora e volta se o GitHub recusar)
+  let pulsing = $state<string | null>(null);
+  async function toggleState(i: Issue) {
+    const was = i.state, next = String(was).toLowerCase() === "closed" ? "open" : "closed";
+    i.state = next;
+    pulsing = i.key;
+    try {
+      await post("issue/edit", { provider: i.provider, account: i.account || undefined, org: i.org, repo: i.repo, number: i.number, key: i.key, changes: { state: next } });
+      ui.toast(next === "closed" ? `#${i.number} fechada` : `#${i.number} reaberta`, "ok", { label: "Desfazer", run: () => toggleState(i) });
+    } catch (e) { i.state = was; ui.error(e); }
+    if (pulsing === i.key) pulsing = null;
+  }
+  const isClosed = (i: Issue) => String(i.state).toLowerCase() === "closed";
 </script>
 
 <Page live={["issues"]} title="Issues e tarefas" sub="Issues do GitHub e itens de trabalho do Azure Boards — todos dos projetos ou os seus (atribuídos, criados, que mencionam você), abertos ou fechados">
@@ -115,16 +130,18 @@
     <div class="card scroll">
       {#each shown as i (i.key)}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <div class="list-row" role="button" tabindex="0" class:sel={opened?.key === i.key} onclick={() => (opened = i)} onkeydown={(e) => e.key === "Enter" && (opened = i)}>
+        <div class="list-row" role="button" tabindex="0" class:sel={opened?.key === i.key} class:closed={i.provider === "github" && isClosed(i)} class:pulse={pulsing === i.key}
+          animate:flip={{ duration: 260 }} in:fade={{ duration: 180 }} onclick={() => (opened = i)} onkeydown={(e) => e.key === "Enter" && (opened = i)}>
           <span class="ic" class:wi={i.provider === "azure"}><ProviderIcon provider={i.provider} size={15} /></span>
           <div class="grow">
             <div class="t"><span class="num">#{i.number}</span><span class="title ell">{i.title}</span></div>
             <div class="meta">
               <span>{i.repo}</span>
-              {#if i.provider === "azure"}<span class="pill neutral">{i.type}</span><span class="pill info">{i.state}</span>{/if}
+              {#if i.provider === "azure"}<span class="pill neutral">{i.type}</span>{#key i.state}<span class="pill info stp">{i.state}</span>{/key}
+              {:else if isClosed(i)}<span class="pill good stp"><CheckCircle2 size={11} /> fechada</span>{/if}
               {#each i.labels.slice(0, 5) as l (l.name)}<span class="label-chip" style="--c:{l.color || 'var(--muted)'}">{l.name}</span>{/each}
               {#if i.assignees?.length}<span title="Responsável">{i.assignees.map(a => personOf(a) || a.login).join(", ")}</span>{/if}
-              <span>{reasonsOf(i).map(r => REASON[r]).filter(Boolean).join(" · ")}{reasonsOf(i).length ? " · " : ""}atualizada há {ago(i.updated)}</span>
+              <span>{reasonsOf(i).map(r => REASON[r]).filter(Boolean).join(" · ")}{reasonsOf(i).length ? " · " : ""}atualizada <Ago iso={i.updated} prefix="há " /></span>
               {#if i.comments}<span class="row" style="gap:4px"><MessageSquare size={11} />{i.comments}</span>{/if}
             </div>
           </div>
@@ -137,6 +154,7 @@
               { separator: true },
               { label: "Começar tarefa (formulário completo)", icon: Bot, onclick: () => startTask(i) },
               { label: "Adicionar ao quadro", icon: KanbanSquare, onclick: () => toBoard(i) },
+              ...(i.provider === "github" ? [{ label: isClosed(i) ? "Reabrir issue" : "Fechar issue", icon: isClosed(i) ? CircleDot : CheckCircle2, onclick: () => toggleState(i) }] : []),
               ...(i.scopeKey ? [{ separator: true }, { label: i.provider === "azure" ? `Não acompanhar work items de ${i.repo}` : `Não acompanhar issues de ${i.repo}`,
                 hint: "PRs, builds e deploys continuam", icon: EyeOff, onclick: () => setIssues(i.scopeKey!, false) }] : []),
             ]} />
@@ -159,12 +177,20 @@
   {/if}
 </Page>
 
-{#if opened}<IssueDetail item={opened} onclose={() => (opened = null)} onboard={(i) => toBoard(i)} />{/if}
+{#if opened}<IssueDetail item={opened} onclose={() => (opened = null)} onboard={(i) => toBoard(i)} onchange={(p) => {
+  // a edição da gaveta vale na linha também (o item é o mesmo da lista: muda na hora; a leitura seguinte confirma)
+  for (const x of base) if (x.key === opened.key) Object.assign(x, p);
+  Object.assign(opened, p);
+}} />{/if}
 
 <style>
   .start { display: inline-flex; align-items: center; gap: 2px; opacity: 0; transition: opacity var(--t-fast); }
   .ai { color: var(--accent); }
   .list-row { cursor: pointer; }
+  .list-row.closed .title { color: var(--text-2); }
+  .list-row.pulse { background-image: linear-gradient(100deg, transparent 30%, var(--accent-soft) 50%, transparent 70%); background-size: 250% 100%;
+    animation: shimmer 1.2s linear infinite; }
+  .stp { animation: pop 0.4s var(--spring); }
   .list-row:hover .start, .list-row:focus-visible .start { opacity: 1; }
   .ext { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; color: var(--muted); flex: none; }
   .ext:hover { background: var(--surface-3); color: var(--text); }

@@ -72,7 +72,7 @@ export const COMMANDS: Command[] = [
   // ---- explorador (com o foco na árvore de arquivos)
   c("explorer.newFile", "Novo arquivo", "Explorador", "explorer", []),
   c("explorer.newFolder", "Nova pasta", "Explorador", "explorer", []),
-  c("renameFile", "Renomear", "Explorador", "explorer", "f2"),
+  c("renameFile", "Renomear", "Explorador", "explorer", ["enter", "f2"], "f2"),
   c("deleteFile", "Excluir (vai para a Lixeira)", "Explorador", "explorer", ["mod+backspace", "delete"], "delete"),
   c("filesExplorer.copy", "Copiar", "Explorador", "explorer", "mod+c"),
   c("filesExplorer.cut", "Recortar", "Explorador", "explorer", "mod+x"),
@@ -82,6 +82,7 @@ export const COMMANDS: Command[] = [
   c("copyRelativeFilePath", "Copiar caminho relativo", "Explorador", "explorer", "alt+mod+shift+c", "mod+shift+alt+c"),
   // ---- editor: navegação (do app, pelo servidor de linguagem)
   c("codeck.gotoDefinition", "Ir para a definição", "Editor", "editor", "f12"),
+  c("codeck.findAllReferences", "Localizar todas as referências", "Editor", "editor", "shift+alt+f12"),
   c("editor.action.toggleWordWrap", "Quebra de linha automática", "Editor", "editor", "alt+z"),
   c("editor.action.toggleMinimap", "Mostrar/esconder o minimapa", "Editor", "editor", []),
   // ---- editor (Monaco)
@@ -120,6 +121,7 @@ export const COMMANDS: Command[] = [
   ed("editor.action.peekDefinition", "Espiar a definição", "alt+f12", "alt+f12"),
   ed("editor.action.goToReferences", "Ir para as referências", "shift+f12"),
   ed("editor.action.goToImplementation", "Ir para a implementação", "mod+f12"),
+  ed("editor.action.goToTypeDefinition", "Ir para a definição de tipo", []),
   ed("editor.action.quickFix", "Correção rápida", "mod+."),
   ed("editor.action.triggerSuggest", "Sugestões (autocompletar)", "ctrl+space"),
   ed("editor.action.triggerParameterHints", "Dicas de parâmetros", "mod+shift+space"),

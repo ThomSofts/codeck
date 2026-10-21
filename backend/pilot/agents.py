@@ -238,6 +238,11 @@ def _ps_lit(s):
     return "'" + re.sub(r"(['‘’‚‛])", r"\1\1", s.replace("\0", "")) + "'"
 
 
+def _ver_key(name):
+    """'2025.10.02-a1b2c3' → (2025, 10, 2, …): ordena as pastas de versão pelo número, não pelo texto."""
+    return tuple(int(x) for x in re.findall(r"\d+", name)[:6]) or (0,)
+
+
 def win_resolve(path):
     """Executável real por trás de uma CLI no Windows: (programa, argumentos antes dos do usuário, passa_pelo_cmd).
     .exe → ele mesmo; .cmd/.bat do npm (cmd-shim) → o .exe/.js que ele chamaria (node + script); senão o próprio .cmd."""
@@ -253,6 +258,15 @@ def win_resolve(path):
     hits = [h for line in text.splitlines() if "%*" in line
             for h in re.findall(r'"%~?dp0%?\\([^"%]+?\.(?:exe|js|cjs|mjs))"', line, re.I)]
     if not hits:
+        # instalador do próprio CLI (cursor-agent): o .cmd chama um .ps1 que escolhe a versão em versions\<v>\ e roda o
+        # node.exe dela. Pela cadeia cmd → PowerShell → node o agente abria janelas de console e se embaralhava no
+        # terminal: vai direto no node + index.js da versão mais nova, quando estão lá
+        vers = os.path.join(os.path.dirname(path), "versions")
+        if os.path.isdir(vers):
+            for v in sorted(os.listdir(vers), key=_ver_key, reverse=True):
+                node, js = os.path.join(vers, v, "node.exe"), os.path.join(vers, v, "index.js")
+                if os.path.isfile(node) and os.path.isfile(js):
+                    return node, [js], False
         return path, [], True
     base = os.path.dirname(path)
     target = os.path.normpath(os.path.join(base, hits[-1].replace("\\", os.sep)))
@@ -536,6 +550,23 @@ def all_sessions():
 
 def forget(sid):
     _sessions.pop(sid, None)
+
+
+def discard(sid):
+    """Você fechou o terminal do agente (ou o projeto): a sessão sai de tudo — estado, contexto e custo ao vivo, a oferta
+    de retomar a conversa e os arquivos de pedido/lançador dela. O histórico de uso (custo por dia) fica. Ao SAIR do app
+    não passa por aqui: lá a sessão continua retomável."""
+    if not sid:
+        return
+    with _lock:
+        _sessions.pop(sid, None)
+    forget_resume(sid)
+    _activity["at"] = 0   # as contas deixam de mostrar a sessão já na próxima leitura
+    for name in (f"{sid}.md", f"settings-{sid}.json", f"launch-{sid}.ps1"):
+        try:
+            os.remove(os.path.join(PROMPT_DIR, name))
+        except OSError:
+            pass
 
 
 def set_title(sid, title):

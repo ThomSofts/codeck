@@ -3,8 +3,10 @@
   // Barra lateral. Expandida: menus com contadores, os projetos abertos (em grupos, compactos) e as coleções de
   // repositórios. Recolhida (⌘\ / Ctrl+\): só ícones — passar o mouse abre um popover com o submenu de cada item.
   import { BarChart3, Gauge, Code2, RefreshCw, CircleDot, FolderGit2, GitPullRequest, Hammer, History, Inbox, Pin, Rocket, Search, Settings, Zap,
-    KanbanSquare, PanelLeftClose, PanelLeftOpen, ChevronRight, LayoutGrid } from "@lucide/svelte";
+    KanbanSquare, PanelLeftClose, PanelLeftOpen, ChevronRight, LayoutGrid, Radio } from "@lucide/svelte";
   import { BRAND } from "../lib/brand";
+  import { cascade } from "../lib/cascade.svelte";
+  import CascadeTrack from "./cascade/CascadeTrack.svelte";
   import { post } from "../lib/api";
   import { kb } from "../lib/keybindings.svelte";
   import { prefs } from "../lib/prefs.svelte";
@@ -193,6 +195,18 @@
   </nav>
 
   <div class="foot">
+    {#if cascade.items.length}
+      <!-- PRs acompanhadas até o deploy: o passo atual da mais recente; clique abre a doca com todas -->
+      {@const first = cascade.active[0] || cascade.items[0]}
+      <button class="casc" class:live={cascade.active.length > 0} onclick={() => (cascade.open ? (cascade.open = false) : cascade.show(first.key))}
+        title={`Até o deploy: ${cascade.active.length} em andamento — ${first.title}`} aria-label="Acompanhando até o deploy">
+        <Radio size={14} />
+        {#if !collapsed}
+          <span class="cbody"><span class="ct ell">#{first.prId} {first.title}</span><CascadeTrack item={first} compact /></span>
+          {#if cascade.items.length > 1}<span class="count">{cascade.items.length}</span>{/if}
+        {/if}
+      </button>
+    {/if}
     {#if !collapsed}
       <Switch checked={!paused} onchange={toggleAuto} label={paused ? "Automação pausada" : "Automação ativa"} />
       <div class="health">
@@ -301,6 +315,13 @@
   @keyframes live { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 60%, transparent); } 70% { box-shadow: 0 0 0 6px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
   .foot { display: grid; gap: 10px; padding: 12px 8px 0; border-top: 1px solid var(--line); }
   .collapsed .foot { padding: 10px 0 0; justify-items: center; }
+  .casc { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface);
+    color: var(--muted); font: inherit; text-align: left; cursor: pointer; min-width: 0; transition: border-color var(--t); }
+  .casc:hover { border-color: var(--line-2); }
+  .casc.live > :global(svg) { color: var(--accent); animation: breathe-src 1.4s var(--ease) infinite; }
+  .collapsed .casc { justify-content: center; padding: 6px 0; border-color: transparent; background: none; }
+  .cbody { flex: 1; min-width: 0; display: grid; gap: 3px; }
+  .ct { font-size: 11.5px; color: var(--text-2); }
   .health { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11.5px; color: var(--text-2); }
   .health span { display: inline-flex; align-items: center; gap: 5px; }
   .health .err { color: var(--bad); }

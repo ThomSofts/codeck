@@ -1,14 +1,15 @@
 // Cliente LSP mínimo para o Monaco: um servidor por (projeto/tarefa, linguagem), pela ponte /ws/lsp do backend.
 // Faz: abrir/alterar/fechar documento, erros (publishDiagnostics → marcações), autocompletar, hover, definição,
-// referências, renomear, símbolos, formatar, destaque semântico (cores pelo significado, como no VS Code), ocorrências
-// do símbolo, dicas inline e correções rápidas (a lâmpada, ⌘.).
+// referências (com "N referências" em cima das declarações), implementação, definição de tipo, renomear, símbolos,
+// formatar, destaque semântico (cores pelo significado, como no VS Code), ocorrências do símbolo, dicas inline e
+// correções rápidas (a lâmpada, ⌘.). Navegar para outro arquivo (⌘-clique, F12, o peek das referências) abre a aba dele.
 import type * as Monaco from "monaco-editor";
 import { get as apiGet, post as apiPost } from "./api";
-import { modelUri } from "./editorstate.svelte";
+import { edState, modelUri, scopeKey } from "./editorstate.svelte";
 import { ui } from "./ui.svelte";
 
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void };
-const LANGS = new Set(["typescript", "javascript", "python", "csharp", "go", "rust", "java", "php", "html", "css", "json"]);
+const LANGS = new Set(["typescript", "javascript", "python", "csharp", "go", "rust", "java", "php", "html", "css", "json", "dart"]);
 // os tipos e modificadores de token semântico do LSP (o servidor devolve a lista dele no initialize)
 const TOKEN_TYPES = ["namespace", "type", "class", "enum", "interface", "struct", "typeParameter", "parameter", "variable", "property", "enumMember",
   "event", "function", "method", "macro", "keyword", "modifier", "comment", "string", "number", "regexp", "operator", "decorator"];
@@ -32,8 +33,8 @@ class Client {
           const rootUri = toUri(root);
           const r = await this.request("initialize", { processId: null, rootUri, rootPath: root, workspaceFolders: [{ uri: rootUri, name: root.split(/[\\/]/).pop() }],
             capabilities: { textDocument: { synchronization: { didSave: true, dynamicRegistration: false }, hover: { contentFormat: ["markdown", "plaintext"] },
-              completion: { completionItem: { snippetSupport: false, documentationFormat: ["markdown", "plaintext"] } }, definition: {}, publishDiagnostics: {},
-              rename: { prepareSupport: false }, references: {}, implementation: {}, documentSymbol: { hierarchicalDocumentSymbolSupport: true },
+              completion: { completionItem: { snippetSupport: false, documentationFormat: ["markdown", "plaintext"] } }, definition: { linkSupport: true }, publishDiagnostics: {},
+              rename: { prepareSupport: false }, references: {}, implementation: { linkSupport: true }, typeDefinition: { linkSupport: true }, documentSymbol: { hierarchicalDocumentSymbolSupport: true },
               formatting: {}, rangeFormatting: {}, signatureHelp: { signatureInformation: { documentationFormat: ["markdown", "plaintext"] } },
               documentHighlight: {}, inlayHint: {},
               semanticTokens: { requests: { full: true, range: false }, tokenTypes: TOKEN_TYPES, tokenModifiers: TOKEN_MODS, formats: ["relative"] },
@@ -97,14 +98,27 @@ class Client {
 // padroniza a letra do drive antes de comparar.
 const norm = (u: string) => { let x = u; try { x = decodeURIComponent(u); } catch { /* já decodificada */ } return x.replace(/^file:\/\/\/([A-Za-z]):/, (_m, d) => `file:///${d.toLowerCase()}:`); };
 const toUri = (p: string) => "file://" + (p.startsWith("/") ? "" : "/") + p.replace(/\\/g, "/").split("/").map(encodeURIComponent).join("/").replace(/%3A/g, ":");
+/** Caminho relativo ao projeto de uma URI do servidor (null se é de fora: biblioteca, SDK, node_modules). No Windows o
+ *  disco não diferencia maiúsculas: "file:///c:/Projetos/App" e "file:///C:/projetos/app" são a mesma pasta. */
+function relIn(root: string, uri: string) {
+  const r = norm(toUri(root.replace(/[\\/]$/, ""))) + "/", u = norm(uri);
+  const hit = /^file:\/\/\/[a-z]:/.test(r) ? u.toLowerCase().startsWith(r.toLowerCase()) : u.startsWith(r);
+  return hit ? u.slice(r.length) : null;
+}
 const clients = new Map<string, Client>();
 const byModel = new Map<string, { client: Client; uri: string; root: string; rel: string }>();
 let opener: ((rel: string, line: number) => void) | null = null;
+// modelos "de espiar": arquivos sem aba que o peek (referências, definição) e a prévia do ⌘-hover mostram — com o
+// texto do disco. Viram o documento da aba quando ela abre (Editor.loadDoc reaproveita o modelo).
+const peeked = new Set<string>();
+const fetching = new Map<string, Promise<void>>();
+export const isPeek = (m: Monaco.editor.ITextModel) => peeked.has(m.uri.toString());
 const registered = new Set<string>();
 
 /** Liga um modelo do Monaco ao servidor de linguagem do projeto (se houver um instalado para a linguagem). */
 export function attach(monaco: typeof Monaco, model: Monaco.editor.ITextModel, ctx: { repoId: string; taskId: string | null; root: string; rel: string },
   onStatus: (s: string) => void) {
+  peeked.delete(model.uri.toString());   // virou aba de verdade
   const lang = model.getLanguageId();
   if (!LANGS.has(lang) || !ctx.root) return onStatus("");
   const key = `${ctx.repoId}:${ctx.taskId || ""}:${lang}`;
@@ -166,46 +180,54 @@ function register(monaco: typeof Monaco, lang: string) {
         sortText: i.sortText, filterText: i.filterText, range })) };
     },
   });
-  monaco.languages.registerDefinitionProvider(lang, {
-    async provideDefinition(model, position) {
-      const x = ctxOf(model); if (!x || !(await up(x))) return null;
-      const r = await x.client.request("textDocument/definition", { textDocument: { uri: x.uri }, position: pos(position) }).catch(() => null);
-      const locs: any[] = (Array.isArray(r) ? r : r ? [r] : []).map(l => ({ uri: l.targetUri || l.uri, range: l.targetSelectionRange || l.range }));
-      const rootUri = norm(toUri(x.root.replace(/[\\/]$/, ""))) + "/";
-      return locs.filter(l => norm(l.uri).startsWith(rootUri)).map(l => {
-        const rel = norm(l.uri).slice(rootUri.length);
-        const same = rel === x.rel;
-        const target = same ? model.uri : monaco.Uri.parse(`cdgoto:///${encodeURIComponent(rel)}`);
-        // o editor só "abre" um arquivo que tenha modelo: um vazio basta — o opener abaixo troca pela aba de verdade
-        if (!same && !monaco.editor.getModel(target)) monaco.editor.createModel("", undefined, target);
-        return { uri: target, range: {
-          startLineNumber: l.range.start.line + 1, startColumn: l.range.start.character + 1, endLineNumber: l.range.end.line + 1, endColumn: l.range.end.character + 1 } };
-      });
-    },
-  });
   const range = (r: any) => ({ startLineNumber: r.start.line + 1, startColumn: r.start.character + 1, endLineNumber: r.end.line + 1, endColumn: r.end.character + 1 });
   const textEdits = (list: any[]) => (list || []).map(e => ({ range: range(e.range), text: e.newText }));
-  const relOf = (x: { root: string }, uri: string) => { const rootUri = norm(toUri(x.root.replace(/[\\/]$/, ""))) + "/"; const u = norm(uri); return u.startsWith(rootUri) ? u.slice(rootUri.length) : null; };
-  // referências e implementação: só as do projeto (cada uma vira um modelo vazio que a tela troca pela aba, como a definição)
-  const locations = (model: Monaco.editor.ITextModel, x: { rel: string; root: string }, r: any) => (Array.isArray(r) ? r : r ? [r] : []).flatMap((l: any) => {
-    const uri = l.targetUri || l.uri, rg = l.targetSelectionRange || l.range, rel = relOf(x, uri);
-    if (rel === null) return [];
-    const target = rel === x.rel ? model.uri : monaco.Uri.parse(`cdgoto:///${encodeURIComponent(rel)}`);
-    if (rel !== x.rel && !monaco.editor.getModel(target)) monaco.editor.createModel("", undefined, target);
-    return [{ uri: target, range: range(rg) }];
-  });
+  const relOf = (x: { root: string }, uri: string) => relIn(x.root, uri);
+  // definição, referências, implementação e tipo: só as do projeto. Cada arquivo vira um modelo com o texto dele (o
+  // peek mostra o trecho; abrir — ⌘-clique, duplo clique na lista — passa pelo opener abaixo, que abre a aba)
+  const locations = async (model: Monaco.editor.ITextModel, x: { rel: string; root: string; client: Client }, r: any) => {
+    const list = (Array.isArray(r) ? r : r ? [r] : []).map((l: any) => ({ uri: l.targetUri || l.uri, rg: l.targetSelectionRange || l.range }));
+    const out = await Promise.all(list.map(async (l: any) => {
+      const rel = relOf(x, l.uri);
+      if (rel === null || !l.rg) return null;
+      const target = rel === x.rel ? model.uri : await peekModel(monaco, x.client, rel);
+      return target && monaco.editor.getModel(target) ? { uri: target, range: range(l.rg) } : null;
+    }));
+    return out.filter(Boolean) as Monaco.languages.Location[];
+  };
+  const nav = (method: string, cap: string) => async (model: Monaco.editor.ITextModel, position: Monaco.Position) => {
+    const x = ctxOf(model); if (!x || !(await up(x)) || x.client.caps[cap] === false) return [];
+    return locations(model, x, await x.client.request(method, { textDocument: { uri: x.uri }, position: pos(position) }).catch(() => null));
+  };
+  monaco.languages.registerDefinitionProvider(lang, { provideDefinition: nav("textDocument/definition", "definitionProvider") });
+  monaco.languages.registerImplementationProvider(lang, { provideImplementation: nav("textDocument/implementation", "implementationProvider") });
+  monaco.languages.registerTypeDefinitionProvider(lang, { provideTypeDefinition: nav("textDocument/typeDefinition", "typeDefinitionProvider") });
   monaco.languages.registerReferenceProvider(lang, {
     async provideReferences(model, position, context) {
       const x = ctxOf(model); if (!x || !(await up(x))) return [];
-      const r = await x.client.request("textDocument/references", { textDocument: { uri: x.uri }, position: pos(position), context }).catch(() => null);
+      const r = await x.client.request("textDocument/references", { textDocument: { uri: x.uri }, position: pos(position), context }, 60000).catch(() => null);
       return locations(model, x, r);
     },
   });
-  monaco.languages.registerImplementationProvider(lang, {
-    async provideImplementation(model, position) {
-      const x = ctxOf(model); if (!x || !(await up(x))) return [];
-      const r = await x.client.request("textDocument/implementation", { textDocument: { uri: x.uri }, position: pos(position) }).catch(() => null);
-      return locations(model, x, r);
+  // "N referências" em cima de classes, funções e métodos (como o VS Code no TypeScript): a contagem só é pedida ao
+  // servidor para as que aparecem na tela; clicar abre o peek com a lista
+  const LENS_KINDS = new Set([5, 6, 10, 11, 12, 23]);   // classe, método, enum, interface, função, struct
+  monaco.languages.registerCodeLensProvider(lang, {
+    async provideCodeLenses(model) {
+      const x = ctxOf(model); if (!x || !(await up(x)) || !x.client.caps.referencesProvider) return { lenses: [], dispose() {} };
+      const syms = await documentSymbols(model);
+      const lenses: Monaco.languages.CodeLens[] = [];
+      const walk = (l: Sym[]) => { for (const s of l) { if (LENS_KINDS.has(s.kind)) lenses.push({ range: { startLineNumber: s.sel.line, startColumn: s.sel.col, endLineNumber: s.sel.line, endColumn: s.sel.col }, id: `${s.sel.line}:${s.sel.col}` }); walk(s.children); } };
+      walk(syms);
+      return { lenses: lenses.slice(0, 300), dispose() {} };
+    },
+    async resolveCodeLens(model, lens) {
+      const x = ctxOf(model); if (!x || !(await up(x))) return lens;
+      const p = { lineNumber: lens.range.startLineNumber, column: lens.range.startColumn };
+      const r: any[] = (await x.client.request("textDocument/references", { textDocument: { uri: x.uri }, position: { line: p.lineNumber - 1, character: p.column - 1 },
+        context: { includeDeclaration: false } }, 60000).catch(() => null)) || [];
+      const n = r.length;
+      return { ...lens, command: { id: n ? "codeck.lsp.showRefs" : "", title: `${n} referência${n === 1 ? "" : "s"}`, arguments: [model.uri.toString(), p] } };
     },
   });
   monaco.languages.registerDocumentSymbolProvider(lang, {
@@ -313,7 +335,7 @@ function register(monaco: typeof Monaco, lang: string) {
       for (const [u, list] of byUri) {
         const rel = relOf(x, u);
         if (rel === null) continue;
-        const m = rel === x.rel ? model : monaco.editor.getModel(monaco.Uri.parse(modelUri(x.client.repoId, x.client.taskId, rel)));
+        const m = rel === x.rel ? model : openModel(monaco, x.client, rel);
         if (m) { for (const e of list) edits.push({ resource: m.uri, textEdit: { range: range(e.range), text: e.newText }, versionId: undefined }); continue; }
         const f = await apiGet<any>("ws/file", { repoId: x.client.repoId, taskId: x.client.taskId, path: rel });
         if (typeof f.text !== "string") continue;
@@ -324,15 +346,78 @@ function register(monaco: typeof Monaco, lang: string) {
       return { edits };
     },
   });
-  // definição em outro arquivo: em vez de abrir um modelo solto, a tela abre a aba do arquivo
-  monaco.editor.registerEditorOpener({
-    openCodeEditor(_src, resource, sel) {
-      if (resource.scheme !== "cdgoto" || !opener) return false;
-      const line = sel && "startLineNumber" in sel ? sel.startLineNumber : (sel as any)?.lineNumber || 1;
-      opener(decodeURIComponent(resource.path.replace(/^\//, "")), line);
-      return true;
-    },
-  });
+  if (!navOnce) {
+    navOnce = true;
+    // outro arquivo do projeto (⌘-clique, F12, duplo clique no peek): a tela abre a aba dele e o cursor vai para a
+    // linha/coluna. O mesmo arquivo do editor fica com o Monaco (move o cursor ali mesmo).
+    monaco.editor.registerEditorOpener({
+      openCodeEditor(src, resource, sel) {
+        if (!opener || resource.toString() === src.getModel()?.uri.toString()) return false;
+        const parts = resource.path.replace(/^\//, "").split("/");
+        const scope = parts.shift() || "", rel = parts.join("/");
+        if (resource.scheme !== "file" || !rel || ![...clients.values()].some(c => scopeKey(c.repoId, c.taskId) === scope)) return false;
+        const line = sel && "startLineNumber" in sel ? sel.startLineNumber : (sel as any)?.lineNumber || 1;
+        const col = sel && "startColumn" in sel ? sel.startColumn : (sel as any)?.column || 1;
+        // o peek das referências reabriria no editor de origem: fecha (a aba nova assume)
+        setTimeout(() => (src.getContribution("editor.contrib.referencesController") as any)?.closeWidget?.(false), 0);
+        opener(rel, line);
+        reveal(monaco, resource.toString(), line, col);
+        return true;
+      },
+    });
+    // "N referências": posiciona o cursor na declaração e abre o peek com a lista
+    monaco.editor.registerCommand("codeck.lsp.showRefs", (_acc, uri: string, p: Monaco.IPosition) => {
+      const ed = [edState.editor, ...monaco.editor.getEditors()].find(e => e?.getModel()?.uri.toString() === uri);
+      if (!ed) return;
+      ed.setPosition(p);
+      ed.focus();
+      ed.getAction("editor.action.referenceSearch.trigger")?.run();
+    });
+  }
+}
+let navOnce = false;
+
+/** O modelo de um arquivo aberto numa aba (o de espiar não conta: editar nele não iria para o disco). */
+function openModel(monaco: typeof Monaco, client: Client, rel: string) {
+  const m = monaco.editor.getModel(monaco.Uri.parse(modelUri(client.repoId, client.taskId, rel)));
+  return m && !peeked.has(m.uri.toString()) ? m : null;
+}
+
+/** Garante um modelo com o texto do arquivo (o da aba, se aberto; senão um de espiar, lido do disco). */
+async function peekModel(monaco: typeof Monaco, client: Client, rel: string): Promise<Monaco.Uri | null> {
+  const uri = monaco.Uri.parse(modelUri(client.repoId, client.taskId, rel)), k = uri.toString();
+  const m = monaco.editor.getModel(uri);
+  if (m && !peeked.has(k)) return uri;   // aberto numa aba: vale o texto do editor (inclusive o que está por salvar)
+  let p = fetching.get(k);
+  if (!p) {
+    p = apiGet<any>("ws/file", { repoId: client.repoId, taskId: client.taskId, path: rel }).then(f => {
+      if (typeof f.text !== "string" || f.binary || f.tooLarge) return;
+      const cur = monaco.editor.getModel(uri);
+      if (cur) { if (peeked.has(k) && cur.getValue() !== f.text) cur.setValue(f.text); return; }   // o disco mudou desde a última espiada
+      monaco.editor.createModel(f.text, undefined, uri);
+      peeked.add(k);
+      // sem acumular: os de espiar mais antigos (que nenhum editor mostra) saem
+      if (peeked.size > 150) for (const old of [...peeked].slice(0, peeked.size - 150)) {
+        const om = monaco.editor.getModel(monaco.Uri.parse(old));
+        if (om && monaco.editor.getEditors().some(e => e.getModel() === om)) continue;
+        peeked.delete(old); om?.dispose();
+      }
+    }).catch(() => {}).finally(() => fetching.delete(k));
+    fetching.set(k, p);
+  }
+  await p;
+  return monaco.editor.getModel(uri) ? uri : null;
+}
+
+/** Depois de a tela abrir a aba: põe o cursor na linha/coluna certas (a aba só sabe a linha) e centraliza. */
+function reveal(monaco: typeof Monaco, uri: string, line: number, col: number) {
+  let n = 0;
+  const tick = () => {
+    const ed = [edState.editor, ...monaco.editor.getEditors()].find(e => e?.getModel()?.uri.toString() === uri && !!e.getContainerDomNode().offsetParent);
+    if (ed) { ed.setPosition({ lineNumber: line, column: col }); ed.revealPositionInCenterIfOutsideViewport({ lineNumber: line, column: col }); ed.focus(); return; }
+    if (++n < 80) setTimeout(tick, 50);   // a aba ainda está lendo o arquivo
+  };
+  setTimeout(tick, 0);
 }
 
 
@@ -355,12 +440,10 @@ async function applyWorkspaceEdit(client: Client, edit: any) {
   const byUri = new Map<string, any[]>();
   for (const [u, list] of Object.entries(edit.changes || {})) byUri.set(u, list as any[]);
   for (const dc of edit.documentChanges || []) if (dc.textDocument && dc.edits) byUri.set(dc.textDocument.uri, [...(byUri.get(dc.textDocument.uri) || []), ...dc.edits]);
-  const rootUri = norm(toUri(client.root.replace(/[\\/]$/, ""))) + "/";
   for (const [u, list] of byUri) {
-    const nu = norm(u);
-    if (!nu.startsWith(rootUri)) continue;
-    const rel = nu.slice(rootUri.length);
-    const model = m.editor.getModel(m.Uri.parse(modelUri(client.repoId, client.taskId, rel)));
+    const rel = relIn(client.root, u);
+    if (rel === null) continue;
+    const model = openModel(m, client, rel);
     if (model) {
       model.pushEditOperations([], list.map(e => ({ range: new m.Range(e.range.start.line + 1, e.range.start.character + 1, e.range.end.line + 1, e.range.end.character + 1), text: e.newText })), () => null);
       continue;
@@ -410,23 +493,4 @@ function applyEdits(text: string, edits: any[]) {
   let out = text;
   for (const e of sorted) out = out.slice(0, off(e.range.start)) + e.newText + out.slice(off(e.range.end));
   return out;
-}
-
-/** Ir para a definição (F12 / ⌘-clique), tratado pelo app: no mesmo arquivo, move o cursor; em outro, abre a aba. */
-export async function gotoDefinition(editor: Monaco.editor.ICodeEditor, position: Monaco.Position) {
-  const model = editor.getModel();
-  const x = model && byModel.get(model.uri.toString());
-  if (!model || !x) return false;
-  if (!(await x.client.ready.then(() => true, () => false))) return false;
-  const r = await x.client.request("textDocument/definition", { textDocument: { uri: x.uri }, position: { line: position.lineNumber - 1, character: position.column - 1 } }).catch(() => null);
-  const l = (Array.isArray(r) ? r : r ? [r] : []).map((y: any) => ({ uri: y.targetUri || y.uri, range: y.targetSelectionRange || y.range }))[0];
-  if (!l) return false;
-  const rootUri = norm(toUri(x.root.replace(/[\\/]$/, ""))) + "/";
-  if (!norm(l.uri).startsWith(rootUri)) return false;   // fora do projeto (biblioteca, node_modules): não abre
-  const rel = norm(l.uri).slice(rootUri.length), line = l.range.start.line + 1;
-  if (rel === x.rel) {
-    editor.setPosition({ lineNumber: line, column: l.range.start.character + 1 });
-    editor.revealLineInCenter(line);
-  } else opener?.(rel, line);
-  return true;
 }

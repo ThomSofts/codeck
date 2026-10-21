@@ -1,6 +1,6 @@
 <script lang="ts">
   import { AlertTriangle, Check, GitBranch, MessageSquare } from "@lucide/svelte";
-  import { ago } from "../../lib/format";
+  import Ago from "../Ago.svelte";
   import { store } from "../../lib/store.svelte";
   import type { PR } from "../../lib/types";
   import Avatar from "../Avatar.svelte";
@@ -22,7 +22,7 @@
     <div class="meta">
       <span class="row" style="gap:5px"><ProviderIcon provider={pr.provider} size={12} />{pr.org}<span class="faint">/</span>{pr.repo}</span>
       <span class="branch"><GitBranch size={11} />{pr.source} → <b>{pr.target}</b></span>
-      <span>{pr.creatorName.split(" ").slice(0, 2).join(" ")} · {ago(pr.created)}</span>
+      <span>{pr.creatorName.split(" ").slice(0, 2).join(" ")} · <Ago iso={pr.created} /></span>
       {#if conflict}<span class="pill solid-bad"><AlertTriangle size={11} /> Conflito</span>{/if}
       {#if pr.isDraft}<span class="pill neutral">rascunho</span>{/if}
       {#if pr.build === "ok"}<span class="pill good">Build ✓</span>{:else if pr.build === "failed"}<span class="pill bad">Build ✕</span>{:else if pr.build === "running" || pr.build === "pending"}<span class="pill warn">Build ⟳</span>{/if}
