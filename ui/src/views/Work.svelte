@@ -43,6 +43,7 @@
   import NewTask from "../components/work/NewTask.svelte";
   import CleanupTasks from "../components/work/CleanupTasks.svelte";
   import Terminal, { drop } from "../components/work/Terminal.svelte";
+  import LimitHandoff from "../components/work/LimitHandoff.svelte";
   import Board from "../components/work/Board.svelte";
   import Compare from "../components/work/Compare.svelte";
   import ProjectSettings from "../components/work/ProjectSettings.svelte";
@@ -606,7 +607,7 @@
 {#snippet paneOf(tab: Tab | null)}
           {#if tab?.kind === "term" && tab.term}
             {@const tid = tab.term.id}
-            {#key tid}<Terminal id={tid} />{/key}
+            {#key tid}<div class="tw"><Terminal id={tid} />{#if tab.term.kind === "agent"}<LimitHandoff term={tab.term} onstarted={asked} />{/if}</div>{/key}
           {:else if tab?.kind === "prs"}
             {#key p!.id}<RepoActivity project={p!} />{/key}
           {:else if tab?.kind === "git"}
@@ -1052,8 +1053,9 @@
   .pbody { flex: 1; min-height: 0; }
   .ab-n.live { background: var(--warn); color: #1b1300; }
   .bpanel .vsplit { top: -4px; }
+  .tw { position: relative; width: 100%; height: 100%; min-height: 0; }
   .sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
-  .sdot.accent { background: var(--accent); } .sdot.good { background: var(--good); } .sdot.warn { background: var(--warn); } .sdot.info { background: var(--info); }
+  .sdot.accent { background: var(--accent); } .sdot.good { background: var(--good); } .sdot.warn { background: var(--warn); } .sdot.info { background: var(--info); }  .sdot.bad { background: var(--bad); }
   .pulse { animation: ping 1.2s var(--ease) infinite; }
   .dirty { width: 7px; height: 7px; border-radius: 50%; background: var(--text-2); flex: none; }
   .tact { display: flex; align-items: center; gap: 4px; padding-bottom: 4px; }

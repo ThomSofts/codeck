@@ -32,6 +32,7 @@ sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" "$ROOT/macos/Info.plis
 cp "$ROOT/backend/server.py" "$APP/Contents/Resources/backend/"
 rsync -a --exclude __pycache__ "$ROOT/backend/pilot" "$ROOT/backend/static" "$APP/Contents/Resources/backend/"
 cp "$ROOT/macos/AppIcon.icns" "$APP/Contents/Resources/"
+cp "$ROOT/macos/MenuIcon.png" "$ROOT/macos/MenuIcon@2x.png" "$ROOT/brand/splash.html" "$APP/Contents/Resources/"
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1   # assinatura ad-hoc (o app não é notarizado)
 codesign --verify --deep --strict "$APP"
 echo "Gerado: $APP"

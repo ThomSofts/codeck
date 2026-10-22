@@ -937,6 +937,17 @@ def post_ws_agent(qs, body):
                                  body.get("mode"), body.get("title"), body.get("resume"), body.get("card"))
 
 
+@route("POST", "/api/ws/agent/handoff")
+def post_ws_agent_handoff(qs, body):
+    return workspace.handoff(body.get("termId"), body.get("accountId"), body.get("mode") or "auto")
+
+
+@route("POST", "/api/ws/agent/limit/dismiss")
+def post_ws_agent_limit_dismiss(qs, body):
+    agents.clear_limit(body.get("sid"))
+    return {"ok": True}
+
+
 @route("POST", "/api/ws/agent/input")
 def post_ws_agent_input(qs, body):
     return workspace.send_input(body.get("termId"), body.get("text"), body.get("submit", True) is not False)
@@ -1635,6 +1646,7 @@ def main():
     engine.start()
     threading.Thread(target=agents.which_all, daemon=True).start()   # acha as CLIs de IA (PATH do usuário) antes da 1ª tela
     threading.Thread(target=agents.auto_limits_loop, daemon=True).start()   # limite das contas sem abrir sessão (opcional)
+    threading.Thread(target=agents.limit_watch_loop, daemon=True).start()   # agente parado pelo limite → oferecer outra conta
     threading.Thread(target=update.update_loop, daemon=True).start()
     print(f"{PRODUCT} {APP_VERSION} ({APP_BUILD}, {APP_PLATFORM}) em http://127.0.0.1:{port} — Azure: {', '.join(ctx.orgs) or '-'}"
           f" — GitHub: {', '.join(a.login for a in ctx.gh.values()) or '-'} — dados em {DATA}{' — token ativo' if TOKEN else ''}", flush=True)

@@ -215,8 +215,8 @@ def agent_argv(prov, exe, prompt=None, mode=None, settings=None, extra_dirs=(), 
         args += ["--resume", resume]
     elif resume and prov == "codex":
         args = args + ["resume", resume]   # as opções (bypass/sandbox) valem antes do subcomando
-    if prompt and not resume:
-        # o pedido inicial: Claude/Codex/cursor-agent aceitam como argumento (sessão interativa). O Gemini sem -i roda uma
+    if prompt and (not resume or prov in ("claude", "codex")):
+        # o pedido inicial (Claude/Codex também ao retomar: "continue de onde parou" na conversa retomada): Claude/Codex/cursor-agent aceitam como argumento (sessão interativa). O Gemini sem -i roda uma
         # vez e sai; o OpenCode trata o argumento solto como a PASTA do projeto — os dois pedem a flag.
         args += (["-i", prompt] if prov == "gemini" else ["--prompt", prompt] if prov == "opencode" else [prompt])
     return args
@@ -339,8 +339,8 @@ def launch_spec(aid, prompt=None, mode=None, sid=None, extra_dirs=None, resume=N
         status_cmd = (f"{post} >/dev/null 2>&1; echo 'Codeck'" if not nt else f"{post} && echo Codeck || echo Codeck")
         settings = {"statusLine": {"type": "command", "command": status_cmd, "padding": 0},
                     "hooks": {ev: [{"hooks": [{"type": "command", "command": post}]}]
-                              for ev in ("UserPromptSubmit", "Stop", "Notification", "SubagentStop", "SessionStart", "PreCompact")}}
-    if prompt and not resume:
+                              for ev in ("UserPromptSubmit", "Stop", "StopFailure", "Notification", "SubagentStop", "SessionStart", "PreCompact")}}
+    if prompt:
         prompt = prompt.replace("\r\n", "\n").replace("\0", "")
         # pelo cmd.exe (sem achar o .exe/.js por trás do .cmd) o argumento não pode ter quebra de linha nem %^&|<>!"
         if len(prompt) > PROMPT_MAX["nt" if nt else "posix"] or (via_cmd and re.search(r'[\n%^&|<>!"]', prompt)):
@@ -383,8 +383,14 @@ def hook(sid, secret, payload):
             s["events"] = (s["events"] + [{"at": now_iso(), "event": ev, "message": payload.get("message")}])[-30:]
             s["claudeSession"] = payload.get("session_id") or s.get("claudeSession")
             was = s["status"]
-            s["status"] = {"UserPromptSubmit": "working", "SessionStart": "idle", "Stop": "done", "SubagentStop": s["status"],
-                           "Notification": "needs-you", "PreCompact": "compacting"}.get(ev, s["status"])
+            if ev == "UserPromptSubmit" and s.get("limit"):
+                s.pop("limit", None)   # voltou a trabalhar (o limite resetou ou você seguiu nesta conta)
+            limited = ev == "StopFailure" and (payload.get("error") in ("rate_limit", "billing_error") or bool(_LIMIT_RE.search(
+                f"{payload.get('error_details') or ''} {payload.get('last_assistant_message') or ''}")))
+            s["status"] = {"UserPromptSubmit": "working", "SessionStart": "idle", "Stop": "done", "StopFailure": "done",
+                           "SubagentStop": s["status"], "Notification": "needs-you", "PreCompact": "compacting"}.get(ev, s["status"])
+            if s.get("limit") and s["status"] != "working":
+                s["status"] = "limited"
             # tempo trabalhando = da pergunta (UserPromptSubmit) até parar ou pedir você — medido aqui, pelos hooks
             if was == "working" and s["status"] != "working" and s.get("workSince"):
                 s["workMs"] = (s.get("workMs") or 0) + int((time.time() - s.pop("workSince")) * 1000)
@@ -415,6 +421,10 @@ def hook(sid, secret, payload):
     if s.get("claudeSession") and s.get("_remembered") != s["claudeSession"]:
         s["_remembered"] = s["claudeSession"]
         remember(sid, cliSession=s["claudeSession"])
+    if ev == "StopFailure" and limited:
+        text = _short(payload.get("error_details") or payload.get("last_assistant_message") or "", 260) or "limite de uso atingido"
+        flag_limit(sid, text, parse_reset(text), source="hook")
+        return {"ok": True}
     ui = (ctx.config or {}).get("ui") or {}
     if ev == "Notification" and ui.get("notify.agentNeedsYou", True):
         notify("Agente precisa de você", s.get("title") or "", (payload.get("message") or "")[:140], target=f"term/{sid}")
@@ -796,6 +806,393 @@ def last_message(sid):
     if not last:
         raise LookupError("Ainda não há resposta desta sessão")
     return last
+
+
+# ---------------------------------------------------------------- limite atingido no meio do trabalho → outra conta
+# Quando a conta de um agente acaba (5 h, semanal, cota diária…), a sessão fica "limited": a tela mostra quanto falta
+# para o reset e as outras contas para CONTINUAR o trabalho. Como se descobre que acabou:
+#   · Claude Code: o hook StopFailure com error "rate_limit"/"billing_error" (o turno parou por causa do limite);
+#   · qualquer CLI: a mensagem dela no terminal ("You've hit your limit · resets 3pm", "usage limit reached",
+#     "Quota exceeded"…), lida no fim da saída depois que o terminal fica quieto — o agente para quando o limite acaba.
+# O reset vem do texto ("resets 3pm", "try again in 2 hours") ou da última leitura de limite da conta.
+_LIMIT_RE = re.compile(
+    r"you['’]ve (?:hit|reached) your (?!fast\b|context\b)[\w' -]{0,30}?(?:limit|quota|budget)"
+    r"|(?:usage|session|weekly|daily|5-hour|opus|sonnet|request|credit)[ -]?limits? (?:reached|exceeded|hit)"
+    r"|(?:claude|codex|gemini|cursor)(?: ai)? usage limit reached"
+    r"|you['’]re out of (?:usage )?(?:credits|requests)"
+    r"|quota (?:exceeded|exhausted)|exhausted your (?:daily |monthly )?quota|resource[_ ]exhausted"
+    r"|(?:usage|rate) limit (?:has been )?(?:reached|exceeded)"
+    r"|limit will reset at", re.I)
+_ANSI_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[PX^_][^\x1b]*\x1b\\|\x1b[@-Z\\-_]|[\x00-\x08\x0b-\x1f\x7f]")
+_tails = {}   # sessão -> {"buf": últimos caracteres da saída, "at": última saída, "dirty": mudou desde a última olhada}
+
+
+def strip_ansi(text):
+    """Texto puro de uma saída de terminal: sem cores/movimentos de cursor; \\r volta ao começo da linha."""
+    text = _ANSI_RE.sub(lambda m: "\n" if m.group(0) == "\r" else "", text.replace("\r\n", "\n"))
+    return "\n".join(ln.rstrip() for ln in text.split("\n"))
+
+
+def output_watcher(sid):
+    """Assinante da saída do terminal do agente: guarda o fim dela para procurar a mensagem de limite."""
+    def fn(data):
+        if data is None:
+            _tails.pop(sid, None)
+            return
+        t = _tails.setdefault(sid, {"buf": "", "at": 0.0, "dirty": False})
+        t["buf"] = (t["buf"] + data.decode("utf-8", "replace"))[-16000:]
+        t["at"], t["dirty"] = time.time(), True
+    return fn
+
+
+_MONTHS = {m: i + 1 for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"))}
+
+
+def parse_reset(text, now=None):
+    """Quando o limite reseta, pelo texto da CLI: "resets 3pm", "resets 3:30pm", "reset at 15:00", "resets Oct 24, 3pm",
+    "try again in 1 hour 23 minutes", "try again at 3:05 PM". ISO UTC ou None."""
+    now = now or time.time()
+    low = text.lower()
+    m = re.search(r"(?:try again|again|resets?|available) in ((?:\d+\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b[\s,and]*)+)", low)
+    if m:
+        secs = 0
+        for n, unit in re.findall(r"(\d+)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b", m.group(1)):
+            secs += int(n) * (86400 if unit.startswith("d") else 3600 if unit.startswith("h") else 60 if unit.startswith("m") else 1)
+        if secs:
+            return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + secs))
+    m = re.search(r"(?:resets?|reset at|try again at|until|available at)\s+(?:at\s+)?(?:on\s+)?"
+                  r"(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:at\s+)?)?"
+                  r"(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?", low)
+    if not m:
+        return None
+    mon, day, hh, mm, ap = m.groups()
+    if not ap and not mm:
+        return None   # "resets 5" sem hora clara
+    hh, mm = int(hh), int(mm or 0)
+    if ap:
+        hh = hh % 12 + (12 if ap.startswith("p") else 0)
+    if hh > 23 or mm > 59:
+        return None
+    lt = time.localtime(now)
+    year, month, mday = lt.tm_year, (_MONTHS[mon] if mon else lt.tm_mon), (int(day) if day else lt.tm_mday)
+    ts = time.mktime((year, month, mday, hh, mm, 0, 0, 0, -1))
+    if ts <= now - 60:
+        ts = time.mktime((year + 1, month, mday, hh, mm, 0, 0, 0, -1)) if mon else ts + 86400
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
+def find_limit(text):
+    """A mensagem de limite no fim da saída (texto puro): (linha, reset ISO|None) ou None."""
+    tail = text[-3500:]
+    hit = None
+    for m in _LIMIT_RE.finditer(tail):
+        hit = m
+    if not hit:
+        return None
+    start = tail.rfind("\n", 0, hit.start()) + 1
+    end = tail.find("\n", hit.end())
+    line = tail[start: end if end >= 0 else len(tail)].strip(" │|╭╰─⎿●✻*>·\t")
+    if len(line) > 260:
+        line = tail[max(0, hit.start() - 60): hit.end() + 120].strip()
+    near = tail[hit.start(): hit.end() + 260]
+    return line[:260], parse_reset(near)
+
+
+def _limit_reset(aid):
+    """O reset da janela que segurou a conta, pela última leitura de limite (a mais gasta)."""
+    ws = [w for w in (_usage.get(aid) or {}).get("rateLimits") or [] if w.get("resetsAt") and _ts(w["resetsAt"]) > time.time()]
+    if not ws:
+        return None, None
+    w = max(ws, key=lambda w: (w.get("used") or 0, -_ts(w["resetsAt"])))
+    return w.get("resetsAt"), w.get("window")
+
+
+def flag_limit(sid, text=None, reset=None, source="output"):
+    """Marca a sessão como parada pelo limite e avisa (uma vez por parada)."""
+    s = _sessions.get(sid)
+    if not s:
+        return
+    with _lock:
+        if s.get("limit") and s["status"] == "limited":
+            if reset and not s["limit"].get("resetsAt"):
+                s["limit"]["resetsAt"] = reset
+            return
+        known, window = _limit_reset(s["account"])
+        if s.get("workSince"):
+            s["workMs"] = (s.get("workMs") or 0) + int((time.time() - s.pop("workSince")) * 1000)
+        s["limit"] = {"at": now_iso(), "text": text, "resetsAt": reset or known, "window": window, "source": source}
+        s["status"], s["statusAt"] = "limited", time.time()
+    _activity["at"] = 0
+    try:
+        a = get_account(s["account"])
+    except LookupError:
+        return
+    when = ""
+    if s["limit"]["resetsAt"]:
+        when = " — reseta " + time.strftime("%d/%m %H:%M", time.localtime(_ts(s["limit"]["resetsAt"])))
+    notify(f"{a['name']} atingiu o limite", s.get("title") or PROVIDERS[a["provider"]]["label"],
+           f"O agente parou{when}. Continue em outra conta.", target=f"term/{sid}")
+
+
+def clear_limit(sid):
+    """Você dispensou o aviso (vai esperar o reset) ou a sessão voltou a trabalhar."""
+    s = _sessions.get(sid)
+    if s and s.get("limit"):
+        with _lock:
+            s.pop("limit", None)
+            if s["status"] == "limited":
+                s["status"] = "idle"
+        t = _tails.get(sid)
+        if t:
+            t["buf"], t["dirty"] = "", False   # a mensagem velha não marca de novo
+        _activity["at"] = 0
+
+
+def limit_watch_loop():
+    """Olha o fim da saída dos agentes que acabaram de ficar quietos (a CLI para quando o limite acaba)."""
+    while True:
+        time.sleep(1.5)
+        try:
+            for sid, t in list(_tails.items()):
+                if not t["dirty"] or time.time() - t["at"] < 1.2:
+                    continue
+                t["dirty"] = False
+                s = _sessions.get(sid)
+                if not s or s.get("status") == "limited":
+                    continue
+                hit = find_limit(strip_ansi(t["buf"]))
+                if hit:
+                    flag_limit(sid, hit[0], hit[1])
+        except Exception:  # noqa: BLE001 — o vigia não pode morrer
+            pass
+
+
+# ---------------------------------------------------------------- passar o trabalho para outra conta
+HANDOFF_DIR = os.path.join(DATA, "handoffs")
+# Economia de tokens: o pedido para o agente novo é CURTO (pedido original, os últimos passos e o estado do git); o
+# histórico inteiro vai num arquivo que ele só lê se precisar. Retomar a conversa inteira (mesma CLI) é opção à parte.
+BRIEF_ORIGINAL, BRIEF_RECENT, FULL_MAX = 6_000, 7_000, 200_000
+
+
+def _short(v, n=160):
+    v = re.sub(r"\s+", " ", str(v or "")).strip()
+    return v if len(v) <= n else v[: n - 1] + "…"
+
+
+def _tool_line(name, args):
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            args = {"cmd": args}
+    args = args if isinstance(args, dict) else {}
+    key = next((args[k] for k in ("file_path", "path", "command", "cmd", "pattern", "url", "description", "prompt", "query") if args.get(k)), "")
+    if isinstance(key, list):
+        key = " ".join(map(str, key))
+    return f"→ {name}" + (f": {_short(key)}" if key else "")
+
+
+def _claude_turns(path):
+    """(quem, texto) de um transcript do Claude Code — pedidos, respostas e as ferramentas usadas (sem as saídas)."""
+    out = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if o.get("isMeta") or o.get("isSidechain") or o.get("type") not in ("user", "assistant"):
+                continue
+            content = (o.get("message") or {}).get("content")
+            if isinstance(content, str):
+                content = [{"type": "text", "text": content}]
+            for c in content or []:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "text" and (c.get("text") or "").strip():
+                    txt = c["text"].strip()
+                    if o["type"] == "user" and re.match(r"<(?:command-|local-command|system-reminder)", txt):
+                        continue
+                    out.append(("user" if o["type"] == "user" else "agent", txt))
+                elif c.get("type") == "tool_use":
+                    out.append(("tool", _tool_line(c.get("name"), c.get("input"))))
+    return out
+
+
+def _codex_rollout(a, session_id):
+    files = glob.glob(os.path.join(a["dir"], "sessions", "*", "*", "*", f"*{session_id}*.jsonl"))
+    return max(files, key=os.path.getmtime) if files else None
+
+
+def _codex_turns(path):
+    out = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                p = (json.loads(line) or {}).get("payload") or {}
+            except ValueError:
+                continue
+            if p.get("type") == "message" and p.get("role") in ("user", "assistant"):
+                txt = "\n".join(c.get("text", "") for c in p.get("content") or [] if isinstance(c, dict)).strip()
+                if txt and not re.match(r"<(?:environment_context|user_instructions|permissions)", txt):
+                    out.append(("user" if p["role"] == "user" else "agent", txt))
+            elif p.get("type") in ("function_call", "custom_tool_call", "local_shell_call"):
+                out.append(("tool", _tool_line(p.get("name") or "shell", p.get("arguments") or p.get("input") or p.get("action"))))
+    return out
+
+
+def _scrub(text):
+    """Tira do histórico a própria mensagem de limite: senão o agente novo a mostra na tela e parece parado também."""
+    return _LIMIT_RE.sub("[limite de uso atingido]", text)
+
+
+def _git_state(cwd):
+    def run(*args):
+        try:
+            r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+                               creationflags=0x08000000 if os.name == "nt" else 0)
+            return r.stdout.rstrip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+    branch = run("rev-parse", "--abbrev-ref", "HEAD")
+    status = run("status", "--short")
+    stat = run("diff", "HEAD", "--stat")
+    log = run("log", "-3", "--format=%h %<(70,trunc)%s")
+    return branch, status, stat, log
+
+
+def _render_turns(turns, budget, newest_first_cut=True):
+    """Os turnos em markdown, do fim para o começo, até caber em `budget` caracteres."""
+    out, size = [], 0
+    for who, txt in reversed(turns):
+        piece = txt if who == "tool" else f"**{'Usuário' if who == 'user' else 'Agente'}:** {txt}"
+        if size + len(piece) > budget:
+            if not out:   # o último turno sozinho já não cabe: vai o fim dele
+                out.append(piece[-budget:])
+            out.append("… (antes disso: no arquivo do histórico completo)")
+            break
+        out.append(piece)
+        size += len(piece) + 1
+    return out[::-1]
+
+
+def handoff_context(sid, scrollback=""):
+    """Para outra conta continuar o trabalho: grava o histórico completo num arquivo e devolve (pedido curto, caminho).
+    O pedido curto traz o pedido original, os últimos passos e o estado do git — o agente lê o arquivo só se precisar.
+    Claude/Codex: do transcript/log da sessão; as demais: do que apareceu no terminal."""
+    s = _sessions.get(sid) or {}
+    rec = _resume_db().get(sid) or {}
+    a = get_account(s.get("account") or rec.get("account"))
+    turns = []
+    try:
+        if a["provider"] == "claude" and s.get("transcript") and os.path.isfile(s["transcript"]):
+            turns = _claude_turns(s["transcript"])
+        elif a["provider"] == "codex" and (s.get("cliSession") or rec.get("cliSession")):
+            path = _codex_rollout(a, s.get("cliSession") or rec.get("cliSession"))
+            if path:
+                turns = _codex_turns(path)
+    except OSError:
+        turns = []
+    if not turns:   # sem transcript: o terminal (texto puro), como um turno só do agente
+        txt = re.sub(r"\n{3,}", "\n\n", strip_ansi(scrollback)).strip()
+        turns = [("agent", "Saída do terminal:\n```\n" + txt[-FULL_MAX:] + "\n```")] if txt else []
+    original = (s.get("prompt") or "").strip() or next((t for who, t in turns if who == "user"), "")
+    cwd = s.get("cwd") or ""
+    branch, status, stat, log = _git_state(cwd) if cwd and os.path.isdir(cwd) else ("", "", "", "")
+    lim = s.get("limit") or {}
+    reset = f" (reseta {time.strftime('%d/%m %H:%M', time.localtime(_ts(lim['resetsAt'])))})" if lim.get("resetsAt") else ""
+    why = f"parou porque atingiu o limite de uso{reset}" if lim else "foi interrompido para trocar de conta"
+
+    os.makedirs(HANDOFF_DIR, exist_ok=True)
+    for f in glob.glob(os.path.join(HANDOFF_DIR, "*.md")):   # faxina: mais de 14 dias
+        try:
+            if os.path.getmtime(f) < time.time() - 14 * 86400:
+                os.remove(f)
+        except OSError:
+            pass
+    full = os.path.join(HANDOFF_DIR, f"{sid}-{time.strftime('%Y%m%d-%H%M%S')}.md")
+    with open(full, "w", encoding="utf-8") as fh:
+        fh.write(_scrub("\n".join([f"# Histórico completo — {PROVIDERS[a['provider']]['label']} · {a['name']}", f"Pasta: {cwd}", "",
+                                    "## Pedido original", original or "(não registrado)", "", "## Conversa",
+                                    *_render_turns(turns, FULL_MAX)]) + "\n"))
+
+    parts = [
+        "# Continuação de trabalho (Codeck)",
+        f"Você está assumindo o trabalho de outro agente de IA ({PROVIDERS[a['provider']]['label']} · {a['name']}), que {why}. "
+        "CONTINUE de onde ele parou — não recomece e não desfaça o que já foi feito.",
+        "",
+        "1. Leia o pedido original e os últimos passos abaixo.",
+        "2. Confira o estado atual dos arquivos (git status / git diff): as alterações dele já estão no disco.",
+        "3. Siga a partir do último passo; se a última ação ficou pela metade, refaça só ela.",
+        f"4. Só se faltar contexto, consulte o histórico completo em {full} (leia apenas as partes necessárias, para economizar tokens).",
+        "5. Ao terminar, resuma o que foi concluído (incluindo o que o agente anterior já tinha feito).",
+        "",
+        f"Pasta: {cwd}" + (f" · branch {branch}" if branch else ""),
+    ]
+    if original:
+        parts += ["", "## Pedido original", original if len(original) <= BRIEF_ORIGINAL else original[:BRIEF_ORIGINAL] + f" … (inteiro em {full})"]
+    recent = _render_turns([t for t in turns if not (t[0] == "user" and t[1].strip() == original)], BRIEF_RECENT)
+    last_ask = next((t for who, t in reversed(turns) if who == "user"), "")
+    if last_ask and last_ask.strip() != original and not any(last_ask[:200] in r for r in recent):
+        parts += ["", "## Último pedido do usuário", last_ask[:BRIEF_ORIGINAL]]
+    if recent:
+        parts += ["", "## Últimos passos (o mais recente no fim)", *recent]
+    if status or stat or log:
+        parts += ["", "## Estado do repositório agora"]
+        if status:
+            parts += ["git status --short:", "```", status[:3000], "```"]
+        if stat:
+            parts += ["git diff HEAD --stat:", "```", stat[-2000:], "```"]
+        if log:
+            parts += ["últimos commits:", "```", log, "```"]
+    return _scrub("\n".join(parts) + "\n"), full
+
+
+def carry_session(sid, new_aid):
+    """Mesma CLI em outra conta: copia a conversa da sessão para a pasta da conta nova e devolve o id para retomar —
+    o agente novo continua com o contexto inteiro. None quando não dá (aí vai o resumo)."""
+    s = _sessions.get(sid) or {}
+    rec = _resume_db().get(sid) or {}
+    old, new = get_account(s.get("account") or rec.get("account")), get_account(new_aid)
+    cli = s.get("claudeSession") or s.get("cliSession") or rec.get("cliSession")
+    if not cli or old["provider"] != new["provider"]:
+        return None
+    try:
+        if old["provider"] == "claude":
+            src = s.get("transcript") or next(iter(glob.glob(os.path.join(old["dir"], "projects", "*", f"{cli}.jsonl"))), None)
+            if not src or not os.path.isfile(src):
+                return None
+            dst_dir = os.path.join(new["dir"], "projects", os.path.basename(os.path.dirname(src)))
+            os.makedirs(dst_dir, exist_ok=True)
+            if os.path.normpath(os.path.dirname(src)) != os.path.normpath(dst_dir):
+                shutil.copy2(src, os.path.join(dst_dir, os.path.basename(src)))
+                side = os.path.splitext(src)[0]   # subagentes/anexos da sessão ficam numa pasta com o mesmo id
+                if os.path.isdir(side):
+                    shutil.copytree(side, os.path.join(dst_dir, os.path.basename(side)), dirs_exist_ok=True)
+            return cli
+        if old["provider"] == "codex":
+            src = _codex_rollout(old, cli)
+            if not src:
+                return None
+            rel = os.path.relpath(src, os.path.join(old["dir"], "sessions"))
+            dst = os.path.join(new["dir"], "sessions", rel)
+            if os.path.normpath(src) != os.path.normpath(dst):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+            return cli
+    except OSError:
+        return None
+    return None
+
+
+def continue_prompt(sid, new_aid):
+    """O pedido curto para quem retoma a MESMA conversa em outra conta."""
+    s = _sessions.get(sid) or {}
+    old = get_account(s["account"]) if s.get("account") else None
+    who = f" ({old['name']})" if old else ""
+    return ("A conta anterior" + who + " atingiu o limite de uso e esta conversa agora continua em outra conta. "
+            "Continue exatamente de onde parou: confira o estado atual dos arquivos (git status / git diff) e siga com o que "
+            "faltava, sem refazer o que já foi feito. Se a última ação ficou pela metade, refaça só ela.")
 
 
 # ---------------------------------------------------------------- limite sem abrir sessão (sonda) e atividade das contas

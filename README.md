@@ -69,6 +69,14 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
   projeto/tarefa ela está atuando e as sessões abertas fora do app. O limite do Claude Code também é lido sem abrir
   sessão ("Ler agora" ou automático, em Configurações): a própria CLI responde a um "ok" no Haiku em modo `-p` e
   devolve o limite — custa frações de centavo e o app continua sem ler token nenhum.
+- **Acabou o limite? Continua em outra conta.** Quando o agente para porque a conta atingiu o limite (5 h, semanal,
+  cota diária — o Codeck reconhece pelo hook do Claude e pela mensagem de qualquer CLI no terminal), aparece por cima
+  do terminal a contagem para o reset e as suas outras contas, da mais livre para a mais apertada. Escolha uma e o
+  Codeck abre um terminal novo nela, no mesmo checkout/tarefa, já continuando de onde parou — de qualquer CLI para
+  qualquer CLI (Claude → Claude, Claude → Cursor, Codex → Gemini…). Para gastar poucos tokens, o agente novo recebe um
+  **resumo enxuto** (pedido original, últimos passos e o estado do git) e o histórico completo fica num arquivo que ele
+  só lê se precisar; na mesma CLI (Claude/Codex) dá para **retomar a conversa inteira**. Também dá para passar o
+  trabalho sem esperar o limite: painel do agente → **Continuar em outra conta**.
 - A CLI é procurada no PATH do seu terminal (lendo o `.zprofile` e o `.zshrc`) e nas pastas de instalação comuns
   (`~/.local/bin`, npm, Homebrew, nvm…); no Windows, no PATH do usuário gravado no registro.
 - **Editor como o VS Code** (Monaco, o editor do VS Code), que acompanha ao vivo o que o agente edita:

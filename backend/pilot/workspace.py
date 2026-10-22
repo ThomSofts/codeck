@@ -680,16 +680,19 @@ def start_shell(repo_id, task_id=None, title=None, command=None):
                             shell=_settings(repo_id).get("shell") or None).info()
 
 
-def start_agent(repo_id, task_id, account_id, prompt=None, mode=None, title=None, resume_sid=None, card=None):
+def start_agent(repo_id, task_id, account_id, prompt=None, mode=None, title=None, resume_sid=None, card=None, resume_cli=None,
+                extra_dirs=(), meta_extra=None):
+    """Abre um agente num terminal. `resume_cli` = id de uma conversa da CLI para retomar (passagem entre contas da
+    mesma CLI); `extra_dirs` = pastas que ele lê sem pedir (o histórico da passagem)."""
     a = agents.get_account(account_id)
-    resume = None
+    resume = resume_cli
     if resume_sid:   # retomar a conversa de uma sessão anterior (o app foi fechado): mesma sessão da CLI
         rec = agents._resume_db().get(resume_sid) or {}
         resume, account_id = rec.get("cliSession"), rec.get("account") or account_id
         a = agents.get_account(account_id)
         agents.forget_resume(resume_sid)
     sid = uuid.uuid4().hex[:12]
-    extra = list(_settings(repo_id).get("addDirs") or [])
+    extra = list(_settings(repo_id).get("addDirs") or []) + list(extra_dirs or ())
     if task_id:
         t_ = _task(_load(), repo_id, task_id)
         extra += [x["path"] for x in (t_.get("linked") or []) + (t_.get("refs") or [])]   # tarefa em vários repos + consulta
@@ -708,12 +711,53 @@ def start_agent(repo_id, task_id, account_id, prompt=None, mode=None, title=None
     meta = {"project": repo_id, "account": account_id, "provider": a["provider"], "sid": sid,
             **({"task": task_id} if task_id else {}), **({"bypass": True} if bypass else {})}
     label = title or f"{agents.PROVIDERS[a['provider']]['label']} · {a['name']}"
-    t = terminals.create(_cwd(repo_id, task_id), label, command, "agent", meta, env)
+    cwd = _cwd(repo_id, task_id)
+    t = terminals.create(cwd, label, command, "agent", {**meta, **(meta_extra or {})}, env)
+    t.attach(agents.output_watcher(sid))   # a mensagem de limite da CLI no terminal → oferecer outra conta
     agents.set_title(sid, label)
-    agents.set_meta(sid, projectName=git.get_repo(repo_id)["name"], project=repo_id, task=task_id)
+    agents.set_meta(sid, projectName=git.get_repo(repo_id)["name"], project=repo_id, task=task_id, cwd=cwd,
+                    prompt=(prompt or "")[:20000] or None, **({"continuedFrom": meta_extra["continuedFrom"]} if (meta_extra or {}).get("continuedFrom") else {}))
     agents.remember(sid, account=account_id, provider=a["provider"], project=repo_id, task=task_id, title=label,
                     cliSession=resume, started=now_iso())
     return t.info()
+
+
+def handoff(term_id, account_id, mode="auto"):
+    """Continua o trabalho de um agente (parado pelo limite, ou quando você quiser) em OUTRA conta, num terminal novo
+    no mesmo checkout/tarefa, já trabalhando:
+      · mode "resume" (mesma CLI): a conversa é copiada para a conta nova e retomada — contexto inteiro;
+      · mode "brief": um pedido curto (pedido original, últimos passos, estado do git) + o histórico completo num
+        arquivo que o agente só lê se precisar — gasta bem menos tokens, e funciona entre CLIs diferentes;
+      · "auto": retoma quando é a mesma CLI e o contexto está abaixo de 50%; senão, o resumo."""
+    t = terminals.get(term_id)
+    sid = t.meta.get("sid")
+    if t.kind != "agent" or not sid:
+        raise ValueError("Só dá para continuar a sessão de um agente")
+    if account_id == t.meta.get("account"):
+        raise ValueError("Escolha outra conta — esta é a que está no limite")
+    new = agents.get_account(account_id)
+    old = agents.session_info(sid) or {}
+    repo_id, task_id = t.meta.get("project"), t.meta.get("task")
+    same = new["provider"] == t.meta.get("provider") and new["provider"] in ("claude", "codex")
+    if mode == "auto":
+        mode = "resume" if same and ((old.get("context") or {}).get("used") or 0) < 50 else "brief"
+    cli, prompt, extra = None, None, []
+    if mode == "resume" and same:
+        cli = agents.carry_session(sid, account_id)
+    if cli:
+        prompt = agents.continue_prompt(sid, account_id)
+    else:
+        mode = "brief"
+        with t.lock:
+            scroll = bytes(t.scroll).decode("utf-8", "replace")
+        prompt, full = agents.handoff_context(sid, scroll)
+        extra.append(os.path.dirname(full))
+    src = {"sid": sid, "termId": term_id, "account": t.meta.get("account"), "mode": mode}
+    title = f"{agents.PROVIDERS[new['provider']]['label']} · {new['name']} (continuação)"
+    info = start_agent(repo_id, task_id, account_id, prompt, None, title, resume_cli=cli, extra_dirs=extra,
+                       meta_extra={"continuedFrom": src})
+    agents.set_meta(sid, handedOff={"termId": info["id"], "account": account_id, "mode": mode, "at": now_iso()})
+    return {**info, "mode": mode}
 
 
 def send_input(term_id, text, submit=True):

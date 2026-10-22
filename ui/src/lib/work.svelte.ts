@@ -24,8 +24,15 @@ export interface TermInfo {
   id: string; title: string; kind: "shell" | "agent" | "setup" | "run"; cwd: string; alive: boolean; exit: number | null; created: number; lastOutput: number;
   meta: { project?: string; task?: string; account?: string; provider?: Provider; sid?: string; run?: string; debug?: string; bypass?: boolean };
 }
+/** A sessão parou porque a conta atingiu o limite: a mensagem da CLI e quando reseta (do texto ou da última leitura). */
+export interface SessionLimit { at: string; text: string | null; resetsAt: string | null; window: string | null; source: "output" | "hook" }
 export interface Session {
-  account: string; provider: Provider; status: "starting" | "idle" | "working" | "done" | "needs-you" | "compacting"; started: number;
+  account: string; provider: Provider; status: "starting" | "idle" | "working" | "done" | "needs-you" | "compacting" | "limited"; started: number;
+  limit?: SessionLimit | null;
+  /** o trabalho desta sessão continuou em outra conta (terminal novo) */
+  handedOff?: { termId: string; account: string; mode: "resume" | "brief"; at: string } | null;
+  /** esta sessão é a continuação de outra (que parou no limite) */
+  continuedFrom?: { sid: string; termId: string; account: string; mode: "resume" | "brief" } | null;
   model: string | null; cost: number | null; context: { used: number | null; size: number | null; tokens: number | null } | null;
   events: { at: string; event: string; message?: string }[]; title?: string; statusAt?: number;
 }
@@ -272,6 +279,16 @@ class Work {
     await this.load();
     return { projectId, taskId, termId: t.id };
   }
+  /** Continua o trabalho de um agente em OUTRA conta (terminal novo, mesmo checkout/tarefa, já trabalhando).
+   *  mode: "resume" = retoma a conversa inteira (mesma CLI) · "brief" = resumo curto + histórico em arquivo (menos
+   *  tokens; funciona entre CLIs diferentes) · "auto" = o servidor escolhe. */
+  async handoff(termId: string, accountId: string, mode: "auto" | "resume" | "brief" = "auto") {
+    const t = await post<TermInfo & { mode: "resume" | "brief" }>("ws/agent/handoff", { termId, accountId, mode });
+    await this.load();
+    return t;
+  }
+  /** Vou esperar o reset: some o aviso de limite desta sessão. */
+  dismissLimit(sid: string) { return post("ws/agent/limit/dismiss", { sid }).then(() => this.load()); }
   /** Manda um pedido para um agente já aberto (como se fosse colado no terminal dele e Enter). */
   sendToAgent(termId: string, text: string) { return post("ws/agent/input", { termId, text }); }
   /** A conta de IA do projeto: o servidor já grava a última usada ao abrir um agente; trocar no chip grava na hora. */
@@ -323,5 +340,5 @@ export const FLOWS: Record<Flow, { label: string; short: string; hint: string; m
 
 export const STATUS: Record<string, [string, string]> = {
   starting: ["abrindo…", "muted"], idle: ["pronto", "muted"], working: ["trabalhando", "accent"], done: ["terminou", "good"],
-  "needs-you": ["precisa de você", "warn"], compacting: ["compactando", "info"],
+  "needs-you": ["precisa de você", "warn"], compacting: ["compactando", "info"], limited: ["no limite", "bad"],
 };

@@ -1,27 +1,39 @@
 #!/usr/bin/env bash
-# Gera os ícones das duas plataformas a partir de brand/icon.svg (precisa do Google Chrome só para rasterizar):
-#   macos/AppIcon.icns · windows/Codeck/app.ico · brand/icon.png
+# Gera os ícones das duas plataformas a partir de brand/icon.svg e brand/icon-small.svg (16–32 px) — rasteriza com o
+# rsvg-convert (ou, sem ele, com o Google Chrome):
+#   macos/AppIcon.icns · macos/MenuIcon.png (+@2x, barra de menus) · windows/Codeck/app.ico · brand/icon.png
 # brand/logo.svg (só a marca, sem fundo) vai direto para o instalador do Windows: só <path> + gradiente, sem
 # filtros — o ThomSoft Setup cai no logo de demonstração quando não consegue desenhar o SVG.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 TMP="$(mktemp -d)"
-printf '<html><body style="margin:0;background:transparent">%s</body></html>' "$(cat "$ROOT/brand/icon.svg")" > "$TMP/i.html"
-"$CHROME" --headless=new --disable-gpu --hide-scrollbars --default-background-color=00000000 \
-  --window-size=1024,1024 --screenshot="$TMP/icon.png" "file://$TMP/i.html" >/dev/null 2>&1
+shot() {   # shot <svg> <px> <png> — rsvg-convert (brew install librsvg) quando tem; senão o Chrome sem cabeça
+  if command -v rsvg-convert >/dev/null; then rsvg-convert -w "$2" -h "$2" "$1" -o "$3"; return; fi
+  printf '<html><head><style>html,body{margin:0;width:%spx;height:%spx;overflow:hidden;background:transparent}svg{display:block;width:100%%;height:100%%}</style></head><body>%s</body></html>' \
+    "$2" "$2" "$(cat "$1")" > "$TMP/r.html"
+  "$CHROME" --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=1 --default-background-color=00000000 \
+    --window-size="$2,$2" --screenshot="$3" "file://$TMP/r.html" >/dev/null 2>&1
+}
+shot "$ROOT/brand/icon.svg" 1024 "$TMP/icon.png"
+shot "$ROOT/brand/icon-small.svg" 1024 "$TMP/small.png"
 cp "$TMP/icon.png" "$ROOT/brand/icon.png"
+# barra de menus do macOS: imagem "template" de 18 pt (o app marca isTemplate — o sistema pinta claro/escuro)
+shot "$ROOT/brand/menubar.svg" 18 "$ROOT/macos/MenuIcon.png"
+shot "$ROOT/brand/menubar.svg" 36 "$ROOT/macos/MenuIcon@2x.png"
 mkdir -p "$TMP/AppIcon.iconset"
 for s in 16 32 128 256 512; do
-  sips -z $s $s "$TMP/icon.png" --out "$TMP/AppIcon.iconset/icon_${s}x${s}.png" >/dev/null
-  sips -z $((s*2)) $((s*2)) "$TMP/icon.png" --out "$TMP/AppIcon.iconset/icon_${s}x${s}@2x.png" >/dev/null
+  src="$TMP/icon.png"; [ $s -le 32 ] && src="$TMP/small.png"   # 16/32 (e os @2x deles): a variante sem detalhe
+  sips -z $s $s "$src" --out "$TMP/AppIcon.iconset/icon_${s}x${s}.png" >/dev/null
+  src2="$TMP/icon.png"; [ $s -le 16 ] && src2="$TMP/small.png"
+  sips -z $((s*2)) $((s*2)) "$src2" --out "$TMP/AppIcon.iconset/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$TMP/AppIcon.iconset" -o "$ROOT/macos/AppIcon.icns"
 # .ico no formato clássico: BMP 32 bits (com alfa) até 128 px e PNG só no de 256 — é o que o Explorer, a barra de
 # tarefas e o System.Drawing.Icon leem sem surpresa (PNG em tamanho pequeno às vezes sai em branco ou é ignorado).
-python3 - "$TMP/icon.png" "$ROOT/windows/Codeck/app.ico" <<'PY'
+python3 - "$TMP/icon.png" "$ROOT/windows/Codeck/app.ico" "$TMP/small.png" <<'PY'
 import os, struct, subprocess, sys, tempfile, zlib
-src, dst = sys.argv[1], sys.argv[2]
+src, dst, small = sys.argv[1], sys.argv[2], sys.argv[3]
 
 def read_png(path):
     data = open(path, "rb").read()
@@ -62,7 +74,8 @@ sizes, entries = [16, 20, 24, 32, 40, 48, 64, 128, 256], []
 with tempfile.TemporaryDirectory() as d:
     for s in sizes:
         out = os.path.join(d, f"{s}.png")
-        subprocess.run(["sips", "-z", str(s), str(s), src, "--out", out], check=True, capture_output=True)
+        # até 32 px (bandeja, Explorer em lista): a variante sem detalhe, que não vira borrão
+        subprocess.run(["sips", "-z", str(s), str(s), small if s <= 32 else src, "--out", out], check=True, capture_output=True)
         entries.append(open(out, "rb").read() if s == 256 else bmp_entry(*read_png(out)))
 off, dirs = 6 + 16 * len(sizes), b""
 for s, data in zip(sizes, entries):
@@ -71,4 +84,4 @@ for s, data in zip(sizes, entries):
 open(dst, "wb").write(struct.pack("<HHH", 0, 1, len(sizes)) + dirs + b"".join(entries))
 PY
 rm -rf "$TMP"
-echo "✓ macos/AppIcon.icns, windows/Codeck/app.ico, brand/icon.png"
+echo "✓ macos/AppIcon.icns, macos/MenuIcon(@2x).png, windows/Codeck/app.ico, brand/icon.png"

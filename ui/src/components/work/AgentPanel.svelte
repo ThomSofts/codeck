@@ -6,7 +6,7 @@
   //   · Sessões — os agentes deste checkout/tarefa: estado, contexto e custo; a selecionada mostra os detalhes.
   //   · Tarefa — branch, o que mudou e as ações (revisar, commitar, PR).
   //   · Limites das contas — a do agente aberto primeiro, com a contagem para o reset.
-  import { ArrowUp, Bot, ChevronDown, ExternalLink, GitBranch, GitCommitHorizontal, GitCompareArrows, GitPullRequestCreate, Lightbulb, MessageSquareShare, ShieldOff, SlidersHorizontal, Trash2 } from "@lucide/svelte";
+  import { ArrowRightLeft, ArrowUp, Bot, ChevronDown, ExternalLink, GitBranch, GitCommitHorizontal, GitCompareArrows, GitPullRequestCreate, Lightbulb, MessageSquareShare, ShieldOff, SlidersHorizontal, Trash2 } from "@lucide/svelte";
   import { tick, untrack } from "svelte";
   import { get, post } from "../../lib/api";
   import { repos } from "../../lib/repos.svelte";
@@ -19,7 +19,7 @@
   import LimitRing from "../ai/LimitRing.svelte";
   import Fuel from "../ai/Fuel.svelte";
   import AgentIcon from "./AgentIcon.svelte";
-  import { ACC_STATE, clock, rank, tone, type Rec } from "../ai/limits.svelte";
+  import { ACC_STATE, clock, countdown, rank, tone, type Rec } from "../ai/limits.svelte";
 
   type Started = { projectId: string; taskId: string | null; termId?: string };
   let { project, task = null, term = null, onremoved, onreview, onstarted, onmore }:
@@ -191,6 +191,27 @@
   const ctxSize = (n: number) => (n >= 1e6 ? `${n / 1e6}M` : `${Math.round(n / 1000)}k`);
   const stOf = (t: TermInfo) => { const x = work.session(t); return !t.alive ? ["encerrada", "off"] : x ? STATUS[x.status] || [x.status, "muted"] : ["abrindo…", "muted"]; };
   const focusTerm = (t: TermInfo) => onstarted?.({ projectId: project.id, taskId: task?.id || null, termId: t.id });
+  /** Continuar esta sessão em outra conta (sem esperar o limite): resumo enxuto, ou a conversa inteira na mesma CLI. */
+  function handoffMenu(e: MouseEvent) {
+    const t = cur;
+    if (!t?.alive) return;
+    const list = rank(installed.filter(a => a.id !== t.meta.account), now);
+    const run = async (r: Rec, mode: "brief" | "resume") => {
+      const prog = ui.progress(`Passando o trabalho para ${r.a.name}…`);
+      try {
+        const n = await work.handoff(t.id, r.a.id, mode);
+        prog.done(n.mode === "resume" ? `${r.a.name} retomou a conversa` : `${r.a.name} continua com um resumo enxuto`);
+        onstarted?.({ projectId: project.id, taskId: task?.id || null, termId: n.id });
+      } catch (err) { prog.fail(err); }
+    };
+    const same = (r: Rec) => r.a.provider === t.meta.provider && (r.a.provider === "claude" || r.a.provider === "codex");
+    ui.contextMenu(e, [
+      { heading: "Continuar em outra conta · resumo enxuto" },
+      ...list.map(r => ({ label: r.a.name, icon: Bot, hint: freeHint(r), onclick: () => run(r, "brief") })),
+      ...(list.some(same) ? [{ heading: "Retomar a conversa inteira (mais tokens)" }, ...list.filter(same).map(r => ({ label: r.a.name, icon: Bot, hint: freeHint(r), onclick: () => run(r, "resume") }))] : []),
+      ...(list.length ? [] : [{ label: "Nenhuma outra conta de IA", disabled: true }]),
+    ]);
+  }
 </script>
 
 <div class="panel">
@@ -271,6 +292,12 @@
         <div class="detail">
           {#if s}<span class="pill st {STATUS[s.status]?.[1]}"><i class:pulse={s.status === "working" || s.status === "needs-you"}></i>{STATUS[s.status]?.[0] || s.status}</span>{/if}
           {#if s?.status === "needs-you"}<p class="hint">Responda no terminal do agente.</p>{/if}
+          {#if s?.limit && !s.handedOff}<p class="hint bad">A conta atingiu o limite{s.limit.resetsAt ? ` — reseta em ${countdown(s.limit.resetsAt, now)}` : ""}. Escolha outra conta no terminal para continuar.</p>{/if}
+          {#if s?.handedOff}<p class="hint">Continuado em <b>{work.account(s.handedOff.account)?.name || "outra conta"}</b>.</p>{/if}
+          {#if s?.continuedFrom}<p class="tiny muted">Continuação de {work.account(s.continuedFrom.account)?.name || "outra conta"} · {s.continuedFrom.mode === "resume" ? "conversa inteira" : "resumo enxuto"}</p>{/if}
+          {#if cur.alive && !s?.handedOff && installed.length > 1}
+            <button class="lnk handoff" onclick={handoffMenu} title="Abre um agente em outra conta que continua este trabalho de onde parou"><ArrowRightLeft size={12} /> Continuar em outra conta</button>
+          {/if}
           {#if s?.status === "starting" && now / 1000 - s.started > 8}
             <p class="hint">Aguardando no terminal — se o agente perguntou se você confia na pasta (ou confirma o bypass), responda lá.</p>
           {/if}
@@ -435,6 +462,9 @@
   .pill.st.accent { --c: var(--accent); } .pill.st.good { --c: var(--good); } .pill.st.warn { --c: var(--warn); } .pill.st.info { --c: var(--info); }
   .hint { margin: 0; padding: 6px 8px; border-radius: var(--r-xs); background: var(--info-soft); color: var(--text-2); font-size: 12px; }
   .hint.warn { background: var(--warn-soft); }
+  .hint.bad { background: var(--bad-soft); }
+  .pill.st.bad { --c: var(--bad); } .dot.bad { --c: var(--bad); } .st.bad { color: var(--bad); }
+  .handoff { justify-self: start; }
   .ctxrow { display: flex; align-items: center; gap: 12px; min-width: 0; }
   .kvs { display: grid; gap: 3px; flex: 1; min-width: 0; }
   .kv { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; align-items: center; min-width: 0; padding: 0; border: 0; }

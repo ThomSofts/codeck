@@ -117,7 +117,7 @@
   .r3 { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--text-2); min-height: 18px; }
   .ags { display: inline-flex; gap: 3px; }
   .ag { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--surface); }
-  .ag.accent { box-shadow: 0 0 0 1.5px var(--accent); } .ag.warn { box-shadow: 0 0 0 1.5px var(--warn); } .ag.good { box-shadow: 0 0 0 1.5px var(--good); }
+  .ag.accent { box-shadow: 0 0 0 1.5px var(--accent); } .ag.warn { box-shadow: 0 0 0 1.5px var(--warn); } .ag.good { box-shadow: 0 0 0 1.5px var(--good); } .ag.bad { box-shadow: 0 0 0 1.5px var(--bad); }
   .ag.pulse { animation: on-ping 1.3s var(--ease) infinite; }
   .oc.warn .st { color: var(--warn); font-weight: 600; }
   .oc.accent .st { color: var(--accent); font-weight: 600; }

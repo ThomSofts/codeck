@@ -26,5 +26,7 @@
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="app.ico" />
+    <!-- a tela de abertura vem da marca (brand/), a mesma do macOS -->
+    <EmbeddedResource Include="..\..\brand\splash.html" LogicalName="Codeck.splash.html" />
   </ItemGroup>
 </Project>
