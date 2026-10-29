@@ -155,7 +155,7 @@
     { sec: "accounts", id: "azLink", kind: "link", key: "accounts", label: "Organizações do Azure DevOps", desc: "PAT por organização, com teste de cada permissão.", kw: "azure pat organização" },
     { sec: "github", id: "ghLink", kind: "link", key: "github", label: "Contas do GitHub", desc: "Entrar com GitHub, gh CLI ou token.", kw: "github token gh login" },
     { sec: "shortcuts", id: "keysLink", kind: "link", key: "shortcuts", label: "Atalhos de teclado", desc: "Todos os atalhos do app e do editor (os do VS Code) — troque qualquer um.", kw: "teclado atalho kbd keybinding vscode" },
-    { sec: "about", id: "updLink", kind: "link", key: "about", label: "Versão e atualizações", desc: "Procurar atualização agora.", kw: "atualizar versão update sobre" },
+    { sec: "about", id: "updLink", kind: "link", key: "about", label: "Versão e atualizações", desc: "Procurar atualização agora.", kw: "atualizar versão update sobre thomsoft licença open-source código aberto" },
   ];
 
   let query = $state("");
@@ -537,6 +537,12 @@
           <div class="pref"><div><b>Segurança</b><div class="small muted">O servidor local só escuta em 127.0.0.1 e exige um token por execução. PATs e tokens ficam no Keychain (macOS) ou DPAPI (Windows).</div></div></div>
           <div class="pref"><div><b>Diagnóstico</b><div class="small muted">Versão, plataforma e contagens, para relatar um problema.</div></div>
             <button class="btn sm" onclick={diagnostic}><ClipboardCopy size={14} /> Copiar</button></div>
+        </div>
+        <div class="card org">
+          <div class="pref"><div><b>Desenvolvido pela ThomSoft</b><div class="small muted">
+            <a href="https://thomsoft.com.br" target="_blank" rel="noopener">thomsoft.com.br <ExternalLink size={11} /></a></div></div></div>
+          <div class="pref"><div><b>Código aberto</b><div class="small muted">Projeto open-source da ThomSoft, de uso gratuito sob a licença MIT.
+            <a href="https://github.com/ThomSofts/codeck" target="_blank" rel="noopener">github.com/ThomSofts/codeck <ExternalLink size={11} /></a></div></div></div>
         </div>
 
       {:else}

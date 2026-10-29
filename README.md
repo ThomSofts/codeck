@@ -17,7 +17,7 @@ de ferramenta.
 | **Windows** | baixe `Codeck-<versão>-setup.exe` em `https://thomsoft.com.br/downloads/codeck/latest.json` (campo `windows.url`) e rode. Instala no seu perfil, sem administrador. |
 | **macOS** | baixe o `.dmg` (campo `macos.url` do mesmo `latest.json`) e arraste o Codeck para Aplicativos. |
 
-Os mesmos instaladores ficam em [Releases](https://github.com/LMThomaz/codeck/releases/latest).
+Os mesmos instaladores ficam em [Releases](https://github.com/ThomSofts/codeck/releases/latest).
 
 Depois de instalado, o app **se atualiza sozinho**:
 - Ele consulta o `latest.json`, mostra um aviso e o botão **Atualizar agora**.
@@ -311,4 +311,4 @@ As credenciais do FTP do site são as mesmas do Chefinho.
 
 ## Licença
 
-MIT — veja [LICENSE](LICENSE).
+Codeck é um projeto open-source da [ThomSoft](https://thomsoft.com.br), de uso gratuito sob a licença MIT — veja [LICENSE](LICENSE).
