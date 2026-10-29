@@ -28,6 +28,8 @@ done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE_URL="${DOWNLOADS_BASE_URL:-https://thomsoft.com.br/downloads}"
+# o app baixa do GitHub Releases (o site corta downloads rápidos por volta de 4 MB); o site fica como espelho
+RELEASES="https://github.com/ThomSofts/codeck/releases/download"
 CHANNEL=codeck
 KEYCHAIN_SERVICE=thomsoft-downloads-ftp
 CONFIG="$HOME/.config/thomsoft/downloads.env"
@@ -102,14 +104,14 @@ publish_json() {
   else
     echo '{}' > "$cur"   # primeira publicação
   fi
-  jq --arg url "$BASE_URL/$ch/$file" \
+  jq --arg url "$RELEASES/$TAG/$file" --arg mirror "$BASE_URL/$ch/$file" \
      --arg sha "$(shasum -a 256 "$dmg" | cut -d' ' -f1)" \
      --argjson size "$(stat -f %z "$dmg")" \
      --arg version "$VERSION" --argjson build "$BUILD" \
      --arg pid "$pid" --arg notes "$notes" \
      --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
      '.productId = $pid
-      | .macos = {url: $url, sha256: $sha, size: $size, version: $version, build: $build}
+      | .macos = {url: $url, mirrors: [$mirror], sha256: $sha, size: $size, version: $version, build: $build}
       | .notes = $notes | .publishedAt = $date
       | ([.windows, .macos] | map(select(. != null)) | max_by(.build)) as $n
       | .version = $n.version | .build = $n.build' "$cur" > "$next"
@@ -167,7 +169,13 @@ echo "✓ $dmg ($(du -h "$dmg" | cut -f1))"
 
 if [ "$DRY_RUN" = true ]; then say "Ensaio: o .dmg está em $out — nada foi publicado."; exit 0; fi
 
-# O .dmg primeiro, o latest.json por último — só a parte do Mac; a do Windows fica como o CI a deixou.
+# O .dmg primeiro (GitHub Releases, com o nome de cada canal, e o site), o latest.json por último — só a parte do
+# Mac; a do Windows fica como o CI a deixou.
+say "GitHub Releases ($TAG)"
+gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Codeck $VERSION (build $BUILD)" \
+  --notes "$(git log -1 --format=%B)" --target "$(git rev-parse HEAD)"
+for pair in $LEGACY_CHANNELS; do cp "$dmg" "$out/$(channel_file "${pair%%:*}")"; done
+gh release upload "$TAG" "$out"/*-"$VERSION-$BUILD".dmg --clobber
 say "Publicando no site"
 name="$(basename "$dmg")"
 lftp_run "mkdir -p -f /$CHANNEL; cd /$CHANNEL; put $dmg;"
@@ -189,10 +197,6 @@ for pair in $LEGACY_CHANNELS; do
   for b in $old; do lftp_run "cd /$ch; glob -a rm -f $prefix-*-$b.dmg;" || true; done
 done
 
-say "GitHub Releases ($TAG)"
-gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Codeck $VERSION (build $BUILD)" \
-  --notes "$(git log -1 --format=%B)" --target "$(git rev-parse HEAD)"
-gh release upload "$TAG" "$dmg" --clobber
 cp "$out/$CHANNEL-latest.json" "$out/latest.json" && gh release upload "$TAG" "$out/latest.json" --clobber
 
 say "Conferindo os canais"

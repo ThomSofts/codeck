@@ -312,7 +312,8 @@ linguagem, tarefas em worktree, revisão, tela dividida, quadro, ajustes, janela
 1. Suba o `+N` do arquivo `VERSION`, faça commit e push na `main`.
 2. **Windows:** o GitHub Actions gera o instalador e testa: instala sem janela, abre o app, atualiza por cima e desinstala. Depois publica no site da ThomSoft (`downloads/codeck/`) e no GitHub Releases. Ele só roda quando o `VERSION` muda, para não gastar a cota.
 3. **macOS:** no Mac, rode `scripts/release-macos.sh`. Ele gera o `.dmg` e publica no mesmo lugar.
-4. Cada plataforma atualiza só a própria parte do `latest.json`. Para obrigar quem está abaixo do build N a atualizar, rode `scripts/set-required.sh N`, só depois de N estar publicado nas duas plataformas.
+4. O `latest.json` fica no site, mas aponta o download para o GitHub Releases: o site corta downloads rápidos por volta de 4 MB, e o instalador do Windows tem cerca de 100 MB. O site fica como espelho (`mirrors`), e o app retoma o download de onde parou se a conexão cair.
+5. Cada plataforma atualiza só a própria parte do `latest.json`. Para obrigar quem está abaixo do build N a atualizar, rode `scripts/set-required.sh N`, só depois de N estar publicado nas duas plataformas.
 
 As credenciais do FTP do site são as mesmas do Chefinho.
 - **Mac:** `~/.config/thomsoft/downloads.env` com a senha no Keychain (`thomsoft-downloads-ftp`).
