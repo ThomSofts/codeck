@@ -991,8 +991,6 @@
   .vsplit { position: absolute; left: 0; right: 0; top: 0; height: 8px; cursor: row-resize; z-index: 6; }
   .vsplit::after { content: ""; position: absolute; left: 35%; right: 35%; top: 4px; height: 2px; border-radius: 2px; background: var(--line-2); transition: background var(--t); }
   .vsplit:hover::after { background: var(--accent-line); }
-  :global(body.resizing) { cursor: col-resize; user-select: none; }
-  :global(body.resizing iframe, body.resizing .xterm, body.resizing .monaco-editor) { pointer-events: none; }
   .card { min-height: 0; overflow: hidden; }
   .left { display: flex; flex-direction: row; }
   /* barra de atividades + a visão escolhida (explorador, busca, Git, solução, extensões) */

@@ -110,6 +110,9 @@ body {
   letter-spacing: -0.003em;
 }
 #app { height: 100%; }
+/* arrastando uma divisória (lib/resize.ts, Work): sem selecionar texto e sem o editor/terminal roubarem o ponteiro */
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing iframe, body.resizing .xterm, body.resizing .monaco-editor { pointer-events: none; }
 a { color: inherit; text-decoration: none; }
 ::selection { background: rgba(111, 140, 255, 0.32); }
 * { scrollbar-width: thin; scrollbar-color: var(--line-3) transparent; }

@@ -12,6 +12,10 @@ class Cascade {
 
   get items(): CascadeItem[] { return store.s?.cascade || []; }
   get active(): CascadeItem[] { return this.items.filter(i => i.stage !== "finished"); }
+  /** em execução de verdade: build/deploy, ou o merge já andando. PR aprovada esperando o autor completar não conta —
+   *  com aprovação automática, dezenas ficam dias nessa espera e o contador dizia "31" com 1 rodando */
+  get running(): CascadeItem[] { return this.active.filter(i => i.stage !== "merge" || i.steps?.merge?.status === "running"); }
+  get waiting(): CascadeItem[] { return this.active.filter(i => !this.running.includes(i)); }
   of(key: string) { return this.items.find(i => i.key === key) || null; }
 
   show(key?: string | null) { this.open = true; this.focus = key || null; }

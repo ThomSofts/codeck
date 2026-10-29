@@ -79,6 +79,15 @@
     const m = Math.round((Date.now() - new Date(iso).getTime()) / 6e4);
     return m < 60 ? `há ${Math.max(1, m)} min` : m < 1440 ? `há ${Math.round(m / 60)} h` : `há ${Math.round(m / 1440)} d`;
   };
+  /** Enquanto o aviso está no canto, a doca do "Acompanhar" (CascadeDock) fica acima dele, não por cima. */
+  function liftCorner(node: HTMLElement) {
+    const root = document.documentElement;
+    const set = () => root.style.setProperty("--corner-lift", `${46 + node.offsetHeight + 10}px`);
+    const ro = new ResizeObserver(set);
+    ro.observe(node);
+    set();
+    return { destroy() { ro.disconnect(); root.style.removeProperty("--corner-lift"); } };
+  }
 </script>
 
 {#snippet guard()}
@@ -131,7 +140,7 @@
     </div>
   </div>
 {:else if u?.available}
-  <div class="upd" class:open class:quiet={quiet && !open && phase === "idle"} class:busy={phase !== "idle"}>
+  <div class="upd" class:open class:quiet={quiet && !open && phase === "idle"} class:busy={phase !== "idle"} use:liftCorner>
     {#if !open}
       <button class="pill" onclick={() => (open = true)} title={`Versão ${u.version} disponível`}>
         <span class="ring"></span>

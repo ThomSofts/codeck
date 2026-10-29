@@ -120,7 +120,7 @@
     await shot("01-inicio");
     return `plataforma ${window.CODECK_PLATFORM}`;
   });
-  const VIEWS = [["#/inbox", "Fila"], ["#/prs/review", "Pull requests"], ["#/builds", "Builds"], ["#/deploys", "Deploys"], ["#/issues", "Issues"],
+  const VIEWS = [["#/inbox", "Fila"], ["#/prs/review", "Pull requests"], ["#/builds", "Builds"], ["#/deploys", "Deploys"], ["#/issues", "Issues"], ["#/sprints", "Sprints e projetos"],
     ["#/repos", "Repositórios"], ["#/automation", "Automação"], ["#/analytics", "Análise"], ["#/history", "Histórico"], ["#/ai", "IA"]];
   for (const [hash, label] of VIEWS) {
     await step(`Tela ${label} abre`, async () => {
@@ -278,6 +278,27 @@
     if ($(".work .left.hidden")) throw new Error("não reabriu");
     click(byText(".modes button", "Código")); await sleep(300);
     return "PRs e Git com arquivos à mostra; recolher/abrir ok";
+  });
+  // 4.8.1 no Windows: a aba IA rodava `git check-ignore` sem CREATE_NO_WINDOW e cada leitura abria uma janela de console
+  await step("Aba IA do projeto carrega sem abrir janela de console", async () => {
+    const win = window.CODECK_PLATFORM === "windows";
+    const c0 = win ? await native("selftest-consoles") : 0;
+    click(byText(".modes button", "IA"));
+    const reload = () => $('.pane.ai button[aria-label="Recarregar"]');
+    await waitFor(() => reload() && !reload().disabled, 15000);
+    click(reload()); await sleep(800);
+    await waitFor(() => !reload().disabled, 15000); await sleep(1500);
+    await shot("05-aba-ia");
+    let out = "skills e MCPs lidos";
+    if (win) {
+      const c1 = await native("selftest-consoles");
+      const ctl = await native("selftest-consoles", { probe: true });
+      if (c1 > c0) { click(byText(".modes button", "Código")); throw new Error(`${c1 - c0} janela(s) de console abriram ao ler a aba IA`); }
+      if (!(ctl > c1)) { click(byText(".modes button", "Código")); throw new Error("o detector não viu a janela de console de controle — o teste não vale"); }
+      out += ` · 0 janelas de console (o detector viu ${ctl - c1} de controle)`;
+    }
+    click(byText(".modes button", "Código")); await sleep(300);
+    return out;
   });
   await step("Editor: abrir, digitar e salvar com ⌘S", async () => {
     click(byText(".tab", "a.txt")); await sleep(800);

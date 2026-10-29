@@ -10,6 +10,9 @@
 
   const items = $derived(cascade.items);
   const active = $derived(cascade.active.length);
+  const running = $derived(cascade.running.length);
+  const waiting = $derived(cascade.waiting.length);
+  const status = $derived([running ? `${running} em execução` : "", waiting ? `${waiting} aguardando merge` : ""].filter(Boolean).join(" · "));
   // dentro de um projeto o canto é do editor/terminal: o botão fechado só aparece nas outras telas (a barra lateral abre)
   const showPill = $derived(active > 0 && !["work", "solo", "repo"].includes(router.view));
   let expanded = $state<string | null>(null);
@@ -23,8 +26,8 @@
 {#if cascade.open && items.length}
   <div class="dock card" role="dialog" aria-label="Acompanhando até o deploy">
     <div class="dh">
-      <Radio size={14} class={active ? "pulse" : ""} />
-      <b>Até o deploy</b><span class="small muted">{active ? `${active} em andamento` : "nada em andamento"}</span>
+      <Radio size={14} class={running ? "pulse" : ""} />
+      <b>Até o deploy</b><span class="small muted">{status || "nada em andamento"}</span>
       <span class="spacer"></span>
       <button class="btn sm ghost icon" title="Fechar (Esc)" aria-label="Fechar" onclick={() => (cascade.open = false)}><ChevronDown size={15} /></button>
     </div>
@@ -42,13 +45,15 @@
     </div>
   </div>
 {:else if showPill}
-  <button class="pill-btn" onclick={() => cascade.show(cascade.active[0]?.key)} title="Acompanhando até o deploy">
-    <Radio size={13} class="pulse" /> Acompanhando {active}
+  <button class="pill-btn" onclick={() => cascade.show((cascade.running[0] || cascade.active[0])?.key)} title={`Acompanhando até o deploy — ${status}`}>
+    {#if running}<Radio size={13} class="pulse" /> {running} em execução{#if waiting}<span class="wt">+{waiting}</span>{/if}
+    {:else}<Radio size={13} /> {waiting} aguardando merge{/if}
   </button>
 {/if}
 
 <style>
-  .dock { position: fixed; right: 16px; bottom: 16px; z-index: 80; width: min(440px, calc(100vw - 32px)); max-height: min(72vh, 640px);
+  /* --corner-lift: o aviso de versão nova (UpdateBanner) ocupa o canto — a doca e o botão sobem acima dele */
+  .dock { position: fixed; right: 16px; bottom: var(--corner-lift, 16px); z-index: 80; width: min(440px, calc(100vw - 32px)); max-height: min(72vh, 640px);
     display: flex; flex-direction: column; box-shadow: var(--shadow-3); animation: up 0.2s var(--ease-out); }
   @keyframes up { from { opacity: 0; transform: translateY(8px); } }
   .dh { display: flex; align-items: center; gap: 8px; padding: 10px 10px 10px 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
@@ -61,8 +66,9 @@
   .head { display: grid; gap: 4px; width: 100%; padding: 6px 6px 2px; border: 0; background: none; text-align: left; color: var(--text); cursor: pointer; font: inherit; min-width: 0; }
   .tt { font-size: 13px; font-weight: 600; }
   .row-it :global(.track) { margin: 4px 6px 0; }
-  .pill-btn { position: fixed; right: 16px; bottom: 16px; z-index: 80; display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 13px;
+  .pill-btn { position: fixed; right: 16px; bottom: var(--corner-lift, 16px); z-index: 80; display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 13px;
     border-radius: 99px; border: 1px solid var(--line-2); background: var(--elevated); color: var(--text); font: 600 12.5px var(--font); cursor: pointer;
     box-shadow: var(--shadow-2, var(--shadow-3)); animation: up 0.2s var(--ease-out); }
   .pill-btn:hover { border-color: var(--accent); }
+  .wt { font-weight: 500; color: var(--muted); margin-left: 2px; }
 </style>

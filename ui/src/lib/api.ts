@@ -27,7 +27,7 @@ export function get<T = any>(path: string, params?: Record<string, string | numb
 }
 
 // Rotas que criam terminal levam o tamanho do painel: o programa já nasce do tamanho certo (lib: Terminal.svelte)
-const TERM_ROUTES = /^ws\/(agent|shell|task|run)$/;
+const TERM_ROUTES = /^(ws\/(agent|shell|task|run)|pr\/fix)$/;
 let sizeHint: (() => { cols: number; rows: number } | null) | null = null;
 export function setTermSizeHint(fn: typeof sizeHint) { sizeHint = fn; }
 

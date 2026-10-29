@@ -8,11 +8,10 @@
   import type { Issue } from "../lib/types";
   import { untrack } from "svelte";
   import { repos } from "../lib/repos.svelte";
-  import { kanban } from "../lib/kanban.svelte";
+  import { askIssue, issueToBoard, startIssueTask } from "../lib/issues";
   import { go } from "../lib/router.svelte";
   import { ui } from "../lib/ui.svelte";
   import Menu from "../components/Menu.svelte";
-  import { work } from "../lib/work.svelte";
   import Ago from "../components/Ago.svelte";
   import { store } from "../lib/store.svelte";
   import Empty from "../components/Empty.svelte";
@@ -75,22 +74,8 @@
   // clique na linha abre a issue/work item no app (descrição, discussão, implementar); o ícone ao lado abre no navegador
   let opened = $state<any>(null);
   const REASON: Record<string, string> = { assigned: "atribuída a você", created: "criada por você", mentioned: "menciona você" };
-  /** Work item do Azure não tem repositório: abre no projeto ativo. Issue do GitHub abre no clone do repo dela. */
-  function startTask(i: any) {
-    work.startTask(i.provider === "github" ? { provider: "github", org: i.repo.split("/")[0], repo: i.repo } : null, {
-      title: i.title, kind: /bug|defeito/i.test(i.type || "") || i.labels.some((l: any) => /bug/i.test(l.name)) ? "fix" : "feature",
-      workItem: i, prompt: `Implemente ${i.provider === "github" ? "a issue" : "o work item"} #${i.number}: ${i.title}\n${i.url}\n\nLeia a descrição completa no link antes de começar.`,
-    });
-  }
-  const targetOf = (i: any) => (i.provider === "github" ? { provider: "github", org: i.repo.split("/")[0], repo: i.repo } : null);
-  const textOf = (i: any) => `${i.provider === "github" ? "Issue" : i.type || "Work item"} #${i.number}: ${i.title}\n${i.url}\n\nLeia a descrição completa no link antes de começar.`;
-  function ask(i: any, flow?: string) { work.askFrom(targetOf(i), { title: i.title, text: textOf(i), workItem: i, flow }); }
-  async function toBoard(i: any) {
-    const local = i.provider === "github" ? work.findLocal("github", i.repo.split("/")[0], i.repo) : null;
-    const c = await kanban.saveCard({ title: i.title, description: textOf(i), labels: i.labels.map((l: any) => l.name).slice(0, 6),
-      projects: local ? [local.id] : [], workItem: { number: i.number, title: i.title, url: i.url, provider: i.provider, key: i.key } });
-    if (c) ui.toast("Cartão criado no quadro", "ok", { label: "Abrir", run: () => go("/board/c/" + c.id) });
-  }
+  // pedir à IA, começar tarefa, levar ao quadro: lib/issues (os mesmos de Sprints e projetos)
+  const startTask = startIssueTask, ask = askIssue, toBoard = issueToBoard;
   // fechar/reabrir uma issue do GitHub direto da lista (otimista: a linha muda na hora e volta se o GitHub recusar)
   let pulsing = $state<string | null>(null);
   async function toggleState(i: Issue) {

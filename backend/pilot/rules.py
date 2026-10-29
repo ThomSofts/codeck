@@ -5,7 +5,7 @@ from datetime import timedelta
 
 from .core import RULES_FILE, load_json, lock, now, parse_dt, read_activity, save_json, state
 
-ACTIONS = ("approve", "archive", "notify")
+ACTIONS = ("approve", "archive", "notify", "review")
 DEPLOY_KINDS = ("release", "permission")
 DEPLOY_ACTIONS = ("approve", "notify")
 DEFAULT_SETTINGS = {
@@ -43,6 +43,12 @@ def normalize_rule(r):
         "repos": _as_list(r.get("repos", r.get("repo"))),
         "titleContains": (r.get("titleContains", r.get("title")) or "").strip(),
         "requireBuild": bool(r.get("requireBuild")),
+        # "review" (Revisar com IA): a conta que revisa, se aprova sozinha quando está tudo certo, o que olhar com mais
+        # atenção e se revisa também as minhas PRs (nelas só comenta)
+        "aiAccount": (r.get("aiAccount") or None),
+        "aiApprove": bool(r.get("aiApprove", True)),
+        "aiFocus": (r.get("aiFocus") or "").strip()[:2000],
+        "aiMine": bool(r.get("aiMine")),
     }
 
 

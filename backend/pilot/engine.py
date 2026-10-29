@@ -11,7 +11,7 @@ import time
 import uuid
 from datetime import timedelta
 
-from . import azure, cascade, catalogs, git, github, power, secrets, tracking, watch
+from . import azure, cascade, catalogs, git, github, power, prreview, secrets, tracking, watch
 from .analytics import analytics_cache
 from .core import (ARCHIVE_FILE, CONFIG_FILE, NOTIFIED_FILE, ctx, http_code, load_json, lock, log_activity, log_deploy, notify,
                    is_network_error, now, now_iso, parse_dt, pr_summary, save_json, state, wake, wants)
@@ -247,6 +247,11 @@ def poll_prs():
 
         for pr in mine:
             pr.setdefault("blockers", azure.my_pr_blockers(pr))
+            # regra "Revisar com IA" com "também as minhas": a IA comenta na minha PR (sem votar)
+            mrule = rules_cfg["rules"][mi] if (mi := matching_rule(pr, rules_cfg)) is not None else None
+            if mrule and mrule["action"] == "review" and mrule.get("aiMine") and not settings["paused"] and not pr.get("isDraft"):
+                pr["ruleId"] = mrule["id"]
+                pr["waiting"] = prreview.consider(pr, mrule, mine=True)
             for b in pr["blockers"]:
                 nkey = f"mine:{pr['key']}:{b['code']}:{(pr['commit'] or '')[:8]}"
                 if nkey not in notified:
@@ -275,6 +280,9 @@ def poll_prs():
                 archive[key] = {"ts": now_iso(), "commit": pr["commit"], "reason": rule_label(rules_cfg, pr["rule"]), **pr_summary(pr)}
                 pr["archived"] = True
                 log_activity("auto", "archive", pr, detail=rule_label(rules_cfg, pr["rule"]), rule_id=rule["id"])
+                continue
+            if action == "review":
+                pr["waiting"] = "pausado" if settings["paused"] else prreview.consider(pr, rule)
                 continue
             if action == "approve" and pr["myVote"] == 0:
                 if settings["paused"]:
@@ -324,6 +332,7 @@ def poll_prs():
         return True  # releases/deploys/builds: cuidados pelos ciclos deles
 
     archive = {k: v for k, v in archive.items() if k in active or src_failed(k)}
+    prreview.prune()
     notified = {n for n in notified if keep(n)}
     save_json(ARCHIVE_FILE, archive)
     save_json(NOTIFIED_FILE, sorted(notified))

@@ -85,7 +85,7 @@
         <span><b>{store.inbox.filter(p => p.mergeStatus === "conflicts").length} PR(s) com conflito de merge</b> — o autor precisa resolver antes de completar.</span>
         <span class="spacer"></span><button class="btn sm" onclick={() => soft(() => { conflict = true; })}>Ver só elas</button></div>
     {/if}
-    <Split paneKey={selKey} onclose={() => go("/inbox", "soft")}>
+    <Split resizeKey="inbox" defaultFrac={0.55} paneKey={selKey} onclose={() => go("/inbox", "soft")}>
       {#snippet list()}
         {#if deps.length}<div class="sect">Deploys e permissões <span>{deps.length}</span></div>{/if}
         {#each deps as d (d.key)}<DeployRow {d} selected={d.key === selKey} onselect={() => select(d.key)} />{/each}

@@ -59,8 +59,8 @@
             <div class="rule" class:off={!r.enabled}>
               <Switch checked={r.enabled} onchange={(v) => saveRules({ rules: s.rules.rules.map(x => x.id === r.id ? { ...x, enabled: v } : x) }, v ? "Regra ativada" : "Regra desativada")} />
               <button class="body" onclick={() => (edit = { kind: "pr", rule: r, isNew: false })}>
-                <div class="top"><span class="prio">{i + 1}</span>{#if r.name}<b>{r.name}</b>{/if}<span class="pill {a.cls}">{a.icon} {a.label}{r.action === "approve" && r.requireBuild ? " · após build verde" : ""}</span>
-                  {#if prot.length && r.action === "approve"}<span class="pill warn"><Lock size={10} /> aprova {prot.join(", ")}</span>{/if}</div>
+                <div class="top"><span class="prio">{i + 1}</span>{#if r.name}<b>{r.name}</b>{/if}<span class="pill {a.cls}">{a.icon} {a.label}{(r.action === "approve" || r.action === "review") && r.requireBuild ? " · após build verde" : ""}{r.action === "review" && r.aiApprove === false ? " · só comenta" : ""}{r.action === "review" && r.aiMine ? " · inclui as minhas" : ""}</span>
+                  {#if prot.length && (r.action === "approve" || (r.action === "review" && r.aiApprove !== false))}<span class="pill warn"><Lock size={10} /> aprova {prot.join(", ")}</span>{/if}</div>
                 <div class="sentence">{@html ruleSentence(r)}</div>
                 <div class="stats">{st ? `${st.count} ${a.done} nos últimos 30 dias · última há ${ago(st.last)}` : r.action === "notify" ? "avisos não entram no histórico" : "ainda não agiu"}
                   {#if s.prs.filter(p => p.ruleId === r.id && !p.archived).length} · <b>{s.prs.filter(p => p.ruleId === r.id && !p.archived).length}</b> aberta(s) agora{/if}</div>

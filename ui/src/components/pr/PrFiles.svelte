@@ -6,10 +6,12 @@
   import { fade } from "svelte/transition";
   import { get } from "../../lib/api";
   import type { PR } from "../../lib/types";
+  import { ui } from "../../lib/ui.svelte";
   import FileIcon from "../work/FileIcon.svelte";
   import PrDiff, { type PrFile, type PrFileList } from "./PrDiff.svelte";
 
-  let { pr, count = $bindable(null) }: { pr: PR; count?: number | null } = $props();
+  let { pr, count = $bindable(null), jump = $bindable(null) }:
+    { pr: PR; count?: number | null; jump?: { path: string; line: number | null } | null } = $props();
   let data = $state<PrFileList | null>(null);
   let err = $state("");
   let loading = $state(false);
@@ -20,13 +22,32 @@
 
   async function load() {
     loading = true;
-    try { data = await get<PrFileList>("pr/files", { key: pr.key }); err = ""; count = data.files.length; }
+    try {
+      const r = await get<PrFileList>("pr/files", { key: pr.key });
+      // igual ao que já está na tela: mantém o mesmo objeto — trocar faria o diff aberto recarregar (e piscar)
+      if (JSON.stringify(r) !== JSON.stringify(data)) data = r;
+      err = ""; count = r.files.length;
+    }
     catch (e: any) { err = e.message || String(e); }
     loading = false;
   }
-  // relê quando a PR ganha commit novo (a lista de PRs atualiza `commit`)
-  $effect(() => { void pr.key; void pr.commit; untrack(load); });
+  // relê só quando a PR ganha commit novo. A lista de PRs é relida a cada poucos segundos e cada leitura traz um objeto
+  // `pr` novo: depender dele direto relia os arquivos (e remontava o diff) a cada ciclo — a tela piscava
+  const version = $derived(`${pr.key}@${pr.commit || ""}`);
+  $effect(() => { void version; untrack(load); });
 
+  // pedido de abrir um arquivo (ponto da revisão da IA): abre o diff dele, na linha
+  let goto = $state<{ path: string; line: number } | null>(null);
+  $effect(() => {
+    const j = jump, d = data;
+    if (!j || !d) return;
+    untrack(() => {
+      const i = d.files.findIndex(f => f.path === j.path || f.path.endsWith("/" + j.path));
+      if (i >= 0) { goto = j.line ? { path: d.files[i].path, line: j.line } : null; open = i; }
+      else ui.toast(`${j.path} não está entre os arquivos da PR`, "info");
+      jump = null;
+    });
+  });
   const files = $derived((data?.files || []).filter(f => !q || f.path.toLowerCase().includes(q.toLowerCase())));
   const STATUS: Record<string, [string, string]> = { A: ["adicionado", "good"], D: ["apagado", "bad"], M: ["modificado", "warn"], R: ["renomeado", "info"], C: ["copiado", "info"] };
   const tot = $derived.by(() => {
@@ -74,7 +95,7 @@
 </div>
 
 {#if open !== null && data}
-  <PrDiff {pr} files={data.files} base={data.base} head={data.head} bind:index={open} onclose={() => (open = null)}
+  <PrDiff {pr} files={data.files} base={data.base} head={data.head} bind:index={open} line={goto} onclose={() => { open = null; goto = null; }}
     oncount={(p, c) => (counted = { ...counted, [p]: c })} />
 {/if}
 

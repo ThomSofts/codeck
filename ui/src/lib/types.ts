@@ -51,8 +51,16 @@ export interface Activity {
 }
 
 export interface Rule {
-  id: string; name: string; enabled: boolean; action: "approve" | "archive" | "notify"; orgs: string[]; creators: string[];
+  id: string; name: string; enabled: boolean; action: "approve" | "archive" | "notify" | "review"; orgs: string[]; creators: string[];
   targets: string[]; repos: string[]; titleContains: string; requireBuild: boolean;
+  /** "review" (Revisar com IA): conta que revisa, aprova sozinha se estiver tudo certo, o que olhar, revisa as minhas */
+  aiAccount?: string | null; aiApprove?: boolean; aiFocus?: string; aiMine?: boolean;
+}
+export interface AiFinding { file: string | null; line: number | null; severity: "alta" | "media" | "baixa"; blocking: boolean; text: string }
+export interface AiReview {
+  status: "queued" | "running" | "done" | "error"; commit?: string | null; queuedAt?: string; started?: string; finished?: string;
+  account?: string; accountName?: string; provider?: string; ruleId?: string | null; mine?: boolean; error?: string | null;
+  verdict?: "approve" | "changes"; summary?: string; findings?: AiFinding[]; vote?: number | null; cost?: number | null;
 }
 export interface DeployRule {
   id: string; name: string; enabled: boolean; kind: "release" | "permission"; action: "approve" | "notify"; orgs: string[];
@@ -89,7 +97,7 @@ export interface AppState {
     /** tempo real (local) — backend/pilot/watch.py: ritmo atual, repositórios vigiados, chamadas e 304 (grátis) no último minuto */
     live?: { on: boolean; every: number | null; why: string; repos: number; callsMin: number; freeMin: number; changes: number; lastChange: string | null } };
   cascade?: CascadeItem[]; rules: RulesCfg; archive: Record<string, any>; activity: Activity[]; creators: string[]; repos: string[];
-  targets: string[]; ruleStats: Record<string, { count: number; last: string }>; configured: boolean;
+  targets: string[]; ruleStats: Record<string, { count: number; last: string }>; configured: boolean; aiReviews?: Record<string, AiReview>;
   app: { version: string; build: number; platform: string; product: string };
   update: { available?: boolean; version?: string; build?: number; notes?: string; required?: boolean; disabled?: boolean; checkedAt?: string; error?: string; publishedAt?: string };
 }

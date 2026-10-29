@@ -15,7 +15,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import accounts, agents, aitools, analytics, azure, cascade, catalogs, debug, dotnet, editor, engine, extensions, git, github, kanban, launch, library, lsp, power, rules, terminals, tracking, update, workspace, ws
+from . import accounts, agents, aitools, analytics, azure, boards, cascade, catalogs, debug, dotnet, editor, engine, extensions, git, github, kanban, launch, library, lsp, power, prreview, rules, terminals, tracking, update, workspace, ws
 from .core import (APP_BUILD, APP_PLATFORM, APP_VERSION, ARCHIVE_FILE, CONFIG_FILE, DATA, DEFAULT_PORT, PRODUCT, RULES_FILE, OfflineError,
                    STATIC_DIR, TOKEN, ctx, load_json, lock, log_activity, log_build, log_deploy, notifications, notify_seq,
                    now_iso, pr_summary, read_activity, save_json, state, wake)
@@ -77,6 +77,7 @@ def get_state(qs, body):
         counts[p["target"]] = counts.get(p["target"], 0) + 1
     payload["targets"] = [t for t, _ in sorted(counts.items(), key=lambda kv: -kv[1])][:12]
     payload["ruleStats"] = rules.rule_stats()
+    payload["aiReviews"] = prreview.public()        # revisão da IA de cada PR (regra "Revisar com IA")
     payload["configured"] = bool(ctx.orgs or ctx.gh)
     payload["app"] = {"version": APP_VERSION, "build": APP_BUILD, "platform": APP_PLATFORM, "product": PRODUCT}
     payload["update"] = dict(update.update_state)
@@ -660,6 +661,54 @@ def get_pr_file(qs, body):
     big = any(x is not None and len(x) > 3_000_000 for x in (a, b))
     return {"original": "" if binary or big or a is None else a, "modified": "" if binary or big or b is None else b,
             "binary": binary, "tooBig": big, "existsBefore": a is not None, "existsAfter": b is not None}
+
+
+# ---------------------------------------------------------------- Sprints e projetos (Azure Boards / GitHub Projects)
+@route("GET", "/api/boards")
+def get_boards(qs, body):
+    return boards.list_boards()
+
+
+@route("GET", "/api/board")
+def get_board(qs, body):
+    return boards.board(q1(qs, "id"), q1(qs, "sprint") or None)
+
+
+@route("POST", "/api/board/move")
+def post_board_move(qs, body):
+    return boards.move(body.get("id"), body.get("item") or {}, body.get("column"))
+
+
+@route("POST", "/api/board/draft-to-issue")
+def post_board_draft(qs, body):
+    return boards.draft_to_issue(body.get("id"), body.get("itemId"), body.get("repo"))
+
+
+# ---------------------------------------------------------------- PR: revisão da IA, abrir no projeto, ajustar a minha
+@route("POST", "/api/pr/ai-review")
+def post_pr_ai_review(qs, body):
+    return prreview.rerun(body.get("key"))
+
+
+@route("POST", "/api/pr/open-workspace")
+def post_pr_open_workspace(qs, body):
+    pr, _acc = _pr_of(body.get("key"))
+    with lock:
+        mine = any(p["key"] == pr["key"] for p in state["myPrs"])
+    return prreview.open_workspace(pr, mine)
+
+
+@route("GET", "/api/pr/feedback")
+def get_pr_feedback(qs, body):
+    pr, _acc = _pr_of(q1(qs, "key"))
+    return {"items": prreview.feedback(pr)}
+
+
+@route("POST", "/api/pr/fix")
+def post_pr_fix(qs, body):
+    terminals.hint_size(body.get("cols"), body.get("rows"))
+    pr, _acc = _pr_of(body.get("key"))
+    return prreview.fix(pr, body.get("accountId"))
 
 
 @route("GET", "/api/kanban")

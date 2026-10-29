@@ -15,12 +15,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import date, datetime, timedelta, timezone
 
 from . import secrets
 from .core import CONFIG_FILE, OfflineError, is_network_error, load_json, now_iso, save_json
 
 API_URL = "https://api.github.com"
-SCOPES = "repo read:org workflow"
+SCOPES = "repo read:org workflow project"
 UA = "Codeck"
 # OAuth App com "device flow" habilitado. O client id é público por natureza (vai dentro do app); quem distribuir
 # outro build pode trocar por CODECK_GITHUB_CLIENT_ID ou "githubClientId" no config.json.
@@ -328,6 +329,43 @@ class GitHub:
     def comment(self, full_name, number, text):
         self.req("POST", f"repos/{full_name}/issues/{number}/comments", {"body": text})
 
+    def review(self, full_name, number, event, body, comments=()):
+        """Revisão com comentários presos às linhas (event: APPROVE, REQUEST_CHANGES ou COMMENT). O GitHub recusa (422)
+        a revisão inteira se uma linha não está no diff: aí os pontos vão no texto da revisão."""
+        path = f"repos/{full_name}/pulls/{int(number)}/reviews"
+        cs = [{"path": c["path"], "line": int(c["line"]), "side": "RIGHT", "body": c["body"]} for c in comments if c.get("path") and c.get("line")]
+        if cs:
+            try:
+                return self.req("POST", path, {"event": event, "body": body, "comments": cs})
+            except RuntimeError as e:
+                if not str(e).startswith("HTTP 422"):
+                    raise
+            body += "\n\n" + "\n\n".join(f"**{c['path']}:{c['line']}** — {c['body']}" for c in cs)
+        return self.req("POST", path, {"event": event, "body": body})
+
+    def open_feedback(self, full_name, number):
+        """O que está em aberto na revisão: conversas no código não resolvidas e o texto da última revisão de cada um
+        que pediu mudança ou comentou."""
+        owner, name = full_name.split("/", 1)
+        q = """query($o: String!, $n: String!, $num: Int!) { repository(owner: $o, name: $n) { pullRequest(number: $num) {
+          reviewThreads(first: 100) { nodes { isResolved isOutdated path line originalLine comments(first: 30) { nodes { author { login } body } } } }
+          reviews(last: 40) { nodes { state body author { login } } } } } }"""
+        pr = self.gql(q, {"o": owner, "n": name, "num": int(number)})["repository"]["pullRequest"]
+        out = []
+        for t in pr["reviewThreads"]["nodes"]:
+            cs = [{"author": (c.get("author") or {}).get("login") or "?", "text": c["body"].strip()}
+                  for c in t["comments"]["nodes"] if (c.get("body") or "").strip()]
+            if not t.get("isResolved") and cs:
+                out.append({"id": None, "file": t.get("path"), "line": t.get("line") or t.get("originalLine"),
+                            "outdated": bool(t.get("isOutdated")), "comments": cs})
+        last = {}
+        for rv in pr["reviews"]["nodes"]:   # do mais antigo ao mais novo: fica a última de cada pessoa
+            last[(rv.get("author") or {}).get("login") or "?"] = rv
+        for who, rv in last.items():
+            if rv.get("state") in ("CHANGES_REQUESTED", "COMMENTED") and (rv.get("body") or "").strip():
+                out.append({"id": None, "file": None, "line": None, "comments": [{"author": who, "text": rv["body"].strip()}]})
+        return out
+
     def pr_approved_by_me(self, full_name, number):
         me = self.identity()["login"]
         last = None
@@ -523,6 +561,129 @@ class GitHub:
                 "comments": [{"author": (c.get("user") or {}).get("login", ""), "created": c.get("created_at"), "markdown": c.get("body") or ""} for c in comments],
                 "relations": [], "url": i["html_url"]}
 
+    # ------------------------------------------------------------ Projects (v2): quadro pelo campo Status
+    # Ler pede o escopo read:project (escrever, project): logins antigos não têm — a tela pede para entrar de novo.
+    def _gql_projects(self, query, variables=None):
+        res = self.req("POST", "graphql", {"query": query, "variables": variables or {}})
+        errs = res.get("errors") or []
+        if any(e.get("type") == "INSUFFICIENT_SCOPES" for e in errs):
+            raise PermissionError("O login do GitHub não tem acesso aos Projects — entre de novo com o GitHub em Contas e ajustes "
+                                  "(o login novo pede o escopo project)")
+        if errs and not res.get("data"):
+            raise RuntimeError("GraphQL: " + "; ".join(e.get("message", "") for e in errs)[:300])
+        return res.get("data") or {}
+
+    def projects_v2(self):
+        frag = "fragment p on ProjectV2 { id number title url closed updatedAt owner { ... on User { login } ... on Organization { login } } }"
+        q = ("query { viewer { projectsV2(first: 40, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { ...p } } "
+             "organizations(first: 40) { nodes { login projectsV2(first: 40, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { ...p } } } } } } " + frag)
+        v = self._gql_projects(q)["viewer"]
+        nodes = list((v.get("projectsV2") or {}).get("nodes") or [])
+        for o in ((v.get("organizations") or {}).get("nodes") or []):
+            nodes += ((o or {}).get("projectsV2") or {}).get("nodes") or []   # org com SSO/política que barra o app: vem null
+        seen, out = set(), []
+        for n in nodes:
+            if not n or n["id"] in seen or n.get("closed"):
+                continue
+            seen.add(n["id"])
+            owner = (n.get("owner") or {}).get("login") or ""
+            out.append({"id": f"gh|{self.login}|{n['id']}", "provider": "github", "org": owner, "account": self.login, "project": owner,
+                        "title": n["title"], "number": n["number"], "url": n["url"], "updated": n.get("updatedAt")})
+        return out
+
+    def project_board(self, pid, sprint_id=None):
+        """O Project em colunas: as opções do campo Status (ou o 1º campo de seleção única); sprint = o campo de iteração."""
+        fq = """query($id: ID!) { node(id: $id) { ... on ProjectV2 { title url
+          repositories(first: 30) { nodes { id nameWithOwner } }
+          fields(first: 40) { nodes {
+            ... on ProjectV2SingleSelectField { id name options { id name color } }
+            ... on ProjectV2IterationField { id name configuration { iterations { id title startDate duration } completedIterations { id title startDate duration } } } } } } } }"""
+        pj = self._gql_projects(fq, {"id": pid})["node"]
+        if not pj:
+            raise LookupError("Project não encontrado (ou sem acesso)")
+        fields = [f for f in pj["fields"]["nodes"] if f]
+        sel = [f for f in fields if "options" in f]
+        status = next((f for f in sel if f["name"].lower() == "status"), None) or (sel[0] if sel else None)
+        itf = next((f for f in fields if "configuration" in f), None)
+        today = datetime.now(timezone.utc).date()
+        sprints, cur = [], None
+        if itf:
+            conf = itf["configuration"]
+            for it, done in [(x, True) for x in (conf.get("completedIterations") or [])[:4]] + [(x, False) for x in conf.get("iterations") or []]:
+                start = date.fromisoformat(it["startDate"])
+                fin = start + timedelta(days=int(it["duration"]))
+                tf = "past" if done or fin <= today else "current" if start <= today else "future"
+                sprints.append({"id": it["id"], "name": it["title"], "start": it["startDate"], "finish": fin.isoformat(), "timeFrame": tf})
+            sprints.sort(key=lambda x: x["start"])
+            cur = next((x for x in sprints if x["id"] == sprint_id), None) or next((x for x in sprints if x["timeFrame"] == "current"), None)
+        iq = """query($id: ID!, $after: String) { node(id: $id) { ... on ProjectV2 { items(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id type isArchived
+            fieldValues(first: 30) { nodes {
+              ... on ProjectV2ItemFieldSingleSelectValue { optionId field { ... on ProjectV2SingleSelectField { id } } }
+              ... on ProjectV2ItemFieldIterationValue { iterationId field { ... on ProjectV2IterationField { id } } } } }
+            content {
+              ... on DraftIssue { title body }
+              ... on Issue { number title url state updatedAt createdAt author { login } repository { nameWithOwner owner { login } }
+                assignees(first: 5) { nodes { login avatarUrl } } labels(first: 8) { nodes { name color } } comments { totalCount } }
+              ... on PullRequest { number title url state updatedAt createdAt author { login } repository { nameWithOwner owner { login } }
+                assignees(first: 5) { nodes { login avatarUrl } } labels(first: 8) { nodes { name color } } comments { totalCount } } } } } } } }"""
+        items, after = [], None
+        while len(items) < 1000:
+            page = self._gql_projects(iq, {"id": pid, "after": after})["node"]["items"]
+            for n in page["nodes"]:
+                if not n or n.get("isArchived"):
+                    continue
+                vals = [v for v in n["fieldValues"]["nodes"] if v]
+                opt = next((v["optionId"] for v in vals if status and (v.get("field") or {}).get("id") == status["id"] and "optionId" in v), "")
+                iteration = next((v["iterationId"] for v in vals if itf and (v.get("field") or {}).get("id") == itf["id"] and "iterationId" in v), None)
+                if cur and iteration != cur["id"]:
+                    continue
+                c = n.get("content") or {}
+                base = {"itemId": n["id"], "column": opt or "", "provider": "github", "account": self.login, "order": len(items)}
+                if n["type"] == "DRAFT_ISSUE":
+                    items.append({**base, "key": f"gh-draft:{n['id']}", "kind": "draft", "type": "Rascunho", "title": c.get("title") or "(sem título)",
+                                  "body": c.get("body") or "", "number": None, "labels": [], "assignees": [], "state": "OPEN", "repo": None, "url": pj["url"]})
+                    continue
+                if "number" not in c:
+                    continue   # item sem acesso (repositório privado de outra conta): o GitHub devolve vazio
+                repo = c["repository"]["nameWithOwner"]
+                pr = n["type"] == "PULL_REQUEST"
+                items.append({**base, "key": f"gh:{repo}#{'' if pr else 'i'}{c['number']}", "kind": "pr" if pr else "issue", "type": "PR" if pr else "Issue",
+                              "org": c["repository"]["owner"]["login"], "repo": repo, "number": c["number"], "title": c["title"], "state": c["state"],
+                              "updated": c.get("updatedAt"), "created": c.get("createdAt"), "author": (c.get("author") or {}).get("login", ""),
+                              "labels": [{"name": l["name"], "color": f"#{l['color']}"} for l in c["labels"]["nodes"]],
+                              "assignees": [{"login": a["login"], "avatar": a["avatarUrl"]} for a in c["assignees"]["nodes"]],
+                              "comments": c["comments"]["totalCount"], "url": c["url"], "reason": "other", "reasons": []})
+            if not page["pageInfo"]["hasNextPage"]:
+                break
+            after = page["pageInfo"]["endCursor"]
+        colors = {"GRAY": "#8b949e", "BLUE": "#4493f8", "GREEN": "#3fb950", "YELLOW": "#d29922", "ORANGE": "#db6d28", "RED": "#f85149",
+                  "PINK": "#db61a2", "PURPLE": "#a371f7"}
+        cols = ([{"id": "", "name": "Sem status"}] if any(not i["column"] for i in items) or not status else []) + \
+               [{"id": o["id"], "name": o["name"], "color": colors.get(o.get("color"))} for o in (status or {}).get("options") or []]
+        return {"title": pj["title"], "url": pj["url"], "statusField": (status or {}).get("id"), "sprint": cur, "sprints": sprints,
+                "sprintLabel": (itf or {}).get("name"), "columns": cols, "items": items,
+                "repos": [r["nameWithOwner"] for r in pj["repositories"]["nodes"] if r]}
+
+    def project_move(self, pid, item_id, field_id, option_id):
+        if option_id:
+            m = """mutation($p: ID!, $i: ID!, $f: ID!, $o: String!) { updateProjectV2ItemFieldValue(input: {projectId: $p, itemId: $i, fieldId: $f,
+                   value: {singleSelectOptionId: $o}}) { projectV2Item { id } } }"""
+            self._gql_projects(m, {"p": pid, "i": item_id, "f": field_id, "o": option_id})
+        else:
+            m = "mutation($p: ID!, $i: ID!, $f: ID!) { clearProjectV2ItemFieldValue(input: {projectId: $p, itemId: $i, fieldId: $f}) { projectV2Item { id } } }"
+            self._gql_projects(m, {"p": pid, "i": item_id, "f": field_id})
+
+    def project_draft_to_issue(self, item_id, repo):
+        """Rascunho do Project vira issue de verdade no repositório (o cartão continua no mesmo lugar do quadro)."""
+        owner, name = repo.split("/", 1)
+        rid = self.gql("query($o: String!, $n: String!) { repository(owner: $o, name: $n) { id } }", {"o": owner, "n": name})["repository"]["id"]
+        m = """mutation($i: ID!, $r: ID!) { convertProjectV2DraftIssueItemToIssue(input: {itemId: $i, repositoryId: $r}) {
+               item { content { ... on Issue { number url } } } } }"""
+        c = self._gql_projects(m, {"i": item_id, "r": rid})["convertProjectV2DraftIssueItemToIssue"]["item"]["content"]
+        return {"number": c["number"], "url": c["url"], "repo": repo}
+
     def comment_issue(self, repo, number, text):
         self.req("POST", f"repos/{repo}/issues/{int(number)}/comments", {"body": text})
 
@@ -692,6 +853,10 @@ def test_account(gh):
         for sc, why in NEEDED.items():
             have = sc in gh.scopes or (sc == "read:org" and "admin:org" in gh.scopes)
             add("Permissões", f"Escopo {sc}", "ok" if have else "fail", why, None if have else f"Inclua o escopo {sc} no token")
+        # opcional: só a tela Sprints e projetos usa
+        have = "project" in gh.scopes or "read:project" in gh.scopes
+        add("Permissões", "Escopo project", "ok" if have else "warn", "ler e mover os cartões dos Projects (Sprints e projetos)",
+            None if have else "Entre de novo com o GitHub (o login novo já pede) ou inclua o escopo project no token")
     try:
         orgs = gh.orgs()
         add("Conta", "Organizações", "ok", ", ".join(o["login"] for o in orgs[:6]) or "nenhuma (só a conta pessoal)")

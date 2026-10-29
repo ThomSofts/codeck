@@ -16,10 +16,11 @@
 </div>
 
 <style>
-  .toasts { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 90; display: grid; gap: 8px; justify-items: center; pointer-events: none; }
+  /* canto superior direito: no centro de baixo cobriam a barra de lote, o aviso de versão e a doca do "Acompanhar" */
+  .toasts { position: fixed; top: 14px; right: 18px; z-index: 90; display: grid; gap: 8px; justify-items: end; pointer-events: none; }
   .toast { pointer-events: auto; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 12px; background: var(--elevated);
     border: 1px solid var(--line-2); box-shadow: var(--shadow-3); font-size: 13px; max-width: min(560px, 92vw); animation: toast-in 0.34s var(--spring) both; }
-  @keyframes toast-in { from { opacity: 0; transform: translateY(14px) scale(0.97); } }
+  @keyframes toast-in { from { opacity: 0; transform: translateX(18px) scale(0.97); } }
   .toast { transition: border-color 0.3s var(--ease), background 0.3s var(--ease); }
   .ico { display: grid; place-items: center; animation: pop 0.4s var(--spring); }
   .loading .ico { animation: none; }

@@ -16,6 +16,7 @@
   import Drawer from "../Drawer.svelte";
   import ProviderIcon from "../ProviderIcon.svelte";
   import { htmlText, renderMarkdown, safeHtml } from "./md/render";
+  import { refLine } from "../../lib/issues";
 
   type Comment = { author: string; created: string; markdown?: string; html?: string; pending?: boolean };
   type Detail = { provider: "github" | "azure"; number: number; title: string; state: string; type: string; project: string; author: string;
@@ -201,7 +202,7 @@
   /** O pedido para o agente: o conteúdo inteiro (descrição e discussão), não só o link. */
   function promptOf() {
     const kind = item.provider === "github" ? "a issue" : `o work item (${d?.type || item.type || "item"})`;
-    const head = `Implemente ${kind} #${item.number}: ${d?.title || item.title}\n${item.url}`;
+    const head = `Implemente ${kind} #${item.number}: ${d?.title || item.title}\n${item.url}\n${refLine(item)}`;
     if (!d) return `${head}\n\nLeia a descrição completa no link antes de começar.`;
     const body = d.provider === "github" ? (d.markdown || "").trim() : (d.sections || []).map(s => `## ${s.label}\n${htmlText(s.html)}`).join("\n\n");
     const talk = d.comments.slice(-15).map(c => `- ${c.author} (${c.created?.slice(0, 10)}): ${(c.markdown ?? htmlText(c.html || "")).trim().slice(0, 1500)}`).join("\n");

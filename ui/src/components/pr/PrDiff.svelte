@@ -8,6 +8,7 @@
   // arquivos fica ao lado; ↑/↓ (ou J/K) troca de arquivo, as setas da barra pulam entre as alterações.
   import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Columns2, Rows2 } from "@lucide/svelte";
   import type * as Monaco from "monaco-editor";
+  import { untrack } from "svelte";
   import { get } from "../../lib/api";
   import { loadMonaco, monacoTheme, onThemeChange } from "../../lib/monaco";
   import { prefs } from "../../lib/prefs.svelte";
@@ -15,14 +16,14 @@
   import Drawer from "../Drawer.svelte";
   import FileIcon from "../work/FileIcon.svelte";
 
-  let { pr, files, base, head, index = $bindable(0), onclose, oncount }:
-    { pr: PR; files: PrFile[]; base: string | null; head: string | null; index?: number; onclose: () => void;
-      oncount?: (path: string, c: { add: number; del: number }) => void } = $props();
+  let { pr, files, base, head, index = $bindable(0), line = null, onclose, oncount }:
+    { pr: PR; files: PrFile[]; base: string | null; head: string | null; index?: number; line?: { path: string; line: number } | null;
+      onclose: () => void; oncount?: (path: string, c: { add: number; del: number }) => void } = $props();
 
   type Pair = { original: string; modified: string; binary: boolean; tooBig: boolean; existsBefore: boolean; existsAfter: boolean };
   const cache = new Map<string, Promise<Pair>>();
   const fetchPair = (f: PrFile) => {
-    const k = f.path;
+    const k = `${f.path}@${base}..${head}`;
     if (!cache.has(k)) {
       const p = get<Pair>("pr/file", { key: pr.key, path: f.path, oldPath: f.oldPath || undefined, base, head });
       p.catch(() => cache.delete(k));
@@ -58,7 +59,7 @@
       old?.original.dispose();
       old?.modified.dispose();
       // abre já no primeiro trecho alterado (os modelos podem demorar um instante para calcular)
-      setTimeout(() => { if (n === seq) diff?.revealFirstDiff(); }, 120);
+      if (!(line && line.path === f.path)) setTimeout(() => { if (n === seq) diff?.revealFirstDiff(); }, 120);
       // Azure não informa +/- e prefetch do próximo: navegar fica instantâneo
       const nx = files[index + 1];
       if (nx) fetchPair(nx).catch(() => {});
@@ -101,7 +102,20 @@
       md?.original.dispose(); md?.modified.dispose();
     };
   });
-  $effect(() => { void cur; if (diff) show(); });
+  // remonta o diff só quando muda o arquivo ou a versão da PR — não a cada releitura da lista (objeto novo, mesmo conteúdo)
+  const curKey = $derived(cur ? `${cur.path}|${cur.oldPath || ""}|${base}|${head}` : "");
+  $effect(() => { void curKey; if (diff) untrack(show); });
+  // linha pedida (ponto da revisão da IA): quando o arquivo dela termina de carregar
+  $effect(() => {
+    const l = line, c = cur, busy = loading;
+    if (!l || !c || busy || l.path !== c.path) return;
+    setTimeout(() => {
+      const ed = diff?.getModifiedEditor();
+      if (!ed || cur?.path !== l.path) return;
+      ed.revealLineInCenter(l.line);
+      ed.setPosition({ lineNumber: l.line, column: 1 });
+    }, 150);
+  });
   $effect(() => { const i = inline; diff?.updateOptions({ renderSideBySide: !i }); try { localStorage.setItem("codeck.diff.inline", i ? "1" : "0"); } catch { /* */ } });
 
   const nav = (dir: 1 | -1) => (diff as any)?.goToDiff?.(dir > 0 ? "next" : "previous");
@@ -118,7 +132,7 @@
 
 <svelte:window onkeydown={onKey} />
 
-<Drawer title={`#${pr.prId} · ${pr.title}`} subtitle={`${pr.source} → ${pr.target} · ${files.length} arquivo${files.length === 1 ? "" : "s"}`} {onclose} width={1360}>
+<Drawer title={`#${pr.prId} · ${pr.title}`} subtitle={`${pr.source} → ${pr.target} · ${files.length} arquivo${files.length === 1 ? "" : "s"}`} {onclose} width={Math.max(1360, Math.round(window.innerWidth * 0.94))} resizeKey="prdiff">
   <div class="pd">
     <div class="side" bind:this={listEl}>
       {#each files as f, i (f.path)}

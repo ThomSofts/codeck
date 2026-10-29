@@ -10,6 +10,8 @@ export const ACTIONS = {
   approve: { icon: "⚡", label: "Aprovar automaticamente", short: "aprovar", verb: "aprovaria", done: "aprovações", cls: "good", desc: "Vota “Aprovado” assim que a PR aparece. Nunca sobrescreve um voto seu." },
   archive: { icon: "🗄", label: "Arquivar", short: "arquivar", verb: "arquivaria", done: "arquivadas", cls: "neutral", desc: "Tira da fila e ignora — bom para bots e PRs que não são com você." },
   notify: { icon: "🔔", label: "Só me notificar", short: "notificar", verb: "notificaria", done: "avisos", cls: "accent", desc: "Notificação quando chegar, sem votar." },
+  review: { icon: "🤖", label: "Revisar com IA", short: "revisar com IA", verb: "revisaria", done: "revisões", cls: "accent",
+    desc: "A IA lê a PR: tudo certo → aprova; senão → “Aguardando autor” com cada ponto comentado na linha. Nunca recusa." },
 } as const;
 
 export const DACTIONS = {
@@ -25,6 +27,7 @@ export const DACTIONS = {
 
 export const TEMPLATES: { label: string; rule: Partial<Rule> }[] = [
   { label: "Aprovar tudo de uma pessoa (menos produção)", rule: { action: "approve" } },
+  { label: "Revisar com IA as PRs de uma pessoa (aprova se estiver tudo certo)", rule: { action: "review", aiApprove: true } },
   { label: "Aprovar PRs para develop de qualquer pessoa", rule: { action: "approve", targets: ["develop"] } },
   { label: "Me avisar quando chegar PR para master/main", rule: { action: "notify", targets: ["master", "main"] } },
   { label: "Arquivar PRs de bots (dependabot, build service)", rule: { action: "archive", creators: ["dependabot", "Build Service", "Project Collection"] } },
@@ -37,7 +40,7 @@ export const DTEMPLATES: { label: string; rule: Partial<DeployRule> }[] = [
 ];
 
 export const blankRule = (over: Partial<Rule> = {}): Rule => ({ id: "", name: "", enabled: true, action: "approve", orgs: [], creators: [], targets: [], repos: [],
-  titleContains: "", requireBuild: false, ...JSON.parse(JSON.stringify(over)) });
+  titleContains: "", requireBuild: false, aiAccount: null, aiApprove: true, aiFocus: "", aiMine: false, ...JSON.parse(JSON.stringify(over)) });
 export const blankDRule = (over: Partial<DeployRule> = {}): DeployRule => ({ id: "", name: "", enabled: true, kind: "release", action: "approve", orgs: [],
   pipelines: [], stages: [], branches: [], resources: [], requirePrApproved: false, ...JSON.parse(JSON.stringify(over)) });
 

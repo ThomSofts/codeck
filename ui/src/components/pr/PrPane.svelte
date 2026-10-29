@@ -5,7 +5,7 @@
 <script lang="ts">
   // Painel de detalhes da PR: ações de voto, descrição, revisores e checks/policies. Atalhos para o histórico: o do app
   // filtrado nesta PR (votos, aprovações do piloto, comentários — H) e os commits da branch no clone local (C).
-  import { AlertTriangle, Archive, Bot, ExternalLink, FileDiff, GitBranch, GitCommitHorizontal, History, Info } from "@lucide/svelte";
+  import { AlertTriangle, Archive, Bot, ExternalLink, Copy, FileDiff, FolderOpen, GitBranch, GitCommitHorizontal, History, Info, WandSparkles } from "@lucide/svelte";
   import { work } from "../../lib/work.svelte";
   import { repos } from "../../lib/repos.svelte";
   import { go, router } from "../../lib/router.svelte";
@@ -22,11 +22,25 @@
   import { POLICY, VOTES } from "./votes";
   import VoteButton from "./VoteButton.svelte";
   import CascadeTrack from "../cascade/CascadeTrack.svelte";
+  import Menu from "../Menu.svelte";
+  import PrAiReview from "./PrAiReview.svelte";
+  import { fixPr, openPrWorkspace } from "./prwork";
+  import { copyText, prLink } from "../../lib/clipboard";
+  import type { AiFinding } from "../../lib/types";
 
   let { pr, mine = false, leaves = false }: { pr: PR; mine?: boolean; leaves?: boolean } = $props();
   let tab = $state<"info" | "files">(lastTab);
   let nfiles = $state<number | null>(null);
   function setTab(t: "info" | "files") { tab = lastTab = t; }
+  // ponto da revisão da IA → aba de arquivos com o diff aberto naquela linha
+  let jumpTo = $state<{ path: string; line: number | null } | null>(null);
+  function jump(f: AiFinding) { if (!f.file) return; jumpTo = { path: f.file, line: f.line }; setTab("files"); }
+  $effect(() => { if (!work.ai.length) work.loadAi(); });
+  const fixItems = $derived([
+    { heading: "Ajustar os comentários em aberto com" },
+    ...work.ai.filter(a => a.installed).map(a => ({ label: `${a.label} · ${a.name}`, icon: Bot, onclick: () => fixPr(pr, a.id) })),
+    ...(work.ai.some(a => a.installed) ? [] : [{ label: "Nenhuma CLI de IA instalada", disabled: true }]),
+  ]);
 
   function reviewWithAi() {
     work.startTask({ provider: pr.provider, org: pr.provider === "github" ? pr.project.split("/")[0] : pr.org, repo: pr.provider === "github" ? pr.project : pr.repo }, {
@@ -83,6 +97,13 @@
       {#if btn(0) && pr.provider === "azure"}<VoteButton {pr} v={0} cls="ghost" {leaves}>Remover voto</VoteButton>{/if}
     {/if}
     <a class="btn sm" href={pr.url} target="_blank" rel="noopener"><ExternalLink size={13} /> Abrir</a>
+    <button class="btn sm" title="Copia o título e o link (uma linha cada)" onclick={() => copyText(prLink(pr), "Título e link copiados")}><Copy size={13} /> Copiar link</button>
+    <button class="btn sm" title={mine ? "Abre o projeto na branch da PR (a tarefa dela ou o seu checkout)" : "O código da PR numa tarefa do projeto (worktree): ler, rodar e depurar sem mexer no seu checkout"}
+      onclick={() => openPrWorkspace(pr)}><FolderOpen size={13} /> Abrir no projeto</button>
+    {#if mine}
+      <Menu items={fixItems} small={false} align="left">{#snippet trigger()}<span class="btn sm" title="Um agente na branch da PR resolve os comentários em aberto da revisão (de gente ou da IA) e faz commit — sem push">
+        <WandSparkles size={13} /> Ajustar com IA</span>{/snippet}</Menu>
+    {/if}
     <button class="btn sm" title="Abre um worktree na branch da PR com um agente revisando" onclick={reviewWithAi}><Bot size={13} /> Revisar com IA</button>
     {#if !mine}<button class="btn sm ghost" onclick={doArchive}><Archive size={13} /> {pr.archived ? "Restaurar" : "Arquivar"}</button>{/if}
   </div>
@@ -94,12 +115,13 @@
     {#if nfiles !== null}<em>{nfiles}</em>{/if}</button>
 </div>
 {#if tab === "files"}
-<div class="pane-b files"><PrFiles {pr} bind:count={nfiles} /></div>
+<div class="pane-b files"><PrFiles {pr} bind:count={nfiles} bind:jump={jumpTo} /></div>
 {:else}
 <div class="pane-b">
   {#if pr.mergeStatus === "conflicts"}
     <div class="warnbox"><AlertTriangle size={15} /><span><b>{pr.source}</b> tem conflito com <b>{pr.target}</b>. O merge fica bloqueado até o autor atualizar a branch — aprovar não resolve.</span></div>
   {/if}
+  <PrAiReview {pr} onjump={jump} />
   <h4>Descrição</h4>
   <div class="desc">{#if pr.description}{pr.description}{:else}<span class="muted">Sem descrição.</span>{/if}</div>
   <div class="small muted" style="margin-top:8px">Criada em {dateTime(pr.created)}{#if pr.autoComplete} · auto-complete ligado{/if}</div>

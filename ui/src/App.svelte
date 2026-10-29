@@ -33,13 +33,14 @@
   import History from "./views/History.svelte";
   import Inbox from "./views/Inbox.svelte";
   import Issues from "./views/Issues.svelte";
+  import Sprints from "./views/Sprints.svelte";
   import PullRequests from "./views/PullRequests.svelte";
   import Repositories from "./views/Repositories.svelte";
   import Settings from "./views/Settings.svelte";
   import Work from "./views/Work.svelte";
 
   const views: Record<string, any> = {
-    inbox: Inbox, prs: PullRequests, builds: Builds, deploys: Deploys, issues: Issues, repos: Repositories,
+    inbox: Inbox, prs: PullRequests, builds: Builds, deploys: Deploys, issues: Issues, sprints: Sprints, repos: Repositories,
     automation: Automation, analytics: Analytics, ai: AiUsage, history: History, settings: Settings, work: Work, solo: Work, repo: Work,
     projects: Projects, board: Kanban,
   };

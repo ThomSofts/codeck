@@ -441,8 +441,8 @@ def inventory(repo_id=None):
 def _tracked(path, rel):
     """Se o arquivo está (ou entraria) no Git: True = versionado, False = ignorado, None = não existe ainda."""
     try:
-        r = subprocess.run(["git", "check-ignore", "-q", rel], cwd=path, capture_output=True, timeout=5)
-        return r.returncode != 0
+        # pelo git._rc: o git do app e CREATE_NO_WINDOW — sem isso, no Windows cada leitura abria uma janela de console
+        return git._rc(path, "check-ignore", "-q", rel, timeout=5) != 0
     except Exception:  # noqa: BLE001
         return None
 
@@ -552,7 +552,8 @@ def _claude_cli(a, path, kind, name, spec, overwrite):
 
     def cli(*args):
         try:
-            return subprocess.run([exe, "mcp", *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=40).returncode == 0
+            return subprocess.run([exe, "mcp", *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=40, stdin=subprocess.DEVNULL,
+                                  creationflags=0x08000000 if os.name == "nt" else 0).returncode == 0
         except Exception:  # noqa: BLE001
             return False
     if spec is None or overwrite:

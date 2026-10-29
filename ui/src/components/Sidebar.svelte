@@ -3,7 +3,7 @@
   // Barra lateral. Expandida: menus com contadores, os projetos abertos (em grupos, compactos) e as coleções de
   // repositórios. Recolhida (⌘\ / Ctrl+\): só ícones — passar o mouse abre um popover com o submenu de cada item.
   import { BarChart3, Gauge, Code2, RefreshCw, CircleDot, FolderGit2, GitPullRequest, Hammer, History, Inbox, Pin, Rocket, Search, Settings, Zap,
-    KanbanSquare, PanelLeftClose, PanelLeftOpen, ChevronRight, LayoutGrid, Radio } from "@lucide/svelte";
+    KanbanSquare, PanelLeftClose, PanelLeftOpen, ChevronRight, LayoutGrid, Radio, Columns3 } from "@lucide/svelte";
   import { BRAND } from "../lib/brand";
   import { cascade } from "../lib/cascade.svelte";
   import CascadeTrack from "./cascade/CascadeTrack.svelte";
@@ -36,6 +36,7 @@
     { id: "builds", label: "Builds e Actions", icon: Hammer, count: running || undefined, live: running > 0 },
     { id: "deploys", label: "Deploys", icon: Rocket, count: s?.deploys.length, hot: true },
     { id: "issues", label: "Issues e tarefas", icon: CircleDot, count: s?.issues.length },
+    { id: "sprints", label: "Sprints e projetos", icon: Columns3 },
     { group: "Código" },
     { id: "repos", label: "Repositórios", icon: FolderGit2, count: repos.local.filter(r => r.exists && !/[\\/]\.worktrees[\\/]/.test(r.path)).length || undefined, fly: "repos" },
     { group: "Configurar" },
@@ -197,13 +198,16 @@
   <div class="foot">
     {#if cascade.items.length}
       <!-- PRs acompanhadas até o deploy: o passo atual da mais recente; clique abre a doca com todas -->
-      {@const first = cascade.active[0] || cascade.items[0]}
-      <button class="casc" class:live={cascade.active.length > 0} onclick={() => (cascade.open ? (cascade.open = false) : cascade.show(first.key))}
-        title={`Até o deploy: ${cascade.active.length} em andamento — ${first.title}`} aria-label="Acompanhando até o deploy">
+      <!-- o número é o que está em execução (build/deploy, merge andando) — não as PRs esperando merge nem as encerradas -->
+      {@const first = cascade.running[0] || cascade.active[0] || cascade.items[0]}
+      {@const nrun = cascade.running.length}
+      {@const nwait = cascade.waiting.length}
+      <button class="casc" class:live={nrun > 0} onclick={() => (cascade.open ? (cascade.open = false) : cascade.show(first.key))}
+        title={`Até o deploy: ${nrun} em execução${nwait ? `, ${nwait} aguardando merge` : ""} — ${first.title}`} aria-label="Acompanhando até o deploy">
         <Radio size={14} />
         {#if !collapsed}
           <span class="cbody"><span class="ct ell">#{first.prId} {first.title}</span><CascadeTrack item={first} compact /></span>
-          {#if cascade.items.length > 1}<span class="count">{cascade.items.length}</span>{/if}
+          {#if nrun}<span class="count">{nrun}</span>{/if}
         {/if}
       </button>
     {/if}

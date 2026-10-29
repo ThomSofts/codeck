@@ -2,6 +2,7 @@
 repositórios (para os catálogos), criação de PR e itens de trabalho. Uma instância de Org por organização."""
 import base64
 import json
+import os
 import re
 import subprocess
 import time
@@ -66,8 +67,8 @@ class Org:
             elif self.cfg.get("pat"):  # só em teste de conexão, antes de salvar
                 self._pat = self.cfg["pat"]
             elif self.cfg.get("patCommand"):
-                self._pat = subprocess.run(self.cfg["patCommand"], shell=True, capture_output=True,
-                                           text=True, check=True).stdout.strip()
+                self._pat = subprocess.run(self.cfg["patCommand"], shell=True, capture_output=True, text=True, check=True,
+                                           creationflags=0x08000000 if os.name == "nt" else 0).stdout.strip()
             if not self._pat:
                 raise RuntimeError("PAT não configurado (config.json)")
         return self._pat
@@ -657,6 +658,104 @@ class Org:
         return {"states": states, "labels": sorted(tags, key=lambda t: t["name"].lower()), "people": safe(people),
                 "iterations": safe(lambda: tree("Iterations")), "areas": safe(lambda: tree("Areas"))}
 
+    # ------------------------------------------------------------ Boards: a sprint de cada time em colunas
+    # As colunas são as categorias de estado do processo (Proposto → Em andamento → Resolvido → Concluído), como o
+    # quadro de tarefas da sprint: Bug, Task e PBI/User Story têm estados com nomes diferentes, mas a mesma categoria.
+    # Mover um cartão de coluna = o 1º estado do tipo dele naquela categoria.
+    CATEGORIES = (("Proposed", "A fazer"), ("InProgress", "Em andamento"), ("Resolved", "Resolvido"), ("Completed", "Feito"))
+    BOARD_FIELDS = ("System.Id,System.Title,System.State,System.WorkItemType,System.AssignedTo,System.Tags,System.Parent,System.ChangedDate,"
+                    "System.CreatedDate,System.CreatedBy,System.TeamProject,System.CommentCount,Microsoft.VSTS.Common.Priority,"
+                    "Microsoft.VSTS.Scheduling.RemainingWork,Microsoft.VSTS.Scheduling.StoryPoints,Microsoft.VSTS.Scheduling.Effort,"
+                    "Microsoft.VSTS.Common.StackRank,Microsoft.VSTS.Common.BacklogPriority")
+
+    def boards(self):
+        """Um quadro por time de cada projeto (é o time que tem sprints)."""
+        def teams(p):
+            ts = self.req("GET", f"_apis/projects/{urllib.parse.quote(p['name'])}/teams?$top=200&{API}").get("value") or []
+            return [{"id": f"az|{self.name}|{p['name']}|{t['id']}", "provider": "azure", "org": self.name, "project": p["name"], "team": t["name"],
+                     "title": t["name"], "url": f"{self.url}/{urllib.parse.quote(p['name'])}/_sprints/taskboard/{urllib.parse.quote(t['name'])}"}
+                    for t in ts]
+        with ThreadPoolExecutor(6) as ex:
+            return [b for bs in ex.map(teams, self.projects()) for b in bs]
+
+    def sprints(self, project, team):
+        r = self.req("GET", f"{urllib.parse.quote(project)}/{urllib.parse.quote(team)}/_apis/work/teamsettings/iterations?{API}").get("value") or []
+        return [{"id": it["id"], "name": it["name"], "path": it.get("path"), "start": (it.get("attributes") or {}).get("startDate"),
+                 "finish": (it.get("attributes") or {}).get("finishDate"), "timeFrame": (it.get("attributes") or {}).get("timeFrame")} for it in r]
+
+    def _project_states(self, project):
+        """{tipo: [estados na ordem do processo, com categoria e cor]} — uma chamada por projeto, guardada (o processo
+        quase nunca muda; reabrir o app relê)."""
+        cache = self.__dict__.setdefault("_states_cache", {})
+        if project not in cache:
+            types = self.req("GET", f"{urllib.parse.quote(project)}/_apis/wit/workitemtypes?{API}").get("value") or []
+            cache[project] = {t["name"]: [{"name": x["name"], "category": x.get("category"), "color": f"#{x['color']}" if x.get("color") else None}
+                                          for x in t.get("states") or []] for t in types}
+        return cache[project]
+
+    def sprint_board(self, project, team, sprint_id=None):
+        """Os itens de uma sprint do time (a atual, sem `sprint_id`) em colunas, com o pai de cada um (a história da task)."""
+        its = self.sprints(project, team)
+        if not its:
+            raise ValueError("Este time não tem sprints — escolha as sprints dele no Azure (Configurações do time → Iterações)")
+        cur = (next((i for i in its if i["id"] == sprint_id), None) or next((i for i in its if i["timeFrame"] == "current"), None)
+               or next((i for i in its if i["timeFrame"] == "future"), None) or its[-1])
+        proj = urllib.parse.quote(project)
+        rel = self.req("GET", f"{proj}/{urllib.parse.quote(team)}/_apis/work/teamsettings/iterations/{cur['id']}/workitems?{API}")
+        parent, ids = {}, []
+        for r in rel.get("workItemRelations") or []:
+            t = (r.get("target") or {}).get("id")
+            if t and t not in ids:
+                ids.append(t)
+            if t and r.get("rel") == "System.LinkTypes.Hierarchy-Forward" and (r.get("source") or {}).get("id"):
+                parent[t] = r["source"]["id"]
+        raw = []
+        for k in range(0, len(ids), 200):
+            raw += self.req("GET", f"_apis/wit/workitems?ids={','.join(map(str, ids[k:k + 200]))}&fields={self.BOARD_FIELDS}&errorPolicy=omit&{API}")["value"]
+        raw = [w for w in raw if w]
+        titles = {w["id"]: (w.get("fields") or {}).get("System.Title") for w in raw}
+        try:
+            states = self._project_states(project)
+        except Exception:  # noqa: BLE001 — sem permissão de ler o processo: categoria pelo nome do estado
+            states = {}
+        here = {(w.get("fields") or {}).get("System.WorkItemType") for w in raw}
+        used = {x["category"] for t, st in states.items() if t in here for x in st}
+        cols = [{"id": c, "name": n} for c, n in self.CATEGORIES if c in used or c != "Resolved"]
+        items = []
+        for w in raw:
+            f = w.get("fields") or {}
+            wtype, state = f.get("System.WorkItemType"), f.get("System.State")
+            st = next((x for x in states.get(wtype) or [] if x["name"] == state), None)
+            cat = (st or {}).get("category") or ("Completed" if re.match(r"(closed|done|conclu|resolved)", state or "", re.I)
+                                                 else "Proposed" if re.match(r"(new|novo|to do|proposed)", state or "", re.I) else "InProgress")
+            if cat == "Removed":
+                continue
+            pid = f.get("System.Parent") or parent.get(w["id"])
+            team_p = f.get("System.TeamProject") or project
+            who = f.get("System.AssignedTo") or {}
+            items.append({
+                "key": f"{self.name}|wi:{w['id']}", "provider": "azure", "org": self.name, "repo": team_p, "number": w["id"],
+                "title": f.get("System.Title"), "state": state, "stateColor": (st or {}).get("color"), "type": wtype, "column": cat,
+                "updated": f.get("System.ChangedDate"), "created": f.get("System.CreatedDate"), "author": (f.get("System.CreatedBy") or {}).get("displayName", ""),
+                "assignees": [{"login": who.get("displayName", ""), "avatar": None, "email": who.get("uniqueName", "")}] if who else [],
+                "labels": [{"name": t.strip(), "color": None} for t in (f.get("System.Tags") or "").split(";") if t.strip()],
+                "comments": f.get("System.CommentCount"), "priority": f.get("Microsoft.VSTS.Common.Priority"),
+                "remaining": f.get("Microsoft.VSTS.Scheduling.RemainingWork"),
+                "points": f.get("Microsoft.VSTS.Scheduling.StoryPoints") or f.get("Microsoft.VSTS.Scheduling.Effort"),
+                "order": f.get("Microsoft.VSTS.Common.StackRank") or f.get("Microsoft.VSTS.Common.BacklogPriority") or 0,
+                "parent": {"id": pid, "title": titles.get(pid)} if pid else None, "reason": "other", "reasons": [],
+                "url": f"{self.url}/{urllib.parse.quote(team_p)}/_workitems/edit/{w['id']}",
+            })
+        items.sort(key=lambda x: (x["order"] or 0, x["number"]))
+        return {"sprint": cur, "sprints": its, "columns": cols, "items": items}
+
+    def move_to_category(self, project, wid, wtype, category):
+        st = next((x for x in self._project_states(project).get(wtype) or [] if x["category"] == category), None)
+        if not st:
+            raise ValueError(f"{wtype} não tem estado em “{dict(self.CATEGORIES).get(category, category)}” neste processo")
+        self.edit_work_item(wid, {"state": st["name"]})
+        return st["name"]
+
     # ------------------------------------------------------------ arquivos da PR
     def pr_files(self, project, repo_id, pr_id):
         """Arquivos modificados da PR (última iteração × base do merge, como na aba "Files" do Azure). O Azure não dá
@@ -711,6 +810,42 @@ class Org:
         proj = urllib.parse.quote(project)
         self.req("PUT", f"{proj}/_apis/git/repositories/{repo_id}/pullrequests/{pr_id}/reviewers/{me['id']}?{API}",
                  {"vote": vote})
+
+    # ------------------------------------------------------------ revisão: comentários no código e o que está em aberto
+    def _threads(self, project, repo_id, pr_id):
+        return f"{urllib.parse.quote(project)}/_apis/git/repositories/{repo_id}/pullRequests/{int(pr_id)}/threads"
+
+    def comment_at(self, project, repo_id, pr_id, text, path=None, line=None, status=1):
+        """Thread nova (1 = ativa, 4 = fechada). Com arquivo e linha, fica presa ao código da PR (lado direito do diff)."""
+        body = {"comments": [{"parentCommentId": 0, "content": text, "commentType": 1}], "status": status}
+        if path:
+            ln = max(1, int(line or 1))
+            body["threadContext"] = {"filePath": "/" + path.lstrip("/"), "rightFileStart": {"line": ln, "offset": 1},
+                                     "rightFileEnd": {"line": ln, "offset": 1}}
+        self.req("POST", f"{self._threads(project, repo_id, pr_id)}?{API}", body)
+
+    def threads(self, project, repo_id, pr_id):
+        return self.req("GET", f"{self._threads(project, repo_id, pr_id)}?{API}").get("value") or []
+
+    def set_thread_status(self, project, repo_id, pr_id, thread_id, status):
+        """status: 1 ativo, 2 resolvido, 4 fechado…"""
+        self.req("PATCH", f"{self._threads(project, repo_id, pr_id)}/{int(thread_id)}?{API}", {"status": status})
+
+    def open_feedback(self, project, repo_id, pr_id):
+        """O que está em aberto na revisão: threads ativas/pendentes com comentário de gente (as do sistema ficam de fora)."""
+        out = []
+        for t in self.threads(project, repo_id, pr_id):
+            if t.get("isDeleted") or t.get("status") not in ("active", "pending", 1, 6):
+                continue
+            cs = [c for c in t.get("comments") or [] if not c.get("isDeleted") and c.get("commentType") in ("text", 1)
+                  and (c.get("content") or "").strip()]
+            if not cs:
+                continue
+            tc = t.get("threadContext") or {}
+            out.append({"id": t.get("id"), "file": (tc.get("filePath") or "").lstrip("/") or None,
+                        "line": (tc.get("rightFileStart") or tc.get("leftFileStart") or {}).get("line"),
+                        "comments": [{"author": (c.get("author") or {}).get("displayName") or "?", "text": c["content"].strip()} for c in cs]})
+        return out
 
 
 def my_pr_blockers(pr):

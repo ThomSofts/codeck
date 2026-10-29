@@ -550,6 +550,19 @@ sealed class MainForm : Form
                 var wins = Application.OpenForms.OfType<ProjectWindow>().ToList();
                 reply = JsonSerializer.Serialize(new { windows = 1 + wins.Count, appearance = lastLight ? "light" : "dark", titles = wins.Select(w => w.Text).ToArray(), keyWindow = ActiveForm?.Text ?? "", visible = Visible && WindowState != FormWindowState.Minimized });
                 break;
+            case "selftest-consoles":
+                // janelas de console que apareceram desde a 1ª chamada. O backend roda sem console (pythonw): um processo
+                // filho sem CREATE_NO_WINDOW abre uma janela — o bug da aba IA da 4.8.1. probe = abre uma de controle,
+                // para o teste provar que o detector enxerga (sem isso, "0 janelas" não diria nada)
+                ConsoleWatch.Start();
+                if (msg.TryGetProperty("probe", out var pb) && pb.ValueKind == JsonValueKind.True)
+                {
+                    using var probe = Process.Start(new ProcessStartInfo("cmd.exe", "/c ping -n 3 127.0.0.1 >nul") { UseShellExecute = false, CreateNoWindow = false });
+                    await Task.Delay(2500);
+                    try { probe?.Kill(true); } catch { }
+                }
+                reply = ConsoleWatch.Shown.ToString();
+                break;
             case "selftest-focus":
                 Activate();
                 web.Focus();
@@ -685,4 +698,28 @@ static class Native
     [DllImport("user32.dll", SetLastError = true)] public static extern bool SystemParametersInfo(uint action, uint param, ref bool value, uint winIni);
     [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
     [DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);
+}
+
+/// <summary>Autoteste: conta as janelas de console (conhost e Windows Terminal) que aparecem na tela, de qualquer processo.</summary>
+static class ConsoleWatch
+{
+    delegate void WinEventProc(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time);
+    [DllImport("user32.dll")] static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr mod, WinEventProc proc, uint pid, uint tid, uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
+    static WinEventProc? proc;   // referência viva: o GC não pode recolher o delegate enquanto o gancho existe
+    public static int Shown;
+
+    public static void Start()
+    {
+        if (proc != null) return;
+        proc = (_, _, hwnd, idObject, _, _, _) =>
+        {
+            if (idObject != 0 || hwnd == IntPtr.Zero) return;   // só a janela em si (OBJID_WINDOW)
+            var sb = new System.Text.StringBuilder(64);
+            GetClassName(hwnd, sb, sb.Capacity);
+            var c = sb.ToString();
+            if (c == "ConsoleWindowClass" || c == "CASCADIA_HOSTING_WINDOW_CLASS") Interlocked.Increment(ref Shown);
+        };
+        SetWinEventHook(0x8002, 0x8002, IntPtr.Zero, proc, 0, 0, 0);   // EVENT_OBJECT_SHOW, fora do processo
+    }
 }

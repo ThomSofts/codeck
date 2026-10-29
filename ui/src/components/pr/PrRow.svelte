@@ -7,15 +7,27 @@
   import ProviderIcon from "../ProviderIcon.svelte";
   import { VOTES } from "./votes";
 
-  let { pr, selected = false, onselect, actions = undefined, showVote = true }:
-    { pr: PR; selected?: boolean; onselect: () => void; actions?: import("svelte").Snippet; showVote?: boolean } = $props();
+  // checked: null = sem caixa de marcar; true/false = modo "Copiar em lote" (o clique na linha marca/desmarca)
+  let { pr, selected = false, onselect, actions = undefined, showVote = true, checked = null }:
+    { pr: PR; selected?: boolean; onselect: () => void; actions?: import("svelte").Snippet; showVote?: boolean; checked?: boolean | null } = $props();
   const v = $derived(VOTES[pr.myVote]);
   const conflict = $derived(pr.mergeStatus === "conflicts");
   const phase = $derived(store.votes[pr.key]?.phase);
+  // revisão da IA (regra "Revisar com IA"): situação em uma etiqueta
+  const ai = $derived.by<[string, string] | null>(() => {
+    const r = store.s?.aiReviews?.[pr.key];
+    if (!r) return null;
+    if (r.status === "queued") return ["IA na fila", "neutral"];
+    if (r.status === "running") return ["IA revisando…", "accent"];
+    if (r.status === "error") return ["IA falhou", "bad"];
+    const n = r.findings?.length || 0;
+    return r.verdict === "approve" ? [n ? `IA ✓ · ${n} sugestão(ões)` : "IA ✓", "good"] : [`IA · ${n} ponto(s)`, "warn"];
+  });
 </script>
 
-<div class="list-row pr vote-{phase || 'idle'}" class:sel={selected} class:conflict data-row={pr.key} aria-busy={phase === "sending"} onclick={onselect} role="button" tabindex="-1"
+<div class="list-row pr vote-{phase || 'idle'}" class:picking={checked !== null} class:sel={selected} class:conflict data-row={pr.key} aria-busy={phase === "sending"} onclick={onselect} role="button" tabindex="-1"
   onkeydown={(e) => e.key === "Enter" && onselect()}>
+  {#if checked !== null}<span class="ck" class:on={checked} aria-hidden="true">{#if checked}<Check size={12} strokeWidth={3} />{/if}</span>{/if}
   <Avatar name={pr.creatorName} src={pr.creatorAvatar} size={32} />
   <div class="grow">
     <div class="t"><span class="num">#{pr.prId}</span><span class="title ell">{pr.title}</span></div>
@@ -28,7 +40,8 @@
       {#if pr.build === "ok"}<span class="pill good">Build ✓</span>{:else if pr.build === "failed"}<span class="pill bad">Build ✕</span>{:else if pr.build === "running" || pr.build === "pending"}<span class="pill warn">Build ⟳</span>{/if}
       {#if showVote && v}{#key pr.myVote}<span class="pill {v[1]} vpill">{v[0]}</span>{/key}{/if}
       {#if pr.approvals}<span class="pill neutral" title={pr.reviewers.filter(r => r.vote >= 5).map(r => r.name).join(", ")}><Check size={11} /> {pr.approvals}</span>{/if}
-      {#if pr.ruleId}<span class="pill accent" title="Regra de automação">⚡ auto{pr.waiting ? ` · aguardando ${pr.waiting}` : ""}</span>{/if}
+      {#if ai}<span class="pill {ai[1]}" title="Revisão da IA">🤖 {ai[0]}</span>
+      {:else if pr.ruleId}<span class="pill accent" title="Regra de automação">⚡ auto{pr.waiting ? ` · aguardando ${pr.waiting}` : ""}</span>{/if}
       {#each pr.blockers || [] as b (b.code)}<span class="pill {b.code === 'waiting' ? 'warn' : 'bad'}">{b.label}</span>{/each}
     </div>
   </div>
@@ -41,6 +54,10 @@
   .title { font-weight: 600; }
   .faint { color: var(--faint); }
   .acts { display: flex; gap: 6px; align-items: center; }
+  .picking { grid-template-columns: auto auto minmax(0, 1fr) auto; }   /* a caixa de marcar ganha a própria coluna */
+  .ck { flex: none; width: 18px; height: 18px; border-radius: 5px; border: 1.5px solid var(--line-3); display: grid; place-items: center;
+    color: var(--accent-ink); transition: background var(--t-fast), border-color var(--t-fast); }
+  .ck.on { background: var(--accent); border-color: var(--accent); animation: pop 0.3s var(--spring); }
   .conflict { background: color-mix(in srgb, var(--bad-soft) 55%, transparent); }
   /* voto: enviando (luz atravessando a linha) → feito (verde) → saindo (recolhe e as de baixo sobem) */
   .vote-sending { background-image: linear-gradient(100deg, transparent 30%, var(--accent-soft) 50%, transparent 70%); background-size: 250% 100%;

@@ -53,6 +53,7 @@
   };
   function label(a: Activity): [string, string] {
     if (LABEL[a.action]) return LABEL[a.action];
+    if (a.action === "ai-review") return a.vote != null && VOTES[a.vote as number] ? [`IA: ${VOTES[a.vote as number][0]}`, VOTES[a.vote as number][1]] : ["IA comentou", "info"];
     if (a.action.startsWith("git-")) return [a.action.slice(4).replace("-", " "), "info"];
     return VOTES[a.vote as number] || ["Removeu o voto", "neutral"];
   }
