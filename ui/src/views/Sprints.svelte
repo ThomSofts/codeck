@@ -55,6 +55,7 @@
     if (list.length && !board) untrack(() => pick(list[0].id));
   });
   function pick(id: string) {
+    if (id === bid) return;   // o mesmo quadro: zerar a tela sem mudar `bid` não relê nada — ficava carregando para sempre
     bid = id; sprint = null; data = null; err = "";
     try { localStorage.setItem(LS, id); } catch { /* sem armazenamento */ }
   }
@@ -94,7 +95,9 @@
   // ------------------------------------------------------------ sprint: datas e andamento
   // datas da sprint são dias (o Azure manda meia-noite UTC): só a parte da data, senão no Brasil virava o dia anterior
   const day = (iso: string, t: string) => new Date(iso.slice(0, 10) + t);
-  const fmt = (iso?: string | null) => (iso ? day(iso, "T12:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "short" }).replace(".", "") : "");
+  // o ano só quando não é o atual (sprint longa, de um ano para o outro)
+  const fmt = (iso?: string | null) => (iso ? day(iso, "T12:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "short",
+    ...(iso.slice(0, 4) !== String(new Date().getFullYear()) ? { year: "numeric" } : {}) }).replace(".", "") : "");
   const daysLeft = $derived.by(() => {
     const f = data?.sprint?.finish;
     if (!f || data?.sprint?.timeFrame !== "current") return null;
