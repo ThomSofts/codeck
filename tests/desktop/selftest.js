@@ -121,7 +121,7 @@
     return `plataforma ${window.CODECK_PLATFORM}`;
   });
   const VIEWS = [["#/inbox", "Fila"], ["#/prs/review", "Pull requests"], ["#/builds", "Builds"], ["#/deploys", "Deploys"], ["#/issues", "Issues"],
-    ["#/repos", "Repositórios"], ["#/automation", "Automação"], ["#/analytics", "Análise"], ["#/history", "Histórico"], ["#/ai", "Uso de IA"]];
+    ["#/repos", "Repositórios"], ["#/automation", "Automação"], ["#/analytics", "Análise"], ["#/history", "Histórico"], ["#/ai", "IA"]];
   for (const [hash, label] of VIEWS) {
     await step(`Tela ${label} abre`, async () => {
       await go(hash, 900);
