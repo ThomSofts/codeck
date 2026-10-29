@@ -69,6 +69,13 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
   projeto/tarefa ela está atuando e as sessões abertas fora do app. O limite do Claude Code também é lido sem abrir
   sessão ("Ler agora" ou automático, em Configurações): a própria CLI responde a um "ok" no Haiku em modo `-p` e
   devolve o limite — custa frações de centavo e o app continua sem ler token nenhum.
+- **Skills e MCPs por projeto e por conta** (aba **IA** do projeto, ou IA → Skills e MCPs): de quem é cada um — do
+  projeto (`.claude/skills`, `.mcp.json`, `.agents/skills`, `.codex/config.toml`, Cursor, Gemini), da conta ou da conta
+  só neste projeto. Uma constelação mostra o que o projeto tem em comum com cada conta; dá para trazer da conta para o
+  projeto e levar do projeto para a conta com um clique, igualar versões diferentes e ver tudo numa matriz. MCP com
+  segredo indo para o projeto vira `${VARIÁVEL}`; remover guarda uma cópia na lixeira do Codeck.
+- **Página IA "Ao vivo":** os agentes trabalhando e esperando você, e um radar do que fazer agora — qual conta usar,
+  semanal que vai zerar com sobra, conta perto do limite, leitura de limite antiga.
 - **Acabou o limite? Continua em outra conta.** Quando o agente para porque a conta atingiu o limite (5 h, semanal,
   cota diária — o Codeck reconhece pelo hook do Claude e pela mensagem de qualquer CLI no terminal), aparece por cima
   do terminal a contagem para o reset e as suas outras contas, da mais livre para a mais apertada. Escolha uma e o
@@ -219,7 +226,9 @@ fixo, tenta reconectar a cada 10 s e atualiza tudo assim que a rede volta.
 - **Barra lateral recolhível** (⌘\ / Ctrl+\): só ícones, com os submenus em popover.
 
 **No sistema**
-- **Notificações nativas** (Central de Notificações no Mac, bandeja no Windows): clicar abre o item.
+- **Notificações nativas** (Central de Notificações no Mac, bandeja no Windows): clicar abre o item. Em
+  Configurações → Notificações e sons, liga cada tipo separado (IA fazendo uma pergunta, IA em espera, conta no limite, PR
+  para revisar, build falhou, deploy esperando você…), cada um com o seu som.
 - **Contador** de pendências no Dock e na barra de menus (Mac) ou na bandeja e na barra de tarefas (Windows).
 
 ## Contas

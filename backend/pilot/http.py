@@ -15,7 +15,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import accounts, agents, analytics, azure, cascade, catalogs, debug, dotnet, editor, engine, extensions, git, github, kanban, launch, library, lsp, power, rules, terminals, tracking, update, workspace, ws
+from . import accounts, agents, aitools, analytics, azure, cascade, catalogs, debug, dotnet, editor, engine, extensions, git, github, kanban, launch, library, lsp, power, rules, terminals, tracking, update, workspace, ws
 from .core import (APP_BUILD, APP_PLATFORM, APP_VERSION, ARCHIVE_FILE, CONFIG_FILE, DATA, DEFAULT_PORT, PRODUCT, RULES_FILE, OfflineError,
                    STATIC_DIR, TOKEN, ctx, load_json, lock, log_activity, log_build, log_deploy, notifications, notify_seq,
                    now_iso, pr_summary, read_activity, save_json, state, wake)
@@ -903,6 +903,11 @@ def post_ws_task_update(qs, body):
     return workspace.update_task(body.get("repoId"), body.get("taskId"), body)
 
 
+@route("POST", "/api/ws/task/close")
+def post_ws_task_close(qs, body):
+    return {"closed": workspace.close_task(body.get("repoId"), body.get("taskId"))}
+
+
 @route("POST", "/api/ws/task/remove")
 def post_ws_task_remove(qs, body):
     workspace.remove_task(body.get("repoId"), body.get("taskId"), bool(body.get("force")), bool(body.get("deleteBranch")))
@@ -1357,6 +1362,31 @@ def post_ai_delete(qs, body):
 def post_ai_default(qs, body):
     agents.set_default(body.get("scope") or "*", body.get("id"))
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- skills e MCPs (projeto × contas)
+@route("GET", "/api/ai/tools")
+def get_ai_tools(qs, body):
+    return aitools.inventory(q1(qs, "repoId"))
+
+
+@route("POST", "/api/ai/tools/copy")
+def post_ai_tools_copy(qs, body):
+    try:
+        return aitools.copy(body.get("repoId"), body.get("type"), body.get("name"), body.get("from"), body.get("to"),
+                            bool(body.get("overwrite")), bool(body.get("envRefs")))
+    except FileExistsError as e:
+        return {"ok": False, "exists": True, "error": str(e)}
+
+
+@route("POST", "/api/ai/tools/remove")
+def post_ai_tools_remove(qs, body):
+    return aitools.remove(body.get("repoId"), body.get("type"), body.get("name"), body.get("loc"))
+
+
+@route("GET", "/api/ai/tools/skill")
+def get_ai_tools_skill(qs, body):
+    return aitools.skill_text(q1(qs, "repoId"), q1(qs, "loc"), q1(qs, "name"))
 
 
 @route("GET", "/api/clone-targets")

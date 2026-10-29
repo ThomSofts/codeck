@@ -1,9 +1,12 @@
 <script lang="ts">
-  // Uso de IA: primeiro "Agora" — qual conta usar (a com mais fôlego) e o fôlego de cada uma; depois o consumo do
-  // período — tempo do agente trabalhando, seu tempo com o projeto na tela, linhas alteradas, custo informado pela CLI e
-  // quanto de cada limite (5 h / semanal) cada projeto gastou.
-  import { RefreshCw } from "@lucide/svelte";
+  // IA, em duas abas. "Agora": o pulso (agentes trabalhando/esperando, ao vivo, e o Radar do que fazer), as contas
+  // com o fôlego de cada uma e o consumo do período — tempo do agente, seu tempo com o projeto na tela, linhas,
+  // custo informado pela CLI e quanto de cada limite (5 h / semanal) cada projeto gastou. "Skills e MCPs": quem tem
+  // o quê em cada conta, numa matriz, com levar de uma para outra.
+  import { Activity, RefreshCw, WandSparkles } from "@lucide/svelte";
   import AccountsNow from "../components/ai/AccountsNow.svelte";
+  import AiTools from "../components/ai/AiTools.svelte";
+  import Pulse from "../components/ai/Pulse.svelte";
   import { untrack } from "svelte";
   import { get } from "../lib/api";
   import { go, soft } from "../lib/router.svelte";
@@ -17,6 +20,9 @@
   type Cur = { account: string; accountName: string; provider: string; window: string; used: number; resetsAt: string | null; projects: Record<string, { name: string; used: number }> };
   type R = { days: (G & { day: string })[]; projects: Record<string, G>; totals: G; sessions: number; current: Cur[]; accountInfo: Record<string, { name: string; provider: string }> };
 
+  const TAB = "codeck.ai.tab";
+  let tab = $state((() => { try { return localStorage.getItem(TAB) || "now"; } catch { return "now"; } })());
+  $effect(() => { const t = tab; try { localStorage.setItem(TAB, t); } catch { /* sem armazenamento */ } });
   let days = $state("7");
   let metric = $state("work");
   let A = $state<R | { error: string } | null>(null);
@@ -52,15 +58,36 @@
   const avgV = $derived(series.length ? series.reduce((n, s) => n + s.v, 0) / series.length : 0);
   const labelEvery = $derived(series.length <= 7 ? 1 : series.length <= 31 ? 5 : 15);
   const lines = $derived(R ? R.totals.added + R.totals.removed : 0);
+  /** Mini-gráfico de um KPI: a série do período como linha com área, o último ponto aceso. */
+  function spark(vals: number[]) {
+    if (vals.length < 2) return null;
+    const max = Math.max(1e-9, ...vals), W = 100, H = 28;
+    const pts = vals.map((v, i) => [(i * W) / (vals.length - 1), H - 2 - (v / max) * (H - 6)] as const);
+    const line = pts.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
+    return { line, area: `${line} L${W} ${H} L0 ${H} Z`, last: pts[pts.length - 1] };
+  }
+  const sparks = $derived(R ? {
+    work: spark(R.days.map(d => d.workMs)), focus: spark(R.days.map(d => d.focusS)),
+    lines: spark(R.days.map(d => d.added + d.removed)), cost: spark(R.days.map(d => d.cost)),
+  } : null);
   const dayTip = (d: G & { day: string }) => `${wday(d.day)} ${fmtD(d.day)}${d.day === today ? " (hoje)" : ""}\nAgente trabalhando: ${dur(d.workMs)}\nSeu tempo: ${dur(d.focusS * 1000)}\nCusto: ${money(d.cost)}\nSessões: ${d.sessions}`;
 </script>
 
-<Page title="Uso de IA" sub="Contas, limites e o que cada projeto consome">
+{#snippet sp(k: "work" | "focus" | "lines" | "cost")}
+  {@const g = sparks?.[k]}
+  {#if g}<svg class="spark {k}" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true"><path class="ar" d={g.area} /><path class="ln" d={g.line} /></svg>{/if}
+{/snippet}
+
+<Page title="IA" sub="Agentes ao vivo, contas, limites, consumo — e as skills e MCPs de cada conta">
   {#snippet actions()}
-    <button class="btn sm ghost" onclick={() => { load(); work.loadAi(); work.loadActivity(); }}><RefreshCw size={14} /> Recarregar</button>
+    <Segmented size="sm" bind:value={tab} options={[{ value: "now", label: "Agora", icon: Activity }, { value: "tools", label: "Skills e MCPs", icon: WandSparkles }]} />
+    <button class="btn sm ghost icon" title="Recarregar" aria-label="Recarregar" onclick={() => { load(); work.loadAi(); work.loadActivity(); }}><RefreshCw size={14} /></button>
   {/snippet}
+  {#if tab === "tools"}
+  <div class="scroll"><AiTools /></div>
+  {:else}
   <div class="scroll">
-    {#if work.ai.length}<AccountsNow />{/if}
+    {#if work.ai.length}<Pulse report={R} /><AccountsNow />{/if}
 
     <div class="sech period">
       <h3>Consumo</h3><span class="grow"></span>
@@ -70,10 +97,10 @@
     {:else if "error" in A}<div class="err">{A.error}</div>
     {:else if R}
       <div class="card kpis">
-        <div class="kpi"><span class="kl">Agente trabalhando</span><b>{dur(R.totals.workMs)}</b><span class="ks">{R.sessions || 0} sessões em {Object.keys(R.projects).length} projeto(s)</span></div>
-        <div class="kpi"><span class="kl">Seu tempo nos projetos</span><b>{dur(R.totals.focusS * 1000)}</b><span class="ks">projeto aberto e à vista</span></div>
-        <div class="kpi"><span class="kl">Linhas alteradas</span><b>{#if lines}<span class="add">+{R.totals.added}</span> <span class="del">−{R.totals.removed}</span>{:else}—{/if}</b><span class="ks">pelos agentes</span></div>
-        <div class="kpi" title="O que a CLI informa como custo equivalente da API — com assinatura, é só referência"><span class="kl">Custo informado</span><b>{money(R.totals.cost)}</b><span class="ks">{tok(R.totals.tokens)} tokens · referência</span></div>
+        <div class="kpi"><span class="kl">Agente trabalhando</span><b>{dur(R.totals.workMs)}</b><span class="ks">{R.sessions || 0} sessões em {Object.keys(R.projects).length} projeto(s)</span>{@render sp("work")}</div>
+        <div class="kpi"><span class="kl">Seu tempo nos projetos</span><b>{dur(R.totals.focusS * 1000)}</b><span class="ks">projeto aberto e à vista</span>{@render sp("focus")}</div>
+        <div class="kpi"><span class="kl">Linhas alteradas</span><b>{#if lines}<span class="add">+{R.totals.added}</span> <span class="del">−{R.totals.removed}</span>{:else}—{/if}</b><span class="ks">pelos agentes</span>{@render sp("lines")}</div>
+        <div class="kpi" title="O que a CLI informa como custo equivalente da API — com assinatura, é só referência"><span class="kl">Custo informado</span><b>{money(R.totals.cost)}</b><span class="ks">{tok(R.totals.tokens)} tokens · referência</span>{@render sp("cost")}</div>
       </div>
 
       <div class="card">
@@ -125,6 +152,7 @@
       </div>
     {/if}
   </div>
+  {/if}
 </Page>
 {#if tip}<div class="tip" style="left:{tip.x + 12}px;top:{tip.y + 14}px">{tip.text}</div>{/if}
 
@@ -134,7 +162,11 @@
   .sech h3 { margin: 0; font-size: 14px; font-weight: 650; }
   .sech.period { margin-top: 10px; }
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line); overflow: hidden; }
-  .kpi { display: grid; gap: 3px; align-content: start; padding: 12px 16px 13px; background: var(--surface); min-width: 0; }
+  .kpi { position: relative; display: grid; gap: 3px; align-content: start; padding: 12px 16px 36px; background: var(--surface); min-width: 0; overflow: hidden; }
+  .spark { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 30px; --sc: var(--accent); }
+  .spark.focus { --sc: var(--cat6); } .spark.lines { --sc: var(--good); } .spark.cost { --sc: var(--cat4); }
+  .spark .ar { fill: color-mix(in srgb, var(--sc) 14%, transparent); animation: fade 0.8s both; }
+  .spark .ln { fill: none; stroke: var(--sc); stroke-width: 1.5; vector-effect: non-scaling-stroke; stroke-dasharray: 400; stroke-dashoffset: 400; animation: draw 1.2s var(--ease-out) forwards; }
   .kpi .kl { font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .kpi b { font-size: 20px; font-weight: 680; letter-spacing: -0.025em; font-variant-numeric: tabular-nums; line-height: 1.25; white-space: nowrap; }
   .kpi .ks { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -151,7 +183,7 @@
   .cols.few { gap: 14px; }
   .c { flex: 1; height: 100%; display: flex; align-items: flex-end; min-width: 2px; border-radius: 4px 4px 0 0; transition: background var(--t-fast); cursor: default; }
   .c:hover { background: var(--surface-2); }
-  .seg { width: 100%; background: color-mix(in srgb, var(--accent) 55%, var(--surface)); border-radius: 4px 4px 0 0;
+  .seg { width: 100%; background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 75%, var(--cat6)), color-mix(in srgb, var(--accent) 35%, var(--surface))); border-radius: 5px 5px 1px 1px;
     animation: grow 0.6s var(--ease-out) both; animation-delay: calc(min(var(--i), 30) * 18ms); transform-origin: bottom; transition: background var(--t-fast); }
   .c:hover .seg { background: color-mix(in srgb, var(--accent) 80%, var(--surface)); }
   .c.today .seg { background: var(--accent); box-shadow: 0 -2px 14px -4px color-mix(in srgb, var(--accent) 70%, transparent); }
@@ -177,5 +209,6 @@
   .tip { position: fixed; z-index: 70; pointer-events: none; white-space: pre; background: var(--text); color: var(--bg); font-size: 12px; padding: 6px 9px; border-radius: 7px; box-shadow: var(--shadow-2); }
   @keyframes grow { from { transform: scaleY(0); } }
   @keyframes grow-x { from { transform: scaleX(0); } }
-  @media (prefers-reduced-motion: reduce) { .seg, .bar span, tbody tr { animation: none; } }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  @media (prefers-reduced-motion: reduce) { .seg, .bar span, tbody tr, .spark .ar { animation: none; } .spark .ln { animation: none; stroke-dashoffset: 0; } }
 </style>

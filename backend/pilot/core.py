@@ -144,15 +144,67 @@ def notify_seq():
     return _notify["seq"]
 
 
-def notify(title, subtitle, message, target=None):
-    """target = "rota/chave" que o app abre quando a notificação é clicada (ex.: "fila/GlorySoft|7604")."""
-    if NATIVE_NOTIFY:
-        with lock:
-            _notify["seq"] += 1
-            notifications.append({"seq": _notify["seq"], "title": title, "subtitle": subtitle, "message": message, "target": target})
-            del notifications[:-50]
+# Os avisos, por tipo: cada um com o aviso do sistema (Central de Notificações / Windows) e o som escolhidos em
+# Configurações → Notificações — ui["alerts"][tipo] = {"os": bool, "sound": nome}. Sem escolha, o aviso do sistema segue
+# o ajuste antigo (as chaves notify* das regras e notify.agent* da tela) e o som é o padrão do tipo. Os sons são tocados
+# pela tela (Web Audio); "system" = o som da própria notificação do sistema; "none" = mudo.
+ALERTS = {
+    "pr.pending": {"legacy": ("rules", "notifyPending"), "sound": "sino"},
+    "pr.mine": {"legacy": ("rules", "notifyMyPrs"), "sound": "toque"},
+    "build.failed": {"legacy": ("rules", "notifyBuildFailures"), "sound": "grave"},
+    "deploy.waiting": {"legacy": ("rules", "notifyDeploys"), "sound": "acorde"},
+    "cascade": {"legacy": ("rules", "notifyCascade"), "sound": "toque"},
+    "auto": {"legacy": ("rules", "notifyAuto"), "sound": "none"},
+    "agent.question": {"legacy": ("ui", "notify.agentNeedsYou"), "sound": "alerta"},
+    "agent.standby": {"legacy": ("ui", "notify.agentDone"), "sound": "gota"},
+    "agent.limit": {"legacy": None, "sound": "grave"},
+    "ai.usage": {"legacy": None, "sound": "none"},
+}
+
+
+def alert_pref(kind):
+    """(aviso do sistema ligado?, som) de um tipo de aviso. Tipo desconhecido/None: aviso do sistema, som do sistema."""
+    spec = ALERTS.get(kind or "")
+    if not spec:
+        return True, "system"
+    ui = (ctx.config or {}).get("ui") or {}
+    mine = (ui.get("alerts") or {}).get(kind) or {}
+    os_on = mine.get("os")
+    if os_on is None:
+        os_on = True
+        if spec["legacy"] and spec["legacy"][0] == "ui":
+            os_on = bool(ui.get(spec["legacy"][1], True))
+        elif spec["legacy"]:
+            try:
+                from .rules import get_rules
+                os_on = bool(get_rules()["settings"].get(spec["legacy"][1], True))
+            except Exception:  # noqa: BLE001
+                pass
+    sound = mine.get("sound") or spec["sound"]
+    if ui.get("alerts.mute"):
+        sound = "none"
+    return bool(os_on), sound
+
+
+def wants(kind):
+    """Vale a pena gerar o aviso? (algum dos dois — sistema ou som — ligado)"""
+    os_on, sound = alert_pref(kind)
+    return os_on or sound != "none"
+
+
+def notify(title, subtitle, message, target=None, kind=None):
+    """target = "rota/chave" que o app abre quando a notificação é clicada (ex.: "fila/GlorySoft|7604").
+    kind = tipo do aviso (ALERTS): decide se sai no sistema e qual som a tela toca. Vai sempre para a fila: a tela lê
+    para tocar o som; o app nativo (Swift/C#) lê para mostrar a notificação quando `os` está ligado."""
+    os_on, sound = alert_pref(kind)
+    if not os_on and sound == "none":
         return
-    if sys.platform != "darwin":
+    with lock:
+        _notify["seq"] += 1
+        notifications.append({"seq": _notify["seq"], "title": title, "subtitle": subtitle, "message": message, "target": target,
+                              "kind": kind, "os": os_on, "sound": sound})
+        del notifications[:-50]
+    if NATIVE_NOTIFY or not os_on or sys.platform != "darwin":
         return
 
     def q(s):

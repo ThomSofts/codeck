@@ -177,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
     func buildWindow() {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
+        config.mediaTypesRequiringUserActionForPlayback = []   // os sons dos avisos tocam sem esperar um clique
         if selfTestScript != nil {
             // ganchos de leitura para o autoteste (buffer do terminal, marcações do editor) — só neste modo
             config.userContentController.addUserScript(WKUserScript(source: "window.__CD_SELFTEST = true;", injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -396,12 +397,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
     func deliver(_ n: [String: Any]) {
         let title = n["title"] as? String ?? "Codeck", subtitle = n["subtitle"] as? String ?? "", body = n["message"] as? String ?? ""
         let target = n["target"] as? String ?? ""
+        // o tipo do aviso pode estar só com som (a tela toca) — sem notificação do sistema
+        if n["os"] as? Bool == false { return }
         if nativeNotifications {
             let content = UNMutableNotificationContent()
             content.title = title
             content.subtitle = subtitle
             content.body = body
-            content.sound = .default
+            // som próprio do Codeck (tocado pela tela) ou mudo: a notificação sai sem o som do sistema
+            let sound = n["sound"] as? String ?? "system"
+            content.sound = sound == "system" ? .default : nil
             content.userInfo = ["target": target]
             UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
         } else {

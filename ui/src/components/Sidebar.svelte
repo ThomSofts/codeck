@@ -29,7 +29,7 @@
     { group: "Trabalho" },
     { id: "projects", label: "Projetos", icon: Code2, count: work.needsYou || undefined, hot: true, live: work.agents.some(a => a.session?.status === "working"), fly: "work" },
     { id: "board", label: "Quadro", icon: KanbanSquare },
-    { id: "ai", label: "Uso de IA", icon: Gauge },
+    { id: "ai", label: "IA", icon: Gauge },
     { group: "Visão geral" },
     { id: "inbox", label: "Fila", icon: Inbox, count: store.inbox.length + (s?.deploys.length || 0), hot: true },
     { id: "prs", label: "Pull requests", icon: GitPullRequest, count: s ? s.myPrs.length + store.open.length : undefined },
@@ -307,8 +307,8 @@
     border: 1px solid var(--line); transition: background var(--t), color var(--t); }
   .collapsed nav .count { position: absolute; top: 1px; right: 0; padding: 2px 4px; font-size: 9.5px; min-width: 15px; text-align: center; }
   .collapsed nav .count:not(.hot) { display: none; }
-  .item.on .count { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
-  .count.hot { background: var(--bad); color: #fff; border-color: transparent; }
+  .item.on .count { background: var(--surface-3); color: var(--text); }
+  .count.hot { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
   .chg { font: 650 10px/1 var(--font); color: var(--warn); }
   .live { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 0 var(--warn); animation: live 1.6s infinite; }
   .collapsed nav .live { position: absolute; bottom: 5px; right: 8px; width: 6px; height: 6px; }

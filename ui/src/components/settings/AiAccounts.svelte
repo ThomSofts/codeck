@@ -65,7 +65,7 @@
   {#if work.ai.some(a => a.provider === "claude" && a.installed)}
     <button class="btn sm ghost" disabled={probingAny} onclick={() => work.probe()}><Gauge size={13} class={probingAny ? "spin" : ""} /> {probingAny ? "Lendo…" : "Ler limites"}</button>
   {/if}
-  <button class="btn sm ghost" onclick={() => go("/ai")}>Uso de IA <ArrowRight size={13} /></button>
+  <button class="btn sm ghost" onclick={() => go("/ai")}>IA <ArrowRight size={13} /></button>
 </div>
 
 {#if found.length}

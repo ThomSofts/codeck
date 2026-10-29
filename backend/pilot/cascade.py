@@ -20,7 +20,7 @@ import urllib.parse
 from datetime import timedelta
 
 from . import power
-from .core import DATA, is_network_error, load_json, notify, now, now_iso, parse_dt, save_json
+from .core import DATA, is_network_error, load_json, notify, now, now_iso, parse_dt, save_json, wants
 
 CASCADE_FILE = os.path.join(DATA, "cascade.json")
 ACTIVE = ("merge", "build", "deploy")
@@ -237,8 +237,7 @@ def _tick(key):
 
 
 def _announce(it, before):
-    from .rules import get_rules
-    if not get_rules()["settings"].get("notifyCascade", True):
+    if not wants("cascade"):
         return
     sub = f"{it['org']}/{it['repo']} #{it['prId']} → {it['target']}"
     texts = {("merge", "done"): "PR integrada", ("merge", "failed"): "PR fechada sem merge",
@@ -252,10 +251,10 @@ def _announce(it, before):
         if st["status"] == before[step] or tag in it["told"] or (step, st["status"]) not in texts:
             continue
         it["told"].append(tag)
-        notify(texts[(step, st["status"])], sub, f"{it['title']} — {st['label']}" if st["label"] else it["title"], f"cascade/{it['key']}")
+        notify(texts[(step, st["status"])], sub, f"{it['title']} — {st['label']}" if st["label"] else it["title"], f"cascade/{it['key']}", kind="cascade")
     if it.get("result") == "timeout" and "timeout" not in it["told"]:
         it["told"].append("timeout")
-        notify("Acompanhamento encerrado", sub, f"{it['title']} — passou do prazo", f"cascade/{it['key']}")
+        notify("Acompanhamento encerrado", sub, f"{it['title']} — passou do prazo", f"cascade/{it['key']}", kind="cascade")
 
 
 # ---------------------------------------------------------------- passos em comum

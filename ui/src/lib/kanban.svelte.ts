@@ -21,7 +21,7 @@ export const PRIORITY: Record<Priority, { label: string; tone: string }> = {
 };
 /** Estado da tarefa ligada, em palavras: [rótulo, tom]. */
 export const LIVE: Record<LiveStatus, [string, string]> = {
-  working: ["IA trabalhando", "accent"], "needs-you": ["Precisa de você", "warn"], done: ["IA terminou", "good"], idle: ["Agente aberto, parado", "muted"],
+  working: ["IA trabalhando", "accent"], "needs-you": ["Precisa de você", "warn"], done: ["IA em espera", "muted"], idle: ["Agente aberto, parado", "muted"],
   stopped: ["Agente fechado", "muted"], gone: ["Worktree apagado", "bad"], missing: ["Tarefa removida", "bad"],
 };
 export const MAX_FILE = 25 * 1024 * 1024;

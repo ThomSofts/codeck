@@ -31,7 +31,7 @@
     }
     const out: Item[] = [
       ...cmds,
-      ...[["projects", "Projetos (hub)"], ["board", "Quadro"], ["ai", "Uso de IA"], ["inbox", "Fila"], ["prs", "Pull requests"], ["builds", "Builds e Actions"], ["deploys", "Deploys"], ["issues", "Issues e tarefas"],
+      ...[["projects", "Projetos (hub)"], ["board", "Quadro"], ["ai", "IA — agentes, contas, skills e MCPs"], ["inbox", "Fila"], ["prs", "Pull requests"], ["builds", "Builds e Actions"], ["deploys", "Deploys"], ["issues", "Issues e tarefas"],
           ["repos", "Repositórios"], ["automation", "Automação"], ["analytics", "Análise"], ["history", "Histórico"], ["settings", "Contas e ajustes"]]
         .map(([id, label]) => ({ group: "Ir para", label, icon: ArrowRight, run: () => go("/" + id) })),
       { group: "Ações", label: "Ler GitHub e Azure agora", icon: RefreshCw, run: async () => { const ok = await store.refresh(); ui.toast(ok ? "Tudo atualizado" : "A leitura está demorando — os dados chegam assim que ela terminar", ok ? "ok" : "info"); } },

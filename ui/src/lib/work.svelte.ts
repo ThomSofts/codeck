@@ -29,6 +29,8 @@ export interface SessionLimit { at: string; text: string | null; resetsAt: strin
 export interface Session {
   account: string; provider: Provider; status: "starting" | "idle" | "working" | "done" | "needs-you" | "compacting" | "limited"; started: number;
   limit?: SessionLimit | null;
+  /** por que parou esperando você (status "needs-you"): uma pergunta ou um pedido de permissão, com o texto */
+  ask?: { kind: "question" | "permission"; text: string | null } | null;
   /** o trabalho desta sessão continuou em outra conta (terminal novo) */
   handedOff?: { termId: string; account: string; mode: "resume" | "brief"; at: string } | null;
   /** esta sessão é a continuação de outra (que parou no limite) */
@@ -71,7 +73,7 @@ class Work {
   /** ⌘⇧I / "Pedir à IA": o painel do agente do projeto põe o cursor no campo de pedido (e consome o pedido) */
   composeFocus = $state<{ projectId: string; at: number } | null>(null);
   /** abrir um projeto já numa aba (ex.: a Git), vindo de um link de repositório */
-  focusRequest = $state<{ projectId: string; scope: string | null; tab: "git" | "review" | "code"; termId?: string | null } | null>(null);
+  focusRequest = $state<{ projectId: string; scope: string | null; tab: "git" | "review" | "code" | "ai"; termId?: string | null } | null>(null);
   private timer: ReturnType<typeof setInterval> | null = null;
   /** projetos sendo fechados: nem a rota (que muda um quadro depois, na transição) nem o polling os trazem de volta */
   closing = new Set<string>();
@@ -207,7 +209,7 @@ class Work {
 
   /** Repositório = projeto. Um link de repositório (lista, barra lateral, ⌘K) abre o projeto na aba Git; se o
    *  repositório é o worktree de uma tarefa, abre a tarefa (o Git dela é o do worktree). */
-  async openRepo(repoId: string, tab: "git" | "review" = "git") {
+  async openRepo(repoId: string, tab: "git" | "review" | "ai" = "git") {
     if (!this.loaded) await this.load();
     const owner = this.projects.find(p => p.tasks.some(t => t.repoId === repoId));
     const task = owner?.tasks.find(t => t.repoId === repoId);
@@ -287,6 +289,39 @@ class Work {
     await this.load();
     return t;
   }
+  /** Fechar uma tarefa: encerra os agentes e terminais dela (processos e filhos, sessão limpa). Pergunta antes se há
+   *  algo vivo; a 2ª opção também remove o worktree. Devolve "removed" quando a tarefa saiu da lista. */
+  async closeTask(project: Project, task: Task): Promise<"closed" | "removed" | null> {
+    const live = task.terms.filter(t => t.alive);
+    const busy = live.some(t => this.session(t)?.status === "working");
+    const r = await ui.ask({ title: `Fechar a tarefa “${task.title}”?`, danger: true, confirm: live.length ? "Encerrar sessões" : "Fechar", alt: "Remover worktree…",
+      message: (busy ? "Um agente está trabalhando agora. " : "") + (live.length
+        ? `Encerra ${live.length} sessão(ões) — os agentes e terminais da tarefa, com os processos filhos; o contexto é limpo. O worktree e a branch ficam.`
+        : "Nenhuma sessão aberta. O worktree e a branch ficam — ou remova o worktree também.") });
+    if (r === "alt") return (await this.removeTask(project, task)) ? "removed" : null;
+    if (!r) return null;
+    if (live.length) {
+      const prog = ui.progress("Encerrando as sessões da tarefa…");
+      try { await post("ws/task/close", { repoId: project.id, taskId: task.id }); for (const t of live) drop(t.id); prog.done("Sessões encerradas"); }
+      catch (e) { prog.fail(e); return null; }
+    }
+    await this.load();
+    return "closed";
+  }
+  /** Remove a tarefa (worktree fora do disco; a branch fica). Confere as alterações não commitadas na hora. */
+  async removeTask(project: Project, task: Task) {
+    // estado ATUAL do worktree (o resumo da tela pode ainda não ter chegado — antes, o aviso dizia "sem alterações"
+    // e a remoção normal era recusada pelo Git)
+    const fresh = await get<any>("ws/task/diff", { repoId: project.id, taskId: task.id }).catch(() => null);
+    const dirtyN = fresh ? fresh.status.staged.length + fresh.status.unstaged.length + fresh.status.untracked.length : 0;
+    const ok = await ui.ask({ title: `Remover a tarefa “${task.title}”?`, danger: true, confirm: "Remover worktree",
+      message: dirtyN ? `⚠ O worktree tem ${dirtyN} alteração(ões) não commitada(s) — serão PERDIDAS.` : "Os agentes são encerrados e o worktree sai do disco. A branch fica (já está no servidor se você fez push).",
+      detail: [`branch ${task.branch}`, task.path] });
+    if (!ok) return false;
+    const prog = ui.progress("Removendo o worktree…");
+    try { await post("ws/task/remove", { repoId: project.id, taskId: task.id, force: dirtyN > 0 }); for (const t of task.terms) drop(t.id); prog.done("Tarefa removida"); await this.load(); return true; }
+    catch (e) { prog.fail(e); return false; }
+  }
   /** Vou esperar o reset: some o aviso de limite desta sessão. */
   dismissLimit(sid: string) { return post("ws/agent/limit/dismiss", { sid }).then(() => this.load()); }
   /** Manda um pedido para um agente já aberto (como se fosse colado no terminal dele e Enter). */
@@ -339,6 +374,7 @@ export const FLOWS: Record<Flow, { label: string; short: string; hint: string; m
 };
 
 export const STATUS: Record<string, [string, string]> = {
-  starting: ["abrindo…", "muted"], idle: ["pronto", "muted"], working: ["trabalhando", "accent"], done: ["terminou", "good"],
-  "needs-you": ["precisa de você", "warn"], compacting: ["compactando", "info"], limited: ["no limite", "bad"],
+  // "done" = terminou e ficou em stand-by (o mais comum): discreto. "needs-you" = pergunta ou permissão de verdade.
+  starting: ["abrindo…", "muted"], idle: ["pronto", "muted"], working: ["trabalhando", "accent"], done: ["em espera", "muted"],
+  "needs-you": ["perguntando", "warn"], compacting: ["compactando", "info"], limited: ["no limite", "bad"],
 };

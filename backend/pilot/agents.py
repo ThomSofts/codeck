@@ -218,7 +218,10 @@ def agent_argv(prov, exe, prompt=None, mode=None, settings=None, extra_dirs=(), 
     if prompt and (not resume or prov in ("claude", "codex")):
         # o pedido inicial (Claude/Codex também ao retomar: "continue de onde parou" na conversa retomada): Claude/Codex/cursor-agent aceitam como argumento (sessão interativa). O Gemini sem -i roda uma
         # vez e sai; o OpenCode trata o argumento solto como a PASTA do projeto — os dois pedem a flag.
-        args += (["-i", prompt] if prov == "gemini" else ["--prompt", prompt] if prov == "opencode" else [prompt])
+        # Claude: o "--" fecha as opções. O --add-dir aceita várias pastas e ENGOLIA o pedido logo depois dele como mais
+        # uma pasta — o agente abria parado e limpo (a passagem de conta, a tarefa com repos ligados, o pedido em arquivo)
+        args += (["-i", prompt] if prov == "gemini" else ["--prompt", prompt] if prov == "opencode"
+                 else ["--", prompt] if prov == "claude" else [prompt])
     return args
 
 
@@ -337,9 +340,14 @@ def launch_spec(aid, prompt=None, mode=None, sid=None, extra_dirs=None, resume=N
         post = _hook_cmd(sid, secret)
         # a linha de status pode rodar no sh (macOS/Linux), no cmd ou no Git Bash (Windows): "a && b || b" vale nos três
         status_cmd = (f"{post} >/dev/null 2>&1; echo 'Codeck'" if not nt else f"{post} && echo Codeck || echo Codeck")
+        hook = [{"type": "command", "command": post}]
         settings = {"statusLine": {"type": "command", "command": status_cmd, "padding": 0},
-                    "hooks": {ev: [{"hooks": [{"type": "command", "command": post}]}]
-                              for ev in ("UserPromptSubmit", "Stop", "StopFailure", "Notification", "SubagentStop", "SessionStart", "PreCompact")}}
+                    "hooks": {**{ev: [{"hooks": hook}]
+                                 for ev in ("UserPromptSubmit", "Stop", "StopFailure", "Notification", "SubagentStop", "SessionStart", "PreCompact")},
+                              # pergunta de verdade (a caixa de opções do AskUserQuestion) e a volta ao trabalho depois
+                              # de uma permissão: separa "precisa de você" de "terminou e está esperando"
+                              "PreToolUse": [{"matcher": "AskUserQuestion", "hooks": hook}],
+                              "PostToolUse": [{"matcher": "*", "hooks": hook}]}}
     if prompt:
         prompt = prompt.replace("\r\n", "\n").replace("\0", "")
         # pelo cmd.exe (sem achar o .exe/.js por trás do .cmd) o argumento não pode ter quebra de linha nem %^&|<>!"
@@ -378,17 +386,36 @@ def hook(sid, secret, payload):
     if not s or not hmac.compare_digest(secret or "", s["secret"]):
         raise PermissionError("sessão desconhecida")
     ev = payload.get("hook_event_name")
+    ask = None   # o que fez o agente parar para você: "question" (pergunta) ou "permission"
     with _lock:
         if ev:
-            s["events"] = (s["events"] + [{"at": now_iso(), "event": ev, "message": payload.get("message")}])[-30:]
-            s["claudeSession"] = payload.get("session_id") or s.get("claudeSession")
             was = s["status"]
+            s["claudeSession"] = payload.get("session_id") or s.get("claudeSession")
+            if ev == "PostToolUse":   # roda a cada ferramenta: só interessa para sair do "precisa de você"
+                if was == "needs-you":
+                    s["status"], s["statusAt"] = "working", time.time()
+                    s.pop("ask", None)
+                    _record(sid, s)
+                return {"ok": True}
+            ev_status = s["status"]
+            if ev == "Notification":
+                ask = notification_kind(payload)
+                if not ask:   # "esperando o seu próximo pedido" (60 s parado) ou login: stand-by, não é pergunta
+                    return {"ok": True}
+                ev_status = "needs-you"
+            elif ev == "PreToolUse":   # matcher AskUserQuestion: a caixa de opções vai aparecer
+                ask, ev_status = "question", "needs-you"
+            s["events"] = (s["events"] + [{"at": now_iso(), "event": ev, "message": payload.get("message") or _ask_text(payload)}])[-30:]
             if ev == "UserPromptSubmit" and s.get("limit"):
                 s.pop("limit", None)   # voltou a trabalhar (o limite resetou ou você seguiu nesta conta)
             limited = ev == "StopFailure" and (payload.get("error") in ("rate_limit", "billing_error") or bool(_LIMIT_RE.search(
                 f"{payload.get('error_details') or ''} {payload.get('last_assistant_message') or ''}")))
             s["status"] = {"UserPromptSubmit": "working", "SessionStart": "idle", "Stop": "done", "StopFailure": "done",
-                           "SubagentStop": s["status"], "Notification": "needs-you", "PreCompact": "compacting"}.get(ev, s["status"])
+                           "SubagentStop": s["status"], "PreCompact": "compacting"}.get(ev, ev_status)
+            if ask:
+                s["ask"] = {"kind": ask, "text": _short(payload.get("message") or _ask_text(payload), 200) or None}
+            elif s["status"] != "needs-you":
+                s.pop("ask", None)
             if s.get("limit") and s["status"] != "working":
                 s["status"] = "limited"
             # tempo trabalhando = da pergunta (UserPromptSubmit) até parar ou pedir você — medido aqui, pelos hooks
@@ -425,12 +452,33 @@ def hook(sid, secret, payload):
         text = _short(payload.get("error_details") or payload.get("last_assistant_message") or "", 260) or "limite de uso atingido"
         flag_limit(sid, text, parse_reset(text), source="hook")
         return {"ok": True}
-    ui = (ctx.config or {}).get("ui") or {}
-    if ev == "Notification" and ui.get("notify.agentNeedsYou", True):
-        notify("Agente precisa de você", s.get("title") or "", (payload.get("message") or "")[:140], target=f"term/{sid}")
-    elif ev == "Stop" and ui.get("notify.agentDone", True):
-        notify("Agente terminou", s.get("title") or "", "Pronto para revisar", target=f"term/{sid}")
+    if ask:
+        text = (s.get("ask") or {}).get("text") or ""
+        notify("A IA está perguntando" if ask == "question" else "A IA pede permissão", s.get("title") or "",
+               text[:140] or "Responda no terminal", target=f"term/{sid}", kind="agent.question")
+    elif ev == "Stop":
+        notify("A IA terminou", s.get("title") or "", "Em espera — pronto para revisar ou seguir", target=f"term/{sid}", kind="agent.standby")
     return {"ok": True}
+
+
+def notification_kind(payload):
+    """O hook Notification do Claude Code avisa coisas diferentes: permissão para usar uma ferramenta, uma pergunta
+    (elicitação de MCP), "esperando o seu próximo pedido" (60 s parado depois de terminar) e login feito. Só os dois
+    primeiros são o agente parado por sua causa; os outros são stand-by. Versões antigas não mandam o tipo: pela frase."""
+    t = payload.get("notification_type") or ""
+    msg = payload.get("message") or ""
+    if t in ("idle_prompt", "auth_success") or (not t and re.search(r"waiting for your input|aguardando", msg, re.I)):
+        return None
+    if t == "elicitation_dialog" or re.search(r"\?\s*$", msg):
+        return "question"
+    return "permission"
+
+
+def _ask_text(payload):
+    """A 1ª pergunta do AskUserQuestion (tool_input.questions[0].question), para o aviso e o painel."""
+    qs = ((payload.get("tool_input") or {}).get("questions") or []) if isinstance(payload.get("tool_input"), dict) else []
+    q = qs[0] if qs and isinstance(qs[0], dict) else {}
+    return q.get("question") or q.get("header") or ""
 
 
 def _attribute(s, limits):
@@ -610,7 +658,7 @@ def _check_alerts(aid, limits):
                         except ValueError:
                             pass
                     notify(f"{a['name']}: limite {w['window']} em {round(used)}%", PROVIDERS[a["provider"]]["label"],
-                           ("Perto do fim — considere outra conta para tarefas novas" if th == 80 else "Quase esgotado") + reset, target="settings/ai")
+                           ("Perto do fim — considere outra conta para tarefas novas" if th == 80 else "Quase esgotado") + reset, target="settings/ai", kind="ai.usage")
                 break
 
 
@@ -931,7 +979,7 @@ def flag_limit(sid, text=None, reset=None, source="output"):
     if s["limit"]["resetsAt"]:
         when = " — reseta " + time.strftime("%d/%m %H:%M", time.localtime(_ts(s["limit"]["resetsAt"])))
     notify(f"{a['name']} atingiu o limite", s.get("title") or PROVIDERS[a["provider"]]["label"],
-           f"O agente parou{when}. Continue em outra conta.", target=f"term/{sid}")
+           f"O agente parou{when}. Continue em outra conta.", target=f"term/{sid}", kind="agent.limit")
 
 
 def clear_limit(sid):

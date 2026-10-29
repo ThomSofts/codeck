@@ -14,7 +14,7 @@ from datetime import timedelta
 from . import azure, cascade, catalogs, git, github, power, secrets, tracking, watch
 from .analytics import analytics_cache
 from .core import (ARCHIVE_FILE, CONFIG_FILE, NOTIFIED_FILE, ctx, http_code, load_json, lock, log_activity, log_deploy, notify,
-                   is_network_error, now, now_iso, parse_dt, pr_summary, save_json, state, wake)
+                   is_network_error, now, now_iso, parse_dt, pr_summary, save_json, state, wake, wants)
 from .rules import get_rules, matching_deploy_rule, matching_rule, protected_set, rule_label
 
 deploy_failures = {}  # key -> ts da última falha automática (não insiste a cada ciclo)
@@ -251,9 +251,9 @@ def poll_prs():
                 nkey = f"mine:{pr['key']}:{b['code']}:{(pr['commit'] or '')[:8]}"
                 if nkey not in notified:
                     notified.add(nkey)
-                    if settings["notifyMyPrs"] and state["lastPoll"] is not None and not pr.get("quiet"):  # 1º ciclo só marca
+                    if wants("pr.mine") and state["lastPoll"] is not None and not pr.get("quiet"):  # 1º ciclo só marca
                         notify(f"Sua PR: {b['label']}", f"{pr['org']}/{pr['repo']} #{pr['prId']} → {pr['target']}", pr["title"],
-                               f"minhas/{pr['key']}")
+                               f"minhas/{pr['key']}", kind="pr.mine")
         all_mine.extend(mine)
 
         for pr in prs:
@@ -288,20 +288,19 @@ def poll_prs():
                         pr["approvals"] += 1
                         log_activity("auto", "vote", pr, vote=10, detail=rule_label(rules_cfg, pr["rule"]), rule_id=rule["id"])
                         cascade.on_approved(pr, "auto")
-                        if settings["notifyAuto"]:
-                            notify("PR aprovada pelo piloto", f"{pr['org']}/{pr['repo']} #{pr['prId']} · {pr['creatorName']} → {pr['target']}",
-                                   pr["title"], f"todas/{key}")
+                        notify("PR aprovada pelo piloto", f"{pr['org']}/{pr['repo']} #{pr['prId']} · {pr['creatorName']} → {pr['target']}",
+                               pr["title"], f"todas/{key}", kind="auto")
                     except Exception as e:  # noqa: BLE001
                         errors[src_name] = f"Falha ao auto-aprovar #{pr['prId']}: {e}"
                 continue
             nkey = f"{key}@{pr['commit']}"
-            if pr["myVote"] == 0 and nkey not in notified and (action == "notify" or settings["notifyPending"]) \
+            if pr["myVote"] == 0 and nkey not in notified and (action == "notify" or wants("pr.pending")) \
                     and (pr.get("provider") != "github" or pr.get("reviewRequested")):
                 notified.add(nkey)
                 if any(n.startswith(key + "@") for n in notified - {nkey}) or pr.get("quiet"):
                     continue  # já avisei esta PR (push novo não renotifica) ou o repositório está sem notificações
                 notify("PR aguardando seu voto", f"{pr['org']}/{pr['repo']} #{pr['prId']} · {pr['creatorName']} → {pr['target']}",
-                       pr["title"], f"fila/{key}")
+                       pr["title"], f"fila/{key}", kind="pr.pending")
         all_prs.extend(prs)
 
     active = {p["key"] for p in all_prs}
@@ -396,21 +395,20 @@ def poll_deploys():
                         acc.decide_deploy(it, True, "Aprovado pelo Codeck")
                         log_deploy("auto", "permit" if it["kind"] == "permission" else "deploy-approve", it,
                                    detail=it["ruleName"], rule_id=rule["id"])
-                        if settings["notifyAuto"]:
-                            notify("Permissão liberada pelo piloto" if it["kind"] == "permission" else "Deploy aprovado pelo piloto",
-                                   f"{it['org']} · {it['pipeline']}", f"{it.get('stage') or ''} {it.get('version') or ''}".strip(), "historico/")
+                        notify("Permissão liberada pelo piloto" if it["kind"] == "permission" else "Deploy aprovado pelo piloto",
+                               f"{it['org']} · {it['pipeline']}", f"{it.get('stage') or ''} {it.get('version') or ''}".strip(), "historico/", kind="auto")
                         continue
                     except Exception as e:  # noqa: BLE001
                         deploy_failures[it["key"]] = time.time()
                         errors[src_name] = f"Falha ao liberar {it['pipeline']}: {e}"
             nkey = it["key"]
-            if nkey not in notified and settings["notifyDeploys"] and not it.get("quiet") and (it["mine"] or (rule and rule["action"] == "notify")):
+            if nkey not in notified and wants("deploy.waiting") and not it.get("quiet") and (it["mine"] or (rule and rule["action"] == "notify")):
                 notified.add(nkey)
                 what = {"release": "Deploy aguardando aprovação", "approval": "Pipeline aguardando aprovação",
                         "permission": "Pipeline pedindo permissão"}[it["kind"]]
                 notify(what, f"{it['org']} · {it['pipeline']}",
                        ", ".join(x["name"] for x in it["resources"]) or f"{it.get('stage') or ''} · {it.get('branch') or ''}",
-                       f"fila/{it['key']}")
+                       f"fila/{it['key']}", kind="deploy.waiting")
             all_items.append(it)
         all_rel.extend(rels)
     live = {d["key"] for d in all_items}
@@ -469,8 +467,8 @@ def poll_builds():
             nkey = f"build:{b['key']}"
             if nkey not in notified:
                 notified.add(nkey)
-                if settings["notifyBuildFailures"] and state["builds"] and not b.get("quiet"):  # 1º ciclo só marca: não despeja o passado
-                    notify("Build falhou", f"{b['org']} · {b['pipeline']} · {b['branch']}", b["message"] or b["number"], f"builds/{b['key']}")
+                if wants("build.failed") and state["builds"] and not b.get("quiet"):  # 1º ciclo só marca: não despeja o passado
+                    notify("Build falhou", f"{b['org']} · {b['pipeline']} · {b['branch']}", b["message"] or b["number"], f"builds/{b['key']}", kind="build.failed")
         all_b.extend(builds)
     # um run aparece uma vez mesmo que duas contas enxerguem o mesmo repositório
     seen, unique = set(), []

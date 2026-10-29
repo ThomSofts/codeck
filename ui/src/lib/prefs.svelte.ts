@@ -49,6 +49,11 @@ export const PREF_DEFAULTS = {
   /** avisos do agente */
   "notify.agentDone": true,
   "notify.agentNeedsYou": true,
+  /** avisos por tipo: aviso do sistema e som (Configurações → Notificações; lib/alerts) */
+  "alerts": {} as Record<string, { os?: boolean; sound?: string }>,
+  /** volume dos sons dos avisos (0 a 1) e mudo geral */
+  "alerts.volume": 0.6,
+  "alerts.mute": false,
   /** hub de projetos: ordem e agrupamento lembrados */
   "hub.sort": "recent" as string,
   "hub.group": "none" as string,

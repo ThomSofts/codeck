@@ -216,6 +216,12 @@ def hub():
         stats.setdefault(rid, {"focusS": 0, "focus30": 0, "sessions30": 0, "cost30": 0.0, "lastAgent": None})["lastOpened"] = ts
     for rid, n in d["opens"].items():
         stats.setdefault(rid, {"focusS": 0, "focus30": 0, "sessions30": 0, "cost30": 0.0, "lastAgent": None})["opens"] = n
+    # tarefas em aberto (worktrees) de cada projeto, mesmo fechado: o "Em andamento" do hub mostra o que ficou pela metade
+    for rid, p in d["projects"].items():
+        ts = [t for t in p.get("tasks") or [] if os.path.isdir(t.get("path") or "")]
+        if ts:
+            st = stats.setdefault(rid, {"focusS": 0, "focus30": 0, "sessions30": 0, "cost30": 0.0, "lastAgent": None})
+            st["tasks"] = [{"title": t["title"], "branch": t["branch"], "createdAt": t.get("createdAt")} for t in ts[-5:]]
     return {"stats": stats, "groups": d["groups"], "open": d["open"]}
 
 
@@ -485,6 +491,20 @@ def _make_worktree(repo, settings, slug, branch, base):
     return path, copied, git.add_repo(path)
 
 
+def close_task(repo_id, task_id):
+    """Fechar a tarefa sem remover nada: encerra todos os agentes e terminais dela (processos e filhos; a sessão do
+    agente é limpa) ao mesmo tempo. O worktree e a branch ficam — dá para abrir um agente de novo nela."""
+    import threading
+    _task(_load(), repo_id, task_id)
+    ids = [x["id"] for x in terminals.list_all(task=task_id)]
+    ths = [threading.Thread(target=close_terminal, args=(i,), daemon=True) for i in ids]
+    for th in ths:
+        th.start()
+    for th in ths:
+        th.join(6)
+    return len(ids)
+
+
 def _close_terms_and_wait(task_id, timeout=6):
     """Encerra os terminais/agentes da tarefa e ESPERA os processos saírem: no Windows, um processo que ainda tem a
     pasta como diretório atual trava a remoção do worktree (medido no autoteste do desktop no GitHub Actions)."""
@@ -719,7 +739,33 @@ def start_agent(repo_id, task_id, account_id, prompt=None, mode=None, title=None
                     prompt=(prompt or "")[:20000] or None, **({"continuedFrom": meta_extra["continuedFrom"]} if (meta_extra or {}).get("continuedFrom") else {}))
     agents.remember(sid, account=account_id, provider=a["provider"], project=repo_id, task=task_id, title=label,
                     cliSession=resume, started=now_iso())
+    if prompt and a["provider"] == "claude":
+        _ensure_prompt(t, sid, prompt)
     return t.info()
+
+
+def _ensure_prompt(t, sid, prompt, wait=90, idle_for=6):
+    """Rede de segurança do pedido inicial: o Claude abriu (SessionStart) e ficou parado sem receber o pedido
+    (UserPromptSubmit nunca veio) — antes o terminal novo ficava "aberto, parado e limpo". Aqui o próprio terminal novo
+    recebe o pedido colado, como se você tivesse colado e dado Enter. Só o Claude avisa os dois momentos pelos hooks."""
+    import threading
+    import time
+
+    def watch():
+        end = time.time() + wait
+        while time.time() < end and t.alive:
+            time.sleep(1)
+            s = agents.session_info(sid) or {}
+            st = s.get("status")
+            if st not in ("starting", "idle"):
+                return   # já recebeu o pedido (ou você escreveu outro)
+            if st == "idle" and time.time() - (s.get("statusAt") or time.time()) >= idle_for:
+                try:
+                    send_input(t.id, prompt)
+                except Exception:  # noqa: BLE001 — o terminal fechou nesse meio tempo
+                    pass
+                return
+    threading.Thread(target=watch, daemon=True, name=f"prompt-{sid}").start()
 
 
 def handoff(term_id, account_id, mode="auto"):

@@ -73,18 +73,26 @@ def shell_argv(command=None, shell=None, win=None):
 
 
 # ---------------------------------------------------------------- PTY por plataforma
-def _descendants(pid):
-    """Todos os descendentes de um processo (POSIX), pela tabela do `ps` — filhos, netos…"""
+def _ps_table():
+    """[(pid, ppid, pgid)] de todos os processos (POSIX), pelo `ps`."""
     import subprocess
     try:
-        out = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True, timeout=3).stdout
+        out = subprocess.run(["ps", "-axo", "pid=,ppid=,pgid="], capture_output=True, text=True, timeout=3).stdout
     except (OSError, subprocess.SubprocessError):
         return []
-    kids = {}
+    rows = []
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+        if len(parts) == 3 and all(x.isdigit() for x in parts):
+            rows.append(tuple(int(x) for x in parts))
+    return rows
+
+
+def _descendants(pid, table=None):
+    """Todos os descendentes de um processo (POSIX), pela tabela do `ps` — filhos, netos…"""
+    kids = {}
+    for p, pp, _g in table if table is not None else _ps_table():
+        kids.setdefault(pp, []).append(p)
     found, todo = [], [pid]
     while todo:
         for c in kids.get(todo.pop(), []):
@@ -94,12 +102,127 @@ def _descendants(pid):
     return found
 
 
+def _tree(pid):
+    """(processos da árvore, grupos de processo deles). Os grupos pegam também quem nascer depois dentro deles e quem
+    se soltou do pai (servidor MCP, `node` destacado, o shell de uma ferramenta do agente) — nunca o grupo do app."""
+    table = _ps_table()
+    pids = _descendants(pid, table)
+    mine = {pid, *pids}
+    own = os.getpgrp()
+    groups = {g for p, _pp, g in table if p in mine and g not in (own, 0, 1)}
+    groups |= {pid} if pid != own else set()
+    return pids, groups
+
+
 def _running(pid):
     try:
         os.kill(pid, 0)
         return True
     except (OSError, ProcessLookupError):
         return False
+
+
+def _kill_tree(pid, grace=0.5):
+    """SIGHUP para a árvore inteira (grupos + processos), espera `grace` s e SIGKILL em quem sobrou — inclusive o que
+    nasceu nesse meio tempo. Depois uma última conferência em segundo plano: no fechar de um agente às vezes um filho
+    escapava (nascia entre a leitura da árvore e o sinal) e o processo do terminal parecia não morrer."""
+    import signal
+    pids, groups = _tree(pid)
+
+    def hit(sig, pids, groups):
+        for g in groups:
+            try:
+                os.killpg(g, sig)
+            except (OSError, ProcessLookupError):
+                pass
+        for p in pids:
+            try:
+                os.kill(p, sig)
+            except (OSError, ProcessLookupError):
+                pass
+
+    hit(signal.SIGHUP, pids, groups)
+    end = time.time() + grace
+    while time.time() < end and any(_running(p) for p in [pid, *pids]):
+        time.sleep(0.05)
+    more, more_g = _tree(pid)
+    pids, groups = list({*pids, *more}), groups | more_g
+    hit(signal.SIGKILL, pids, groups)
+
+    def recheck():
+        time.sleep(1.5)
+        left = [p for p in pids if _running(p)]
+        if left:
+            hit(signal.SIGKILL, left + [d for p in left for d in _descendants(p)], set())
+    threading.Thread(target=recheck, daemon=True, name=f"kill-{pid}").start()
+
+
+def _sweep_marked(term_id):
+    """Quem ainda carrega a marca do terminal (CODECK_TERM=<id> no ambiente) e escapou da árvore — um processo que se
+    desligou de propósito (dupla bifurcação + setsid, como um servidor destacado) não tem mais o terminal como avô."""
+    import re
+    import signal
+    import subprocess
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(["ps", "-axEww", "-o", "pid=,command="], capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return
+        mark = re.compile(r"(?:^|\s)CODECK_TERM=" + re.escape(term_id) + r"(?:\s|$)")
+        pids = [int(line.split(None, 1)[0]) for line in out.splitlines() if line.strip() and mark.search(line)]
+    else:   # Linux: o ambiente de cada processo em /proc
+        needle, pids = f"CODECK_TERM={term_id}".encode(), []
+        for d in os.listdir("/proc") if os.path.isdir("/proc") else []:
+            if d.isdigit():
+                try:
+                    with open(f"/proc/{d}/environ", "rb") as f:
+                        if needle in f.read().split(b"\0"):
+                            pids.append(int(d))
+                except OSError:
+                    pass
+    for pid in pids:
+        if pid != os.getpid():
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+
+
+def _win_descendants(pid):
+    """Todos os descendentes de um processo no Windows (instantâneo da Toolhelp32), antes de matar: depois que o pai
+    morre os netos ficam órfãos e o taskkill /T não os acha mais."""
+    import ctypes
+    from ctypes import wintypes as w
+
+    class PE32(ctypes.Structure):
+        _fields_ = [("dwSize", w.DWORD), ("cntUsage", w.DWORD), ("th32ProcessID", w.DWORD), ("th32DefaultHeapID", ctypes.c_void_p),
+                    ("th32ModuleID", w.DWORD), ("cntThreads", w.DWORD), ("th32ParentProcessID", w.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", w.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateToolhelp32Snapshot.argtypes, k32.CreateToolhelp32Snapshot.restype = [w.DWORD, w.DWORD], w.HANDLE
+    for fn in (k32.Process32FirstW, k32.Process32NextW):
+        fn.argtypes, fn.restype = [w.HANDLE, ctypes.POINTER(PE32)], w.BOOL
+    k32.CloseHandle.argtypes, k32.CloseHandle.restype = [w.HANDLE], w.BOOL
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)   # TH32CS_SNAPPROCESS
+    if not snap or snap == w.HANDLE(-1).value:
+        return []
+    kids = {}
+    try:
+        e = PE32()
+        e.dwSize = ctypes.sizeof(PE32)
+        ok = k32.Process32FirstW(snap, ctypes.byref(e))
+        while ok:
+            kids.setdefault(e.th32ParentProcessID, []).append(e.th32ProcessID)
+            ok = k32.Process32NextW(snap, ctypes.byref(e))
+    finally:
+        k32.CloseHandle(snap)
+    found, todo = [], [pid]
+    while todo:
+        for c in kids.get(todo.pop(), []):
+            if c not in found and c != pid:
+                found.append(c)
+                todo.append(c)
+    return found
 
 
 class _PosixPty:
@@ -151,24 +274,13 @@ class _PosixPty:
         return self.proc.poll()
 
     def kill(self):
-        import signal
         # os filhos que saíram do grupo (servidores MCP, `node` destacado, o shell de uma ferramenta do agente) não
         # recebem o sinal do grupo e ficavam vivos depois de fechar o terminal: vão pela árvore de processos
-        kids = _descendants(self.proc.pid)
-        for sig in (signal.SIGHUP, signal.SIGKILL):
-            try:
-                os.killpg(self.proc.pid, sig)
-            except (OSError, ProcessLookupError):
-                pass
-            for pid in kids:
-                try:
-                    os.kill(pid, sig)
-                except (OSError, ProcessLookupError):
-                    pass
-            if sig == signal.SIGHUP:
-                end = time.time() + 0.5
-                while time.time() < end and (self.proc.poll() is None or any(_running(p) for p in kids)):
-                    time.sleep(0.05)
+        _kill_tree(self.proc.pid)
+        try:
+            self.proc.wait(timeout=1)   # recolhe o processo (sem zumbi)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             os.close(self.master)
         except OSError:
@@ -220,6 +332,7 @@ class _WinPty:
             ("WaitForSingleObject", [HANDLE, w.DWORD], w.DWORD),
             ("GetExitCodeProcess", [HANDLE, ctypes.POINTER(w.DWORD)], w.BOOL),
             ("TerminateProcess", [HANDLE, ctypes.c_uint], w.BOOL),
+            ("OpenProcess", [w.DWORD, w.BOOL, w.DWORD], HANDLE),
         ):
             fn = getattr(k32, name)
             fn.argtypes, fn.restype = args, res
@@ -319,10 +432,19 @@ class _WinPty:
         # trabalhando. O taskkill /T leva a árvore inteira.
         import subprocess
         try:
+            kids = _win_descendants(self.pid)   # antes: com o pai morto, os netos órfãos escapavam do /T
+        except Exception:  # noqa: BLE001
+            kids = []
+        try:
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.pid)], capture_output=True, timeout=5,
                            creationflags=0x08000000)   # CREATE_NO_WINDOW
         except (OSError, subprocess.SubprocessError):
             pass
+        for pid in kids:
+            h = self.k32.OpenProcess(0x0001, False, pid)   # PROCESS_TERMINATE
+            if h:
+                self.k32.TerminateProcess(h, 1)
+                self.k32.CloseHandle(h)
         self.k32.TerminateProcess(self.hproc, 1)
         self._close_pc()
         self.k32.CloseHandle(self.in_write)
@@ -344,7 +466,9 @@ class Terminal:
         self.lock = threading.Lock()
         self.exit = None
         self.cols, self.rows = cols, rows
-        self.pty = (_WinPty if IS_WIN else _PosixPty)(argv, cwd, clean_env(env), cols, rows)
+        env = clean_env(env)
+        env["CODECK_TERM"] = self.id   # a marca: ao fechar, quem se soltou da árvore também é achado (_sweep_marked)
+        self.pty = (_WinPty if IS_WIN else _PosixPty)(argv, cwd, env, cols, rows)
         threading.Thread(target=self._pump, daemon=True, name=f"pty-{self.id}").start()
 
     def _pump(self):
@@ -405,6 +529,8 @@ class Terminal:
 
     def kill(self):
         self.pty.kill()
+        if not IS_WIN:
+            threading.Thread(target=_sweep_marked, args=(self.id,), daemon=True).start()
 
     @property
     def alive(self):

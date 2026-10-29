@@ -48,7 +48,7 @@ export const resetLabel = (iso: string | null | undefined, now: number) => {
 export const stale = (iso: string | null | undefined, now: number) => !!iso && now - new Date(iso).getTime() > 6 * 36e5;
 
 export const ACC_STATE: Record<string, [string, string]> = {
-  "needs-you": ["precisa de você", "warn"], working: ["trabalhando", "accent"], done: ["terminou", "good"], idle: ["sessão aberta", "muted"], free: ["livre", "neutral"],
+  "needs-you": ["esperando você", "warn"], working: ["trabalhando", "accent"], done: ["em espera", "muted"], idle: ["sessão aberta", "muted"], free: ["livre", "neutral"],
 };
 export const stateRank = (s?: string) => ({ "needs-you": 0, working: 1, done: 2, idle: 3 } as Record<string, number>)[s || ""] ?? 4;
 export const home = (p: string) => p.replace(/^\/Users\/[^/]+|^C:\\Users\\[^\\]+/i, "~");

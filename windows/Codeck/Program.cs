@@ -332,6 +332,8 @@ sealed class MainForm : Form
         if (list?.TryGetProperty("items", out var items) == true)
             foreach (var n in items.EnumerateArray())
             {
+                // o tipo do aviso pode estar só com som (a tela toca) — sem balão do sistema
+                if (n.TryGetProperty("os", out var osOn) && osOn.ValueKind == JsonValueKind.False) continue;
                 lastTarget = n.TryGetProperty("target", out var tg) ? tg.GetString() : null;
                 var title = n.GetProperty("title").GetString() ?? "Codeck";
                 var body = $"{n.GetProperty("subtitle").GetString()}\n{n.GetProperty("message").GetString()}".Trim();

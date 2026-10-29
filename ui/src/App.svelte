@@ -10,6 +10,7 @@
   import AccountEditor from "./components/repo/AccountEditor.svelte";
   import RepoHub from "./components/repo/RepoHub.svelte";
   import { cascade } from "./lib/cascade.svelte";
+  import { watchAlerts } from "./lib/alerts.svelte";
   import { applyDensity } from "./lib/density";
   import { prefs } from "./lib/prefs.svelte";
   import { kb, syncKeybindings } from "./lib/keybindings.svelte";
@@ -86,10 +87,11 @@
 
   onMount(() => {
     const stopWork = work.watch();   // projetos abertos e agentes: a barra lateral mostra o estado em qualquer tela
+    const stopAlerts = watchAlerts();   // os sons dos avisos (PR nova, IA perguntando, release esperando…)
     store.start();
     repos.load();
     const t = setInterval(() => { if (!store.hold) repos.load(); }, 30000);
-    return () => { clearInterval(t); stopWork(); };
+    return () => { clearInterval(t); stopWork(); stopAlerts(); };
   });
   // #/repo/<id> (links antigos, barra lateral, ⌘K): repositório é projeto — abre o projeto na aba Git
   $effect(() => { if (router.view === "repo" && router.param) { const id = router.param; untrack(() => work.openRepo(id)); } });

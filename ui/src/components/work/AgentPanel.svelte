@@ -150,18 +150,7 @@
     try { await post("pr/comment", { key: (task as any).reviewOf.key, text: final }); prog.done("Revisão publicada na PR"); } catch (e) { prog.fail(e); }
   }
   async function removeTask() {
-    if (!task) return;
-    // estado ATUAL do worktree (o resumo da tela pode ainda não ter chegado — antes, o aviso dizia "sem alterações"
-    // e a remoção normal era recusada pelo Git)
-    const fresh = await get<any>("ws/task/diff", { repoId: project.id, taskId: task.id }).catch(() => diff);
-    const dirtyN = fresh ? fresh.status.staged.length + fresh.status.unstaged.length + fresh.status.untracked.length : 0;
-    const ok = await ui.ask({ title: `Remover a tarefa "${task.title}"?`, danger: true, confirm: "Remover worktree",
-      message: dirtyN ? `⚠ O worktree tem ${dirtyN} alteração(ões) não commitada(s) — serão PERDIDAS.` : "O worktree sai do disco. A branch fica (já está no servidor se você fez push).",
-      detail: [`branch ${task.branch}`, task.path] });
-    if (!ok) return;
-    const prog = ui.progress("Removendo o worktree…");
-    try { await post("ws/task/remove", { repoId: project.id, taskId: task.id, force: dirtyN > 0 }); prog.done("Tarefa removida"); await work.load(); onremoved?.(); }
-    catch (e) { prog.fail(e); }
+    if (task && (await work.removeTask(project, task))) onremoved?.();
   }
 
   // ------------------------------------------------------------ limites
@@ -290,8 +279,8 @@
       </ul>
       {#if cur}
         <div class="detail">
-          {#if s}<span class="pill st {STATUS[s.status]?.[1]}"><i class:pulse={s.status === "working" || s.status === "needs-you"}></i>{STATUS[s.status]?.[0] || s.status}</span>{/if}
-          {#if s?.status === "needs-you"}<p class="hint">Responda no terminal do agente.</p>{/if}
+          {#if s}<span class="pill st {STATUS[s.status]?.[1]}"><i class:pulse={s.status === "working" || s.status === "needs-you"}></i>{s.status === "needs-you" && s.ask?.kind === "permission" ? "pede permissão" : STATUS[s.status]?.[0] || s.status}</span>{/if}
+          {#if s?.status === "needs-you"}<p class="hint ask">{#if s.ask?.text}<b>{s.ask.text}</b><br />{/if}Responda no terminal do agente.</p>{/if}
           {#if s?.limit && !s.handedOff}<p class="hint bad">A conta atingiu o limite{s.limit.resetsAt ? ` — reseta em ${countdown(s.limit.resetsAt, now)}` : ""}. Escolha outra conta no terminal para continuar.</p>{/if}
           {#if s?.handedOff}<p class="hint">Continuado em <b>{work.account(s.handedOff.account)?.name || "outra conta"}</b>.</p>{/if}
           {#if s?.continuedFrom}<p class="tiny muted">Continuação de {work.account(s.continuedFrom.account)?.name || "outra conta"} · {s.continuedFrom.mode === "resume" ? "conversa inteira" : "resumo enxuto"}</p>{/if}
@@ -461,7 +450,8 @@
   .pill.st i { width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
   .pill.st.accent { --c: var(--accent); } .pill.st.good { --c: var(--good); } .pill.st.warn { --c: var(--warn); } .pill.st.info { --c: var(--info); }
   .hint { margin: 0; padding: 6px 8px; border-radius: var(--r-xs); background: var(--info-soft); color: var(--text-2); font-size: 12px; }
-  .hint.warn { background: var(--warn-soft); }
+  .hint.warn, .hint.ask { background: var(--warn-soft); }
+  .hint.ask b { color: var(--text); font-weight: 600; }
   .hint.bad { background: var(--bad-soft); }
   .pill.st.bad { --c: var(--bad); } .dot.bad { --c: var(--bad); } .st.bad { color: var(--bad); }
   .handoff { justify-self: start; }

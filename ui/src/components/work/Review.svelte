@@ -172,7 +172,7 @@
   .st { font: 700 10px/1 var(--mono); width: 16px; height: 16px; display: grid; place-items: center; border-radius: 4px; flex: none; }
   .st.good { background: var(--good-soft); color: var(--good); } .st.bad { background: var(--bad-soft); color: var(--bad); } .st.warn { background: var(--warn-soft); color: var(--warn); }
   .add { color: var(--good); } .del { color: var(--bad); }
-  .cm { font: 650 10px/1 var(--font); padding: 3px 5px; border-radius: 99px; background: var(--accent); color: var(--accent-ink); }
+  .cm { font: 650 10px/1 var(--font); padding: 3px 5px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); }
   .none { padding: 12px; font-size: 12px; color: var(--muted); }
   .cl { border-top: 1px solid var(--line); padding: 0 8px 10px; display: grid; gap: 6px; max-height: 45%; overflow: auto; }
   .c { display: grid; grid-template-columns: 1fr auto; gap: 2px 6px; padding: 6px 8px; border-radius: 8px; background: var(--surface-2); }

@@ -35,5 +35,5 @@ export function agentsByProject(): Map<string, AgentsOf> {
 }
 export const noAgents = NONE;
 
-/** "precisa de você" > "trabalhando" > "terminou" > nada */
-export const tone = (a: AgentsOf) => (a.need ? "warn" : a.working ? "accent" : a.done ? "good" : a.n ? "muted" : "off");
+/** "perguntando" > "trabalhando" > aberto (em espera ou parado) > nada. Em espera não chama atenção. */
+export const tone = (a: AgentsOf) => (a.need ? "warn" : a.working ? "accent" : a.n ? "muted" : "off");

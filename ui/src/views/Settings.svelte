@@ -11,6 +11,8 @@
   import { dateTime } from "../lib/format";
   import { isMac, kbd } from "../lib/keys";
   import Keybindings from "../components/settings/Keybindings.svelte";
+  import Alerts from "../components/settings/Alerts.svelte";
+  import { ALERT_DEFS } from "../lib/alerts.svelte";
   import People from "../components/settings/People.svelte";
   import { PREF_DEFAULTS, prefs, type PrefKey } from "../lib/prefs.svelte";
   import { go, router } from "../lib/router.svelte";
@@ -49,7 +51,7 @@
       { id: "agents", label: "IA e agentes", icon: Sparkles, title: "IA e agentes", desc: "Limites das contas e o que a IA faz quando você pede uma tarefa." },
     ] },
     { label: "Sistema", items: [
-      { id: "notifications", label: "Notificações", icon: Bell, title: "Notificações", desc: `Avisos na Central de Notificações do ${OS}. Clicar no aviso abre o item.` },
+      { id: "notifications", label: "Notificações e sons", icon: Bell, title: "Notificações e sons", desc: `Escolha, para cada tipo de aviso, se ele aparece na Central de Notificações do ${OS} e qual som toca.` },
       { id: "network", label: "Leitura e automação", icon: Wifi, title: "Leitura e automação", desc: "Com que frequência o app consulta Azure e GitHub e se as regras agem sozinhas." },
       { id: "shortcuts", label: "Atalhos", icon: Keyboard, title: "Atalhos de teclado", desc: `Mostrados no formato do ${OS} — ${isMac() ? "⌘ ⇧ ⌥" : "Ctrl, Shift, Alt"}. No ${isMac() ? "Windows" : "macOS"} o app mostra ${isMac() ? "Ctrl" : "⌘"} automaticamente.` },
       { id: "data", label: "Dados e privacidade", icon: Database, title: "Dados e privacidade", desc: "Onde o app guarda tudo e como protege suas credenciais." },
@@ -127,14 +129,10 @@
       kw: "planejar implementar plano modo" },
     { sec: "agents", id: "aiAccounts", kind: "link", label: "Contas de IA", desc: "Claude Code, Codex, Cursor… e a conta padrão de cada organização.", key: "ai", kw: "claude codex cursor gemini conta" },
     // notificações
-    { sec: "notifications", id: "nPending", kind: "rule-switch", key: "notifyPending", label: "PR esperando o seu voto", desc: "Quando chega uma PR nova para você revisar.", kw: "pull request revisão" },
-    { sec: "notifications", id: "nMine", kind: "rule-switch", key: "notifyMyPrs", label: "Problema nas minhas PRs", desc: "Conflito, build vermelho, voto de recusa ou espera nas PRs que você abriu.", kw: "pull request conflito" },
-    { sec: "notifications", id: "nBuild", kind: "rule-switch", key: "notifyBuildFailures", label: "Build falhou", desc: "Em branch protegida ou disparado por você.", kw: "actions pipeline" },
-    { sec: "notifications", id: "nDeploy", kind: "rule-switch", key: "notifyDeploys", label: "Deploy esperando você", desc: "Release, environment ou permissão de pipeline aguardando aprovação.", kw: "release aprovação" },
-    { sec: "notifications", id: "nCascade", kind: "rule-switch", key: "notifyCascade", label: "PR acompanhada até o deploy", desc: "A cada passo — integrada, build passou ou falhou, deploy aguardando aprovação, concluído ou falhou.", kw: "cascata merge build deploy" },
-    { sec: "notifications", id: "nAuto", kind: "rule-switch", key: "notifyAuto", label: "O piloto agiu sozinho", desc: "Quando uma regra aprova uma PR ou libera um deploy.", kw: "automação regra" },
-    { sec: "notifications", id: "nDone", kind: "pref-switch", key: "notify.agentDone", label: "Agente terminou", desc: "A tarefa ficou pronta para revisar.", kw: "ia claude" },
-    { sec: "notifications", id: "nNeeds", kind: "pref-switch", key: "notify.agentNeedsYou", label: "Agente precisa de você", desc: "Pediu permissão ou fez uma pergunta.", kw: "ia claude permissão" },
+    // notificações: a tela própria (components/settings/Alerts) — estas linhas só servem para a busca achar
+    ...ALERT_DEFS.map(d => ({ sec: "notifications" as SecId, id: "a-" + d.kind, kind: "link" as const, key: "notifications", label: d.label, desc: d.desc,
+      kw: "notificação som aviso alerta volume " + d.kind })),
+    { sec: "notifications", id: "aSounds", kind: "link", key: "notifications", label: "Sons dos avisos", desc: "Volume, mudo e o som de cada tipo de aviso.", kw: "som volume mudo silenciar áudio" },
     // leitura e automação
     { sec: "network", id: "live", kind: "live", label: "Tempo real (local)", desc: "Vigia os repositórios ativos (projetos abertos, suas PRs, revisões pedidas e PRs acompanhadas até o deploy) a cada poucos segundos e relê só o que mudou. Roda inteiro nesta máquina, com o seu PAT/login do GitHub: nada vai para outro servidor além do próprio GitHub e Azure DevOps. No GitHub usa ETag — “nada mudou” não gasta a cota. Espaça com a janela escondida ou na economia de bateria e para com a tela bloqueada.", kw: "tempo real live realtime vigiar etag local webhook rápido" },
     { sec: "network", id: "poll", kind: "poll", label: "Intervalo de leitura", desc: "De quanto em quanto tempo o piloto consulta Azure e GitHub — cada tipo no seu ritmo (as regras automáticas rodam junto com PRs e deploys). Sem internet, tenta a cada 10 s; com o limite de chamadas no fim, espera a conta liberar.", kw: "polling atualizar intervalo prs builds deploys issues tarefas tempo real" },
@@ -523,6 +521,10 @@
 
       {:else if tab === "ai"}
         <AiAccounts />
+
+      {:else if tab === "notifications"}
+        <div class="head"><div><h2>{sec.title}</h2><p class="muted small">{sec.desc}</p></div></div>
+        <Alerts />
 
       {:else if tab === "shortcuts"}
         <div class="head"><div><h2>{sec.title}</h2><p class="muted small">{sec.desc}</p></div></div>

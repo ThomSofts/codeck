@@ -1,9 +1,9 @@
 <script lang="ts">
-  // Hub de projetos: no topo, os ABERTOS (cartões com o estado dos agentes), os fixados e os recentes; abaixo, todos os
-  // clones desta máquina numa lista densa (feita para centenas de repositórios), com busca, filtros, ordem e seções
-  // recolhíveis (grupo, conta ou pasta). Teclado: digitar busca · ↑/↓ escolhe · Enter abre · ⌘/Ctrl+Enter abre sem sair
-  // daqui · Esc limpa.
-  import { ArrowDown, ArrowUp, Check, ChevronDown, Code2, FolderGit2, FolderOpen, FolderPlus, Layers, LayoutGrid, List, Pencil, Pin, PinOff, Play, Search, Settings2, Sparkles, Terminal, Trash2, X } from "@lucide/svelte";
+  // Hub de projetos: no topo, EM ANDAMENTO (o que pede você, o que está rodando e o que ficou pela metade — agentes,
+  // alterações, commits para enviar, tarefas abertas), depois os grupos como blocos (filtram a lista) e, abaixo, todos
+  // os clones desta máquina numa lista limpa (feita para centenas de repositórios), com busca, filtros e exibição num
+  // menu só. Teclado: digitar busca · ↑/↓ escolhe · Enter abre · ⌘/Ctrl+Enter abre sem sair daqui · Esc limpa.
+  import { ArrowDown, ArrowUp, Check, ChevronDown, Code2, FolderGit2, FolderOpen, FolderPlus, Layers, LayoutGrid, List, ListFilter, Pencil, Pin, PinOff, Play, Search, Settings2, SlidersHorizontal, Sparkles, Terminal, Trash2, WandSparkles, X } from "@lucide/svelte";
   import { tick, untrack } from "svelte";
   import { get, post } from "../lib/api";
   import { ago } from "../lib/format";
@@ -16,16 +16,18 @@
   import { ui } from "../lib/ui.svelte";
   import { work, type Group } from "../lib/work.svelte";
   import Empty from "../components/Empty.svelte";
-  import Menu from "../components/Menu.svelte";
+  import Menu, { type MenuItem } from "../components/Menu.svelte";
   import Page from "../components/Page.svelte";
   import ProviderIcon from "../components/ProviderIcon.svelte";
   import Segmented from "../components/Segmented.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import AgentIcon from "../components/work/AgentIcon.svelte";
-  import OpenNow from "../components/hub/OpenNow.svelte";
+  import GroupTiles from "../components/hub/GroupTiles.svelte";
+  import Ongoing, { type Ongoing as OngoingItem } from "../components/hub/Ongoing.svelte";
   import { agentsByProject, noAgents, tone } from "../components/hub/open";
 
-  type Stat = { focusS: number; focus30: number; sessions30: number; cost30: number; lastAgent: string | null; lastOpened?: string; opens?: number };
+  type Stat = { focusS: number; focus30: number; sessions30: number; cost30: number; lastAgent: string | null; lastOpened?: string; opens?: number;
+    tasks?: { title: string; branch: string; createdAt?: string }[] };
   const NOSTAT: Stat = { focusS: 0, focus30: 0, sessions30: 0, cost30: 0, lastAgent: null };
   let stats = $state<Record<string, Stat>>({});
   let q = $state("");
@@ -62,13 +64,47 @@
       hay: `${r.name} ${home(r.path)} ${r.slug || ""} ${g?.name || ""} ${r.status?.branch || ""}`.toLowerCase() };
   }));
 
+  // ------------------------------------------------------------ em andamento
+  // por projeto: a pergunta do agente (se houver), para o cartão dizer o que ele quer
+  const asks = $derived.by(() => {
+    const m = new Map<string, string>();
+    for (const a of work.agents) if (a.session?.status === "needs-you" && a.session.ask?.text && !m.has(a.project.id)) m.set(a.project.id, a.session.ask.text);
+    return m;
+  });
+  const ongoing = $derived.by<OngoingItem[]>(() => {
+    const out: OngoingItem[] = [];
+    for (const x of rows) {
+      const a = ags.get(x.r.id) || noAgents, s = st(x.r.id), rs = x.r.status;
+      const open = openIds.has(x.r.id), changes = rs?.changes || 0, ahead = rs?.ahead || 0, tasks = s.tasks || [];
+      if (!open && !a.n && !changes && !ahead && !tasks.length) continue;
+      const standby = a.n - a.need - a.working;
+      // o que pede você > o que está rodando > aberto > alterações/commits/tarefas; empate: o mais recente
+      const score = a.need * 1e4 + a.working * 3e3 + (open ? 800 : 0) + (standby > 0 ? 300 : 0) + (changes ? 200 : 0) + (ahead ? 150 : 0) + (tasks.length ? 100 : 0);
+      out.push({ r: x.r, g: x.g, open, last: x.last, score, need: a.need, working: a.working, standby: Math.max(0, standby), agents: a.list,
+        changes, ahead, behind: rs?.behind || 0, tasks, ask: asks.get(x.r.id) || null });
+    }
+    return out.sort((a, b) => b.score - a.score || b.last - a.last);
+  });
+  const ongoingIds = $derived(new Set(ongoing.map(x => x.r.id)));
+  const groupStats = $derived.by(() => {
+    const m = new Map<string, { ongoing: number; open: number; need: number; working: number }>();
+    for (const x of ongoing) {
+      if (!x.g) continue;
+      const e = m.get(x.g.id) || { ongoing: 0, open: 0, need: 0, working: 0 };
+      e.ongoing++; if (x.open) e.open++; e.need += x.need; e.working += x.working;
+      m.set(x.g.id, e);
+    }
+    return m;
+  });
+  const ungrouped = $derived(rows.filter(x => !x.g).length);
+
   const terms = $derived(q.trim().toLowerCase().split(/\s+/).filter(Boolean));
   const list = $derived.by(() => {
     const t = terms, unused = Date.now() - 30 * 864e5;
     const out = rows.filter(x => (!t.length || t.every(p => x.hay.includes(p)))
       && (provider === "any" || (provider === "local" ? !x.r.provider : x.r.provider === provider))
       && (groupFilter === "any" || (groupFilter === "none" ? !x.g : x.g?.id === groupFilter))
-      && (filter === "all" || (filter === "open" ? openIds.has(x.r.id) : filter === "pinned" ? pinnedSet.has(x.r.id) : filter === "dirty" ? (x.r.status?.changes || 0) > 0
+      && (filter === "all" || (filter === "ongoing" ? ongoingIds.has(x.r.id) : filter === "open" ? openIds.has(x.r.id) : filter === "pinned" ? pinnedSet.has(x.r.id) : filter === "dirty" ? (x.r.status?.changes || 0) > 0
         : filter === "agents" ? (ags.get(x.r.id)?.n || 0) > 0 : filter === "unused" ? x.last < unused : true)));
     const by: Record<string, (a: Row, b: Row) => number> = {
       recent: (a, b) => b.last - a.last || a.name.localeCompare(b.name),
@@ -82,7 +118,8 @@
     const cmp = by[sort] || by.recent;
     // com busca: quem COMEÇA com o termo vem primeiro, depois quem tem o termo no nome, depois o resto (pasta, grupo…)
     const rank = (x: Row) => (!t.length ? 0 : x.name.startsWith(t[0]) ? 0 : t.every(p => x.name.includes(p)) ? 1 : 2);
-    return out.sort((a, b) => rank(a) - rank(b) || cmp(a, b));
+    const pin = (x: Row) => (t.length || !pinnedSet.has(x.r.id) ? 1 : 0);   // fixados no topo (sem busca)
+    return out.sort((a, b) => rank(a) - rank(b) || pin(a) - pin(b) || cmp(a, b));
   });
 
   type Sec = { key: string; label: string; color: string | null; items: Row[]; group: Group | null; provider?: string | null };
@@ -118,9 +155,6 @@
     return { all: rows.length, open, dirty, agents, pin };
   });
 
-  // acesso rápido: fixados e os últimos acessados que não estão abertos
-  const pinnedRows = $derived(pinned.map(id => rows.find(x => x.r.id === id)).filter((x): x is Row => !!x));
-  const recent = $derived(rows.filter(x => x.last && !openIds.has(x.r.id) && !pinnedSet.has(x.r.id)).sort((a, b) => b.last - a.last).slice(0, 8));
 
   function dur(s: number) {
     if (!s) return "—";
@@ -150,6 +184,7 @@
       { label: openIds.has(r.id) ? "Ir para o projeto" : "Abrir projeto", icon: Play, onclick: () => open(r), kbd: "Enter" },
       ...(openIds.has(r.id) ? [] : [{ label: "Abrir sem sair do hub", icon: Layers, onclick: () => open(r, "stay"), kbd: kbd("mod+enter") }]),
       { label: "Pedir à IA…", icon: Sparkles, onclick: () => open(r, "ask") },
+      { label: "Skills e MCPs…", icon: WandSparkles, onclick: () => work.open(r.id).then(id => work.openRepo(id, "ai")).catch(ui.error) },
       { label: pinnedSet.has(r.id) ? "Desafixar do topo" : "Fixar no topo", icon: pinnedSet.has(r.id) ? PinOff : Pin, onclick: () => togglePin(r.id) },
       { label: "Gerenciar repositório…", icon: Settings2, onclick: () => (ui.repoHub = { localId: r.id }) },
       { separator: true },
@@ -168,7 +203,7 @@
     if (name) work.saveGroup({ id: g.id, name: String(name).trim() });
   }
   const PALETTE = ["#6F8CFF", "#3CCF91", "#F5B84F", "#FF6B7D", "#B07CFF", "#4FC3F7", "#FF8A50", "#9AA4B2"];
-  const groupMenu = (g: Group) => [
+  const groupMenu = (g: Group): MenuItem[] => [
     { label: `Abrir todos (${g.repoIds.length})`, icon: Play, onclick: () => work.openGroup(g.id) },
     { label: "Renomear…", icon: Pencil, onclick: () => renameGroup(g) },
     { label: "Trocar a cor", icon: Settings2, onclick: () => work.saveGroup({ id: g.id, color: PALETTE[(PALETTE.indexOf(g.color) + 1) % PALETTE.length] }) },
@@ -176,6 +211,30 @@
     { label: "Apagar grupo (os projetos ficam)", icon: Trash2, danger: true, onclick: () => work.deleteGroup(g.id) },
   ];
   const sortBy = (k: string) => prefs.set("hub.sort", k);
+
+  // filtros e exibição num menu só (antes eram duas fileiras de controles)
+  const MORE: Record<string, string> = { agents: "Com agente", dirty: "Com alterações", unused: "Parados há 30 dias" };
+  const PROV: Record<string, string> = { github: "GitHub", azure: "Azure DevOps", local: "Sem remoto" };
+  const mark = (on: boolean, label: string) => (on ? "● " : "○ ") + label;
+  const filterMenu = $derived<MenuItem[]>([
+    { heading: "Mostrar" },
+    ...Object.entries(MORE).map(([k, l]) => ({ label: mark(filter === k, l), onclick: () => (filter = filter === k ? "all" : k) })),
+    { heading: "Origem" },
+    { label: mark(provider === "any", "Qualquer origem"), onclick: () => (provider = "any") },
+    ...Object.entries(PROV).map(([k, l]) => ({ label: mark(provider === k, l), onclick: () => (provider = k) })),
+  ]);
+  const SORTS: Record<string, string> = { recent: "Últimos acessados", most: "Mais usados (30 d)", least: "Menos usados (30 d)", ai: "Mais sessões de IA",
+    opens: "Mais vezes aberto", commit: "Último commit", name: "Nome" };
+  const GROUPBYS: Record<string, string> = { none: "Não agrupar", group: "Grupo", account: "Conta / organização", folder: "Pasta" };
+  const viewMenu = $derived<MenuItem[]>([
+    { heading: "Ordenar" }, ...Object.entries(SORTS).map(([k, l]) => ({ label: mark(sort === k, l), onclick: () => sortBy(k) })),
+    { heading: "Agrupar a lista" }, ...Object.entries(GROUPBYS).map(([k, l]) => ({ label: mark(groupBy === k, l), onclick: () => prefs.set("hub.group", k) })),
+    { heading: "Exibição" },
+    { label: mark(view === "list", "Lista"), icon: List, onclick: () => prefs.set("hub.view", "list") },
+    { label: mark(view === "grid", "Cartões"), icon: LayoutGrid, onclick: () => prefs.set("hub.view", "grid") },
+  ]);
+  const extra = $derived([...(MORE[filter] ? [{ k: "f", label: MORE[filter], clear: () => (filter = "all") }] : []),
+    ...(provider !== "any" ? [{ k: "p", label: PROV[provider], clear: () => (provider = "any") }] : [])]);
 
   // ------------------------------------------------------------ teclado
   $effect(() => { void q; void filter; void provider; void groupFilter; hi = null; });
@@ -224,14 +283,6 @@
   </button>
 {/snippet}
 
-{#snippet chip(x: Row)}
-  <button class="chip" onclick={() => open(x.r)} oncontextmenu={(e) => ui.contextMenu(e, repoMenu(x.r))} title={home(x.r.path)} style={x.g ? `--g:${x.g.color}` : ""}>
-    <ProviderIcon provider={x.r.provider || null} size={12} />
-    <span class="ell">{x.r.name}</span>
-    {#if openIds.has(x.r.id)}<span class="odot" title="aberto"></span>{:else if x.last}<span class="ago">{ago(new Date(x.last).toISOString())}</span>{/if}
-  </button>
-{/snippet}
-
 {#snippet state(r: LocalRepo)}
   {@const a = ags.get(r.id) || noAgents}
   {#if r.status?.changes}<span class="pill warn" title="alterações não commitadas">{r.status.changes}</span>{/if}
@@ -241,73 +292,35 @@
     {#each a.list.slice(0, 3) as ag (ag.id)}<AgentIcon provider={ag.provider} size={12} />{/each}{#if a.need}<b>!</b>{/if}</span>{/if}
 {/snippet}
 
-<Page title="Projetos" sub={`${all.length} repositórios clonados · ${counts.open} abertos${work.groups.length ? ` · ${work.groups.length} grupos` : ""}`}>
+<Page title="Projetos" sub={`${all.length} repositórios · ${ongoing.length} em andamento · ${counts.open} aberto${counts.open === 1 ? "" : "s"}`}>
   {#snippet actions()}
-    <button class="btn sm" onclick={() => work.newGroup([])}><FolderPlus size={14} /> Novo grupo</button>
     <button class="btn sm" onclick={() => go("/repos")}><FolderGit2 size={14} /> Repositórios</button>
   {/snippet}
 
   <div class="hub">
-    <OpenNow />
+    <Ongoing items={ongoing} onopen={(r, m) => open(r, m || "go")} menu={repoMenu} />
 
-    {#if pinnedRows.length || recent.length || work.groups.length}
-      <div class="quick">
-        {#if pinnedRows.length}
-          <div class="qrow"><span class="ql"><Pin size={12} /> Fixados</span><div class="chips">{#each pinnedRows as x (x.r.id)}{@render chip(x)}{/each}</div></div>
-        {/if}
-        {#if recent.length}
-          <div class="qrow"><span class="ql">Recentes</span><div class="chips">{#each recent as x (x.r.id)}{@render chip(x)}{/each}
-            {#if !pinnedRows.length}<span class="tiny muted qh">fixe os que você mais usa com <Pin size={10} /></span>{/if}</div></div>
-        {/if}
-        {#if work.groups.length}
-          <div class="qrow"><span class="ql"><Layers size={12} /> Grupos</span><div class="chips">
-            {#each work.groups as g (g.id)}
-              {@const openN = g.repoIds.filter(id => openIds.has(id)).length}
-              {@const busy = g.repoIds.some(id => ags.get(id)?.working)}
-              <span class="gchip" class:on={groupFilter === g.id} style="--g:{g.color}">
-                <button class="gmain" title="Filtrar por este grupo" onclick={() => (groupFilter = groupFilter === g.id ? "any" : g.id)}>
-                  <span class="gd"></span><b class="ell">{g.name}</b><span class="gn">{g.repoIds.length}</span>
-                  {#if openN}<span class="gopen" title="abertos">{openN} aberto{openN === 1 ? "" : "s"}</span>{/if}
-                  {#if busy}<span class="live"></span>{/if}
-                </button>
-                <Menu items={groupMenu(g)} />
-              </span>
-            {/each}
-          </div></div>
-        {/if}
-      </div>
-    {/if}
+    <GroupTiles bind:value={groupFilter} total={all.length} {ungrouped} stats={groupStats} menu={groupMenu} />
 
-    <!-- filtros: grudam no topo enquanto a lista rola -->
+    <!-- busca e filtros: uma fileira só, grudada no topo enquanto a lista rola -->
     <div class="filters">
       <div class="f1">
-        <label class="search"><Search size={14} />
+        <label class="search"><Search size={15} />
           <input bind:this={searchEl} bind:value={q} placeholder={`Buscar entre ${all.length} projetos — nome, pasta, grupo ou branch`} aria-label="Buscar projeto" />
           {#if q}<button class="clr" title="Limpar (Esc)" onclick={() => { q = ""; searchEl?.focus(); }}><X size={11} /></button>{:else}<span class="kbd">/</span>{/if}
         </label>
-        <Segmented size="sm" bind:value={filter} options={[{ value: "all", label: "Todos", count: counts.all }, { value: "open", label: "Abertos", count: counts.open },
-          ...(counts.pin ? [{ value: "pinned", label: "Fixados", count: counts.pin }] : []),
-          { value: "agents", label: "Com agente", count: counts.agents }, { value: "dirty", label: "Com alterações", count: counts.dirty }, { value: "unused", label: "Parados há 30 d" }]} />
+        <Segmented size="sm" value={MORE[filter] ? "all" : filter} onchange={(v: string) => (filter = v)} options={[{ value: "all", label: "Todos", count: counts.all },
+          { value: "ongoing", label: "Em andamento", count: ongoing.length }, { value: "open", label: "Abertos", count: counts.open },
+          ...(counts.pin ? [{ value: "pinned", label: "Fixados", count: counts.pin }] : [])]} />
+        <Menu items={filterMenu} align="right">{#snippet trigger()}<span class="btn sm" class:on={extra.length > 0}><ListFilter size={14} /> Filtros{#if extra.length} · {extra.length}{/if}</span>{/snippet}</Menu>
+        <Menu items={viewMenu} align="right">{#snippet trigger()}<span class="btn sm ghost icon" title="Ordem, agrupamento e exibição"><SlidersHorizontal size={14} /></span>{/snippet}</Menu>
       </div>
-      <div class="f2">
-        <select class="input sm" bind:value={provider} aria-label="Origem"><option value="any">Qualquer origem</option><option value="github">GitHub</option><option value="azure">Azure DevOps</option><option value="local">Sem remoto</option></select>
-        <select class="input sm" bind:value={groupFilter} aria-label="Grupo"><option value="any">Todos os grupos</option><option value="none">Sem grupo</option>{#each work.groups as g (g.id)}<option value={g.id}>{g.name}</option>{/each}</select>
-        <span class="tiny muted shown">{list.length === all.length ? "" : `${list.length} de ${all.length}`}</span>
-        <span class="grow"></span>
-        <label class="small muted"><span class="lbl">Ordenar</span>
-          <select class="input sm" value={sort} onchange={(e) => sortBy((e.target as HTMLSelectElement).value)}>
-            <option value="recent">Últimos acessados</option><option value="most">Mais usados (30 d)</option><option value="least">Menos usados (30 d)</option>
-            <option value="ai">Mais sessões de IA</option><option value="opens">Mais vezes aberto</option><option value="commit">Último commit</option><option value="name">Nome</option>
-          </select></label>
-        <label class="small muted"><span class="lbl">Agrupar</span>
-          <select class="input sm" value={groupBy} onchange={(e) => prefs.set("hub.group", (e.target as HTMLSelectElement).value)}>
-            <option value="none">Não agrupar</option><option value="group">Grupo</option><option value="account">Conta / organização</option><option value="folder">Pasta</option>
-          </select></label>
-        <div class="vt" role="group" aria-label="Exibição">
-          <button class:on={view === "list"} title="Lista" onclick={() => prefs.set("hub.view", "list")}><List size={14} /></button>
-          <button class:on={view === "grid"} title="Cartões" onclick={() => prefs.set("hub.view", "grid")}><LayoutGrid size={14} /></button>
+      {#if extra.length || list.length !== all.length}
+        <div class="f2">
+          {#each extra as e (e.k)}<button class="fchip" onclick={e.clear} title="Tirar o filtro">{e.label} <X size={11} /></button>{/each}
+          <span class="tiny muted shown">{list.length} de {all.length}</span>
         </div>
-      </div>
+      {/if}
       {#if selected.length}
         <div class="selbar">
           <b>{selected.length} selecionado{selected.length === 1 ? "" : "s"}</b>
@@ -335,9 +348,6 @@
             <button class="hc" class:on={sort === "name"} onclick={() => sortBy("name")}>Projeto</button>
             <span class="hc c-br">Branch · estado</span>
             <button class="hc c-last" class:on={sort === "recent"} onclick={() => sortBy("recent")}>Acesso</button>
-            <button class="hc c-focus" class:on={sort === "most" || sort === "least"} onclick={() => sortBy(sort === "most" ? "least" : "most")} title="Seu tempo com o projeto na tela (30 dias)">Seu tempo{#if sort === "most"} ↓{:else if sort === "least"} ↑{/if}</button>
-            <button class="hc c-ai" class:on={sort === "ai"} onclick={() => sortBy("ai")} title="Sessões de IA (30 dias)">IA</button>
-            <button class="hc c-commit" class:on={sort === "commit"} onclick={() => sortBy("commit")}>Último commit</button>
             <span></span>
           </div>
         {/if}
@@ -368,15 +378,14 @@
                     <span class="c-name">
                       <ProviderIcon provider={r.provider || null} size={14} />
                       <b class="ell">{r.name}</b>
+                      {#if pinnedSet.has(r.id)}<Pin size={11} class="pinned-ic" />{/if}
                       {#if isOpen}<span class="opill">aberto</span>{/if}
-                      {#if x.g && groupBy !== "group"}<span class="gt" title={`Grupo ${x.g.name}`}><span class="gd"></span>{x.g.name}</span>{/if}
+                      {#if x.g && groupBy !== "group" && groupFilter === "any"}<span class="gt" title={`Grupo ${x.g.name}`}><span class="gd"></span>{x.g.name}</span>{/if}
                       <span class="path ell" title={r.path}>{home(r.path)}</span>
                     </span>
                     <span class="c-br"><span class="mono br ell">{r.status?.branch || ""}</span>{@render state(r)}</span>
-                    <span class="c-last tiny">{x.last ? ago(new Date(x.last).toISOString()) : "nunca"}</span>
-                    <span class="c-focus tiny">{dur(s.focus30)}</span>
-                    <span class="c-ai tiny" title={s.cost30 ? `US$ ${s.cost30.toFixed(2)} em 30 dias` : ""}>{s.sessions30 ? `${s.sessions30} sess.` : "—"}</span>
-                    <span class="c-commit tiny ell" title={r.lastCommit?.subject || ""}>{r.lastCommit ? ago(r.lastCommit.date) : "—"}</span>
+                    <span class="c-last tiny" title={[`Seu tempo (30 d): ${dur(s.focus30)}`, s.sessions30 ? `IA: ${s.sessions30} sessões${s.cost30 ? ` · US$ ${s.cost30.toFixed(2)}` : ""}` : "",
+                      r.lastCommit ? `Último commit ${ago(r.lastCommit.date)}: ${r.lastCommit.subject}` : ""].filter(Boolean).join("\n")}>{x.last ? ago(new Date(x.last).toISOString()) : "nunca"}</span>
                     <span class="acts" role="presentation" onclick={(e) => e.stopPropagation()}>
                       {@render pinBtn(r.id)}
                       <button class="btn sm ghost icon" title="Pedir à IA" onclick={() => open(r, "ask")}><Sparkles size={13} /></button>
@@ -424,44 +433,27 @@
 </Page>
 
 <style>
-  .hub { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 12px; padding-bottom: 20px; container-type: inline-size; }
+  .hub { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 16px; padding-bottom: 20px; container-type: inline-size; }
   .grow { flex: 1; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
   .gd { width: 8px; height: 8px; border-radius: 50%; background: var(--g); flex: none; display: inline-block; }
   .live { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: hub-ping 1.2s var(--ease) infinite; flex: none; }
 
-  /* acesso rápido */
-  .quick { display: grid; gap: 7px; padding: 0 2px; }
-  .qrow { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  .ql { display: inline-flex; align-items: center; gap: 5px; width: 78px; flex: none; font: 650 10.5px/1 var(--font); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
-  .chips { display: flex; gap: 6px; overflow-x: auto; min-width: 0; padding: 2px 1px; scrollbar-width: none; align-items: center; }
-  .chip { display: inline-flex; align-items: center; gap: 6px; height: 27px; max-width: 220px; padding: 0 10px 0 9px; border-radius: 99px; border: 1px solid var(--line-2);
-    background: var(--surface); color: var(--text-2); font: 550 12.5px var(--font); cursor: pointer; flex: none; position: relative;
-    transition: border-color var(--t-fast), color var(--t-fast), transform var(--t) var(--spring), background var(--t-fast); }
-  .chip[style*="--g"] { box-shadow: inset 2px 0 0 var(--g); }
-  .chip:hover { border-color: var(--line-3); color: var(--text); background: var(--surface-2); transform: translateY(-1px); }
-  .ago { font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
-  .odot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
-  .qh { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; padding-left: 4px; }
-  .gchip { display: inline-flex; align-items: center; height: 27px; padding-right: 2px; border-radius: 99px; border: 1px solid var(--line-2); flex: none;
-    background: linear-gradient(90deg, color-mix(in srgb, var(--g) 16%, transparent), transparent 80%), var(--surface); transition: border-color var(--t-fast); }
-  .gchip.on { border-color: var(--g); }
-  .gchip :global(.btn.sm.icon) { width: 22px; height: 22px; }
-  .gmain { display: inline-flex; align-items: center; gap: 6px; height: 100%; padding: 0 4px 0 10px; border: 0; background: none; color: var(--text); font: 12.5px var(--font); cursor: pointer; max-width: 260px; }
-  .gmain b { font-weight: 600; }
-  .gn { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .gopen { font-size: 10.5px; font-weight: 600; color: var(--accent); white-space: nowrap; }
-
+  /* filtros ativos */
+  .fchip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 10px; border-radius: 99px; border: 1px solid var(--accent-line);
+    background: var(--accent-soft); color: var(--text); font: 550 12px var(--font); cursor: pointer; }
+  .fchip:hover { border-color: var(--accent); }
+  .f1 :global(.btn.on) { border-color: var(--accent-line); color: var(--text); }
+  :global(.pinned-ic) { color: var(--warn); flex: none; }
   /* filtros grudados */
-  .filters { position: sticky; top: 0; z-index: 5; display: grid; gap: 8px; padding: 8px 0 8px; margin-top: 2px; background: var(--bg);
+  .filters { position: sticky; top: 0; z-index: 5; display: grid; gap: 8px; padding: 10px 0 8px; margin-top: 6px; background: var(--bg);
     box-shadow: 0 6px 10px -8px rgba(0, 0, 0, 0.35); }
   .f1, .f2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .search { flex: 1 1 280px; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px 0 11px; border-radius: 9px; border: 1px solid var(--line-2);
+  .search { flex: 1 1 280px; display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 9px 0 12px; border-radius: 10px; border: 1px solid var(--line-2);
     background: var(--bg-2); color: var(--muted); transition: border-color var(--t), box-shadow var(--t); }
   .search:focus-within { border-color: var(--accent); box-shadow: var(--ring); }
   .search input { flex: 1; min-width: 0; border: 0; outline: none; background: none; color: var(--text); font: 13px var(--font); }
   .clr { display: grid; place-items: center; width: 18px; height: 18px; border: 0; border-radius: 50%; background: var(--surface-3); color: var(--text-2); cursor: pointer; }
-  .f2 label { display: inline-flex; align-items: center; gap: 6px; }
   .input.sm { height: 28px; font-size: 12.5px; padding: 0 8px; width: auto; }
   .shown { font-variant-numeric: tabular-nums; }
   .vt { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); }
@@ -471,7 +463,7 @@
     border: 1px solid var(--accent-line); animation: hub-rise 0.2s var(--ease-out); }
 
   /* lista densa */
-  .listwrap { --cols: 20px minmax(240px, 2.4fr) minmax(170px, 1.5fr) 72px 78px 64px 92px 150px; display: grid; gap: 0; }
+  .listwrap { --cols: 20px minmax(240px, 2.6fr) minmax(170px, 1.5fr) 84px 150px; display: grid; gap: 0; }
   .lhead { display: grid; grid-template-columns: var(--cols); align-items: center; gap: 10px; height: 26px; padding: 0 10px; }
   .hc { border: 0; background: none; padding: 0; text-align: left; font: 650 10.5px/1 var(--font); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
     cursor: pointer; white-space: nowrap; }
@@ -491,7 +483,7 @@
   .c-name b { font-weight: 620; font-size: 13px; flex: 0 1 auto; }
   .c-name :global(svg) { flex: none; }
   .path { flex: 1 1 0; font-size: 11.5px; color: var(--faint); }
-  .opill { font: 650 10px/1 var(--font); padding: 3px 6px; border-radius: 99px; background: var(--accent); color: var(--accent-ink); flex: none; letter-spacing: 0.02em; }
+  .opill { font: 600 10px/1 var(--font); padding: 3px 6px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); flex: none; letter-spacing: 0.02em; }
   .gt { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: var(--text-2); padding: 1px 7px 1px 6px; border-radius: 99px;
     background: color-mix(in srgb, var(--g) 15%, transparent); flex: none; max-width: 130px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .gt .gd { width: 6px; height: 6px; }
@@ -552,9 +544,7 @@
 
   .keys { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: center; margin: 16px 0 0; }
 
-  @container (max-width: 1040px) { .listwrap { --cols: 20px minmax(220px, 2.4fr) minmax(150px, 1.5fr) 64px 70px 150px; } .c-ai, .c-commit { display: none; } }
-  @container (max-width: 820px) { .listwrap { --cols: 20px minmax(180px, 2fr) minmax(120px, 1.3fr) 60px 150px; } .c-focus { display: none; } .path { display: none; } }
-  @container (max-width: 900px) { .f2 .lbl, .shown { display: none; } }
+  @container (max-width: 820px) { .listwrap { --cols: 20px minmax(180px, 2fr) minmax(120px, 1.3fr) 64px 150px; } .path { display: none; } }
 
   @keyframes hub-rise { from { opacity: 0; transform: translateY(6px); } }
   @keyframes hub-fade { from { opacity: 0; transform: translateX(-4px); } }

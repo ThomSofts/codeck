@@ -3,7 +3,7 @@
   // esquerda com os arquivos; no centro, abas de agentes, terminais e arquivos; à direita, o agente e os limites.
   // ⌘/Ctrl+P abre arquivo · ⇧F busca no projeto · T novo terminal · W fecha a aba · 1…9 troca de projeto · ⇧I pede à IA.
   // As abas de projeto podem ficar em GRUPOS (como no navegador): nome, cor, recolher/expandir e quantos estão abertos.
-  import { Bot, GitPullRequest, PanelLeft, Layers, Play, RefreshCw, ChevronDown, Code2, FolderGit2, GitBranch, AppWindow, Columns2, GitCompareArrows, LayoutGrid, PanelRight, Settings2, Plus, Search, SquareTerminal, X, Sparkles, FolderPlus, FolderMinus, Palette, Pencil, FolderOpen, Trash2, ChevronRight, Files, Blocks, Boxes, Copy, Pin, ListX, TriangleAlert, Minus, Minimize2, ShieldOff, Bug, Gauge, Brush } from "@lucide/svelte";
+  import { Bot, GitPullRequest, PanelLeft, Layers, Play, RefreshCw, ChevronDown, Code2, FolderGit2, GitBranch, AppWindow, Columns2, GitCompareArrows, LayoutGrid, PanelRight, Settings2, Plus, Search, SquareTerminal, X, Sparkles, FolderPlus, FolderMinus, Palette, Pencil, FolderOpen, Trash2, ChevronRight, Files, Blocks, Boxes, Copy, Pin, ListX, TriangleAlert, Minus, Minimize2, ShieldOff, Bug, Gauge, Brush, WandSparkles } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { get, post } from "../lib/api";
   import { send } from "../lib/native";
@@ -52,6 +52,7 @@
   import RepoDetail from "./RepoDetail.svelte";
   import RepoActivity from "../components/work/RepoActivity.svelte";
   import AskAi from "../components/work/AskAi.svelte";
+  import AiTools from "../components/ai/AiTools.svelte";
   import { kbd } from "../lib/keys";
   import { kb } from "../lib/keybindings.svelte";
   import type { Group } from "../lib/work.svelte";
@@ -60,7 +61,7 @@
   type FileTab = { k: "file" | "diff"; key: string; path: string; scope: string | null; line?: number; preview?: boolean; staged?: boolean };
   type LeftView = "files" | "search" | "scm" | "solution" | "debug" | "ext";
   type View = { scope: string | null; files: FileTab[]; order: string[]; active: string | null; left: LeftView; right: boolean; split?: string | null; lastRun?: string | null;
-    mode?: "code" | "git" | "prs"; leftOpen?: boolean; recent?: string[]; panel?: boolean; panelTab?: "problems" | "debug";
+    mode?: "code" | "git" | "prs" | "ai"; leftOpen?: boolean; recent?: string[]; panel?: boolean; panelTab?: "problems" | "debug";
     /** terminais minimizados: continuam rodando, saem das abas e ficam no cantinho (doca) */
     hidden?: string[];
     /** a aba do DevTools do Flutter (uma por escopo) e a página em que abriu */
@@ -211,6 +212,7 @@
     if (fr && p && v && fr.projectId === p.id) untrack(() => {
       v!.scope = fr.scope;
       if (fr.tab === "git") v!.mode = "git";
+      else if (fr.tab === "ai") v!.mode = "ai";
       else if (fr.tab === "code") { v!.mode = "code"; v!.active = fr.termId ? "t:" + fr.termId : null; }
       else { v!.mode = "code"; v!.active = "r:" + (fr.scope || "main"); }
       work.focusRequest = null;
@@ -283,6 +285,12 @@
     ...scopeTerms.filter(t => t.alive && t.kind === "run").map(t => ({ label: `Parar ${t.title}`, icon: X, danger: true, onclick: () => stopTerm(t) })),
   ];
 
+  async function closeTask(t: Task) {
+    if (!p) return;
+    const r = await work.closeTask(p, t);
+    if (r === "removed" && v?.scope === t.id) setScope(null);
+    else if (r === "closed" && v) v.order = v.order.filter(k => !t.terms.some(x => k === "t:" + x.id));
+  }
   async function closeTab(t: Tab) {
     if (!v) return;
     if (t.kind === "term") {
@@ -434,7 +442,7 @@
   ]);
   const taskTone = (t: Task) => {
     const ss = t.terms.filter(x => x.kind === "agent").map(x => work.session(x)?.status);
-    return ss.includes("needs-you") ? "warn" : ss.includes("working") ? "accent" : ss.includes("done") ? "good" : t.terms.some(x => x.alive) ? "muted" : "off";
+    return ss.includes("needs-you") ? "warn" : ss.includes("working") ? "accent" : t.terms.some(x => x.alive) ? "muted" : "off";
   };
 
   // ------------------------------------------------------------ atalhos (lib/keybindings: os do VS Code, personalizáveis)
@@ -747,11 +755,18 @@
               <button class="cmp" onclick={() => (comparing = g)}><GitCompareArrows size={13} /> Comparar {p.tasks.filter(t => t.group === g).length} soluções · {g}</button>
             {/each}
             {#each p.tasks as t (t.id)}
-              <button class="sc task" class:on={v.scope === t.id} onclick={() => setScope(t.id)} title={t.branch}>
+              <div class="sc task" class:on={v.scope === t.id} role="button" tabindex="0" onclick={() => setScope(t.id)} onkeydown={(e) => e.key === "Enter" && setScope(t.id)} title={t.branch}
+                oncontextmenu={(e) => ui.contextMenu(e, [
+                  { label: "Abrir a tarefa", icon: FolderOpen, onclick: () => setScope(t.id) },
+                  { separator: true },
+                  { label: t.terms.some(x => x.alive) ? "Encerrar as sessões da tarefa" : "Fechar a tarefa", icon: X, onclick: () => closeTask(t) },
+                  { label: "Remover tarefa (worktree)…", icon: Trash2, danger: true, onclick: () => work.removeTask(p!, t).then(ok => ok && v?.scope === t.id && setScope(null)) },
+                ])}>
                 <span class="dot {taskTone(t)}"></span>
                 <span class="grow ell"><b>{t.title}</b><span class="tiny muted mono ell"><GitBranch size={10} /> {t.branch}</span></span>
                 <span class="ags">{#each t.terms.filter(x => x.kind === "agent") as a (a.id)}<AgentIcon provider={a.meta.provider} size={13} />{/each}</span>
-              </button>
+                <button class="tx" title="Fechar a tarefa (encerra as sessões; o worktree fica)" onclick={(e) => { e.stopPropagation(); closeTask(t); }}><X size={12} /></button>
+              </div>
             {:else}
               <div class="none">Nenhuma tarefa. “Nova” abre o agente no checkout (com uma branch nova, se quiser) ou num worktree separado.</div>
             {/each}
@@ -768,6 +783,7 @@
             <button role="tab" class:on={mode === "code"} aria-selected={mode === "code"} onclick={() => v && (v.mode = "code")}><Code2 size={13} /> <span class="lbl l-mode">Código</span></button>
             <button role="tab" class:on={mode === "git"} aria-selected={mode === "git"} onclick={() => v && (v.mode = "git")}><GitBranch size={13} /> <span class="lbl l-mode">Git</span></button>
             <button role="tab" class:on={mode === "prs"} aria-selected={mode === "prs"} onclick={() => v && (v.mode = "prs")}><GitPullRequest size={13} /> <span class="lbl l-mode">PRs</span>{#if prCount}<span class="n">{prCount}</span>{/if}</button>
+            <button role="tab" class:on={mode === "ai"} aria-selected={mode === "ai"} title="Skills e MCPs do projeto e das contas de IA" onclick={() => v && (v.mode = "ai")}><WandSparkles size={13} /> <span class="lbl l-mode">IA</span></button>
           </div>
           <span class="hgrow"></span>
           <div class="tact">
@@ -823,6 +839,8 @@
             <div class="pane">{#key (task?.repoId || p.id)}<RepoDetail repoId={task?.repoId || p.id} embedded />{/key}</div>
           {:else if mode === "prs"}
             <div class="pane">{#key p.id}<RepoActivity project={p} />{/key}</div>
+          {:else if mode === "ai"}
+            <div class="pane ai">{#key p.id}<AiTools repoId={p.id} />{/key}</div>
           {:else}
           <div class="pane">{@render paneOf(activeTab)}</div>
           {#if splitTab}<div class="pane second">
@@ -912,7 +930,10 @@
   .ptab:hover .x, .ptab.on .x, .tab:hover .x, .tab.on .x { opacity: 1; }
   .ptab .x:hover, .tab .x:hover { background: var(--surface-3); color: var(--text); }
   .ptab .byp { display: grid; place-items: center; color: var(--warn); flex: none; }
-  .badge { font: 650 10.5px/1 var(--font); padding: 3px 6px; border-radius: 99px; background: var(--warn); color: #1a1205; }
+  /* agente perguntando: destaque calmo (tom suave + anel que respira), sem cor chapada */
+  .badge { font: 650 10.5px/1 var(--font); padding: 2px 6px; border-radius: 99px; background: var(--warn-soft); color: var(--warn);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 40%, transparent); animation: ask 2.4s var(--ease) infinite; }
+  @keyframes ask { 50% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 40%, transparent), 0 0 0 3px color-mix(in srgb, var(--warn) 14%, transparent); } }
   .live { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: ping 1.2s var(--ease) infinite; }
   @keyframes ping { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); } 80%, 100% { box-shadow: 0 0 0 6px transparent; } }
   .addp { color: var(--muted); }
@@ -923,12 +944,14 @@
   .grp { display: flex; align-items: center; gap: 2px; padding: 0 4px 0 0; border-radius: 10px; flex: none;
     background: color-mix(in srgb, var(--g) 8%, transparent); }
   .gchip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px; margin: 0 3px; border: 0; border-radius: 8px; flex: none;
-    background: var(--g); color: #0b0d12; font: 650 12px var(--font); cursor: pointer; transition: filter var(--t-fast), transform var(--t-fast); }
-  .gchip:hover { filter: brightness(1.08); }
+    background: color-mix(in srgb, var(--g) 20%, transparent); color: var(--text); font: 600 12px var(--font); cursor: pointer;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--g) 35%, transparent); transition: background var(--t-fast), transform var(--t-fast); }
+  .gchip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--g); flex: none; }
+  .gchip:hover { background: color-mix(in srgb, var(--g) 30%, transparent); }
   .gchip:active { transform: scale(0.97); }
   .gchip.drop { box-shadow: 0 0 0 2px var(--accent); }
   .gname { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .gcount { font: 700 10.5px/1 var(--font); padding: 2px 5px; border-radius: 99px; background: rgba(0, 0, 0, 0.18); }
+  .gcount { font: 650 10.5px/1 var(--font); color: var(--muted); font-variant-numeric: tabular-nums; }
   .grp.collapsed { background: none; }
   .ptab.ing { box-shadow: inset 0 -2px 0 var(--g); }
   .ptab.ing.on { box-shadow: inset 0 -2px 0 var(--g), var(--shadow-1); }
@@ -954,7 +977,7 @@
     color: var(--muted); font: 600 12.5px var(--font); cursor: pointer; transition: background var(--t), color var(--t); }
   .modes button:hover { color: var(--text); }
   .modes button.on { background: var(--surface-3); color: var(--text); box-shadow: var(--shadow-1); }
-  .modes .n { font: 650 10.5px/1 var(--font); padding: 2px 6px; border-radius: 99px; background: var(--accent); color: var(--accent-ink); }
+  .modes .n { font: 650 10.5px/1 var(--font); padding: 2px 6px; border-radius: 99px; background: var(--surface-3); color: var(--text-2); }
   .lt { margin-bottom: 4px; flex: none; }
   .lt:not(.on) { color: var(--accent); }
   .tl.other .tab.on { background: none; color: var(--muted); }
@@ -979,7 +1002,7 @@
   .abar button:hover { color: var(--text); background: var(--surface-2); }
   .abar button.on { color: var(--text); }
   .abar button.on::before { content: ""; position: absolute; left: -4px; top: 8px; bottom: 8px; width: 2px; border-radius: 2px; background: var(--accent); }
-  .ab-n { position: absolute; right: 1px; bottom: 2px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 99px; background: var(--accent); color: var(--accent-ink);
+  .ab-n { position: absolute; right: 1px; bottom: 2px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 99px; background: color-mix(in srgb, var(--accent) 28%, var(--bg-2)); color: var(--text);
     font: 700 9.5px/15px var(--font); text-align: center; animation: pop 0.25s var(--spring); }
   @keyframes pop { from { transform: scale(0.4); } }
   .ab-grow { flex: 1; }
@@ -995,10 +1018,14 @@
   .ags { display: flex; gap: 2px; }
   .gear { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; color: var(--muted); opacity: 0; transition: opacity var(--t-fast); }
   .sc:hover .gear { opacity: 1; }
+  .tx { display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: 5px; background: none; color: var(--muted); cursor: pointer;
+    opacity: 0; flex: none; transition: opacity var(--t-fast), background var(--t-fast), color var(--t-fast); }
+  .sc:hover .tx, .sc.on .tx, .tx:focus-visible { opacity: 1; }
+  .tx:hover { background: var(--bad-soft); color: var(--bad); }
   .gear:hover { background: var(--surface-3); color: var(--text); }
   .sch { display: flex; align-items: center; justify-content: space-between; padding: 10px 8px 2px; font: 650 10.5px/1 var(--font); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
   .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--line-3); }
-  .dot.accent { background: var(--accent); animation: ping 1.2s var(--ease) infinite; } .dot.warn { background: var(--warn); } .dot.good { background: var(--good); } .dot.muted { background: var(--text-2); }
+  .dot.accent { background: var(--accent); animation: ping 1.2s var(--ease) infinite; } .dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); } .dot.good { background: var(--good); } .dot.muted { background: var(--muted); }
   .none { font-size: 12px; color: var(--muted); padding: 4px 8px 8px; }
   .tree { flex: 1; min-height: 0; }
   .center { display: flex; flex-direction: column; container-type: inline-size; }
@@ -1051,7 +1078,7 @@
   .ptabs2 button.on { color: var(--text); border-bottom-color: var(--accent); }
   .pdot { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
   .pbody { flex: 1; min-height: 0; }
-  .ab-n.live { background: var(--warn); color: #1b1300; }
+  .ab-n.live { background: color-mix(in srgb, var(--warn) 30%, var(--bg-2)); color: var(--text); }
   .bpanel .vsplit { top: -4px; }
   .tw { position: relative; width: 100%; height: 100%; min-height: 0; }
   .sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
@@ -1064,6 +1091,7 @@
   .body.split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .pane { position: relative; min-width: 0; min-height: 0; }
   .pane.second { border-left: 1px solid var(--line); }
+  .pane.ai { overflow: auto; padding: 16px 20px 28px; }
   .unsplit { position: absolute; z-index: 5; top: 6px; right: 8px; display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 6px;
     background: var(--surface-3); color: var(--text-2); cursor: pointer; opacity: 0.6; }
   .unsplit:hover { opacity: 1; }
