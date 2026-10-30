@@ -1,4 +1,4 @@
-# Validação do Codeck no Windows — o que só dá para conferir num PC de verdade, com as suas contas e CLIs.
+﻿# Validação do Codeck no Windows — o que só dá para conferir num PC de verdade, com as suas contas e CLIs.
 #
 #   powershell -ExecutionPolicy Bypass -File validar-no-windows.ps1
 #
