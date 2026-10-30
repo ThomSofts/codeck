@@ -389,7 +389,7 @@ jobs:
           retention-days: 30
 
   publish:
-    name: Publicar (site da ThomSoft; GitHub Releases privado como histórico)
+    name: Publicar (site da ThomSoft + GitHub Releases)
     needs: [version, windows]
     if: ${{ github.ref == 'refs/heads/main' && !inputs.dry_run }}
     runs-on: ubuntu-latest
@@ -432,8 +432,9 @@ jobs:
           openssl x509 -in "$CERT" -noout -checkend 0
           openssl x509 -in "$CERT" -noout -ext subjectAltName | grep -q 'DNS:\*\.hstgr\.io'
 
-      # Histórico no GitHub Releases (repositório privado — ninguém de fora baixa daqui). O público baixa do site da
-      # ThomSoft, que corta conexões por volta de 4 MB: o app e a página de download retomam por partes (Range).
+      # O app baixa do GitHub Releases: o site da ThomSoft (Hostinger) corta conexões por volta de 4 MB, e o instalador
+      # tem ~100 MB. O site fica como espelho (`mirrors` no latest.json) e é de onde a página do Codeck baixa, por partes.
+      # O .exe sobe aqui ANTES do latest.json — com o nome de cada canal (as pontes só aceitam o próprio prefixo).
       - name: GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
@@ -458,6 +459,7 @@ jobs:
           FTP_ROOT: ${{ vars.DOWNLOADS_FTP_ROOT || '/' }}
           COMMIT_MSG: ${{ github.event.head_commit.message || 'Nova versão do Codeck.' }}
           SIGNING_KEY: ${{ secrets.CODECK_SIGNING_KEY }}
+          RELEASES: https://github.com/${{ github.repository }}/releases/download
         run: |
           set -euo pipefail
           [ -n "$SIGNING_KEY" ] || { echo "::error::Falta o segredo CODECK_SIGNING_KEY (chave que assina o latest.json)"; exit 1; }
@@ -499,14 +501,14 @@ jobs:
           else
             echo '{}' > "$tmp/current.json"   # primeira publicação
           fi
-          jq --arg url "$DOWNLOADS_BASE_URL/$CHANNEL/$exe" \
+          jq --arg url "$RELEASES/v$BUILD_NAME-$BUILD_NUMBER/$exe" --arg mirror "$DOWNLOADS_BASE_URL/$CHANNEL/$exe" \
              --arg sha "$(sha256sum "dist/$exe" | cut -d' ' -f1)" \
              --argjson size "$(stat -c %s "dist/$exe")" \
              --arg version "$BUILD_NAME" --argjson build "$BUILD_NUMBER" \
              --arg notes "$(printf '%s' "$COMMIT_MSG" | head -n 1)" \
              --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
              '.productId = "codeck"
-              | .windows = {url: $url, mirrors: [], sha256: $sha, size: $size, version: $version, build: $build}
+              | .windows = {url: $url, mirrors: [$mirror], sha256: $sha, size: $size, version: $version, build: $build}
               | .notes = $notes | .publishedAt = $date
               | ([.windows, .macos] | map(select(. != null)) | max_by(.build)) as $n
               | .version = $n.version | .build = $n.build' "$tmp/current.json" > dist/latest.json
@@ -538,7 +540,7 @@ jobs:
             else
               echo '{}' > "$tmp/legacy-current.json"
             fi
-            jq --arg url "$DOWNLOADS_BASE_URL/$ch/$lexe" \
+            jq --arg url "$RELEASES/v$BUILD_NAME-$BUILD_NUMBER/$lexe" --arg mirror "$DOWNLOADS_BASE_URL/$ch/$lexe" \
                --arg sha "$(sha256sum "$tmp/$lexe" | cut -d' ' -f1)" \
                --argjson size "$(stat -c %s "$tmp/$lexe")" \
                --arg version "$BUILD_NAME" --argjson build "$BUILD_NUMBER" \
@@ -546,7 +548,7 @@ jobs:
                --arg notes "Agora se chama Codeck. $(printf '%s' "$COMMIT_MSG" | head -n 1)" \
                --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                '.productId = $pid
-                | .windows = {url: $url, mirrors: [], sha256: $sha, size: $size, version: $version, build: $build}
+                | .windows = {url: $url, mirrors: [$mirror], sha256: $sha, size: $size, version: $version, build: $build}
                 | .notes = $notes | .publishedAt = $date
                 | ([.windows, .macos] | map(select(. != null)) | max_by(.build)) as $n
                 | .version = $n.version | .build = $n.build' "$tmp/legacy-current.json" > "$tmp/legacy-latest.json"

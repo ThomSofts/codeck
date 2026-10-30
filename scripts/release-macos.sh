@@ -9,9 +9,9 @@
 #
 # Publica o que está na main (árvore limpa, commit já no origin/main), na versão do arquivo VERSION (x.y.z+N),
 # a mesma do Windows. Destinos:
-#   · site da ThomSoft: downloads/codeck/<dmg> + latest.json + latest.json.sig (o canal público que o app consulta —
-#     o único lugar de onde o app baixa; o latest.json vai assinado e o app recusa o que não confere)
-#   · GitHub Releases (repositório privado): tag v<x.y.z>-<N>, só como histórico
+#   · site da ThomSoft: downloads/codeck/<dmg> + latest.json + latest.json.sig (o canal que o app consulta; o
+#     latest.json vai assinado e o app recusa o que não confere) — o .dmg do site é o espelho
+#   · GitHub Releases: tag v<x.y.z>-<N>, de onde o app baixa (o site corta conexões longas por volta de 4 MB)
 # Chave que assina o latest.json (ECDSA P-256; a pública está em backend/pilot/update.py): no Keychain, serviço
 # codeck-update-signing (o PEM em base64), ou na variável CODECK_SIGNING_KEY.
 # Credenciais do FTP do site — as mesmas do Chefinho/LuriSystem:
@@ -31,6 +31,7 @@ done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE_URL="${DOWNLOADS_BASE_URL:-https://thomsoft.com.br/downloads}"
+RELEASES="https://github.com/ThomSofts/codeck/releases/download"
 CHANNEL=codeck
 KEYCHAIN_SERVICE=thomsoft-downloads-ftp
 CONFIG="$HOME/.config/thomsoft/downloads.env"
@@ -117,14 +118,14 @@ publish_json() {
   else
     echo '{}' > "$cur"   # primeira publicação
   fi
-  jq --arg url "$BASE_URL/$ch/$file" \
+  jq --arg url "$RELEASES/$TAG/$file" --arg mirror "$BASE_URL/$ch/$file" \
      --arg sha "$(shasum -a 256 "$dmg" | cut -d' ' -f1)" \
      --argjson size "$(stat -f %z "$dmg")" \
      --arg version "$VERSION" --argjson build "$BUILD" \
      --arg pid "$pid" --arg notes "$notes" \
      --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
      '.productId = $pid
-      | .macos = {url: $url, mirrors: [], sha256: $sha, size: $size, version: $version, build: $build}
+      | .macos = {url: $url, mirrors: [$mirror], sha256: $sha, size: $size, version: $version, build: $build}
       | .notes = $notes | .publishedAt = $date
       | ([.windows, .macos] | map(select(. != null)) | max_by(.build)) as $n
       | .version = $n.version | .build = $n.build' "$cur" > "$next"
@@ -197,7 +198,7 @@ echo "✓ $dmg ($(du -h "$dmg" | cut -f1))"
 
 if [ "$DRY_RUN" = true ]; then say "Ensaio: o .dmg está em $out — nada foi publicado."; exit 0; fi
 
-# O .dmg primeiro (o site e, como histórico privado, o GitHub Releases), o latest.json assinado por último — só a parte do
+# O .dmg primeiro (GitHub Releases, com o nome de cada canal, e o site), o latest.json assinado por último — só a parte do
 # Mac; a do Windows fica como o CI a deixou.
 say "GitHub Releases ($TAG)"
 gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Codeck $VERSION (build $BUILD)" \
