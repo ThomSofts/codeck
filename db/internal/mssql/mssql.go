@@ -176,7 +176,9 @@ func (d Dialect) Table(ctx context.Context, q engine.Queryer, schema, name strin
 	t := &engine.TableInfo{Schema: schema, Name: name, Columns: []engine.Column{}, FKs: []engine.ForeignKey{}, Indexes: []engine.Index{}}
 	rows, err := q.QueryContext(ctx, `SELECT c.name, TYPE_NAME(c.user_type_id), c.max_length, c.precision, c.scale, c.is_nullable, c.is_identity,
 		dc.definition, ISNULL((SELECT ic.key_ordinal FROM sys.indexes i JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
-		  WHERE i.object_id = c.object_id AND i.is_primary_key = 1 AND ic.column_id = c.column_id), 0)
+		  WHERE i.object_id = c.object_id AND i.is_primary_key = 1 AND ic.column_id = c.column_id), 0),
+		ISNULL(CAST((SELECT ep.value FROM sys.extended_properties ep WHERE ep.class = 1 AND ep.major_id = c.object_id AND ep.minor_id = c.column_id
+		  AND ep.name = 'MS_Description') AS nvarchar(4000)), '')
 		FROM sys.columns c LEFT JOIN sys.default_constraints dc ON dc.object_id = c.default_object_id
 		WHERE c.object_id = OBJECT_ID(@p1) ORDER BY c.column_id`, obj)
 	if err != nil {
@@ -187,7 +189,7 @@ func (d Dialect) Table(ctx context.Context, q engine.Queryer, schema, name strin
 		var typ string
 		var maxLen, prec, scale, pk int
 		var def sql.NullString
-		if err := rows.Scan(&c.Name, &typ, &maxLen, &prec, &scale, &c.Nullable, &c.Identity, &def, &pk); err != nil {
+		if err := rows.Scan(&c.Name, &typ, &maxLen, &prec, &scale, &c.Nullable, &c.Identity, &def, &pk, &c.Comment); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -198,6 +200,12 @@ func (d Dialect) Table(ctx context.Context, q engine.Queryer, schema, name strin
 		t.Columns = append(t.Columns, c)
 	}
 	rows.Close()
+	// descrição (MS_Description, a do SSMS), linhas pelas partições (sem varrer) e tamanho em páginas de 8 KB
+	t.Stats(ctx, q, `SELECT CAST((SELECT ep.value FROM sys.extended_properties ep WHERE ep.class = 1 AND ep.major_id = OBJECT_ID(@p1) AND ep.minor_id = 0
+		  AND ep.name = 'MS_Description') AS nvarchar(4000)),
+		(SELECT SUM(p.rows) FROM sys.partitions p WHERE p.object_id = OBJECT_ID(@p1) AND p.index_id IN (0, 1)),
+		(SELECT SUM(CAST(a.total_pages AS bigint)) * 8192 FROM sys.partitions p JOIN sys.allocation_units a ON a.container_id = p.partition_id
+		  WHERE p.object_id = OBJECT_ID(@p1))`, obj)
 	rows, err = q.QueryContext(ctx, `SELECT fk.name, pc.name, rs.name, rt.name, rc.name FROM sys.foreign_keys fk
 		JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
 		JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id

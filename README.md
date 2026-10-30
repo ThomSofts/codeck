@@ -51,9 +51,12 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
   Na barra de abas, o botão de projetos abertos lista todos para trocar ou fechar.
 - **Grupos de projetos** (como os grupos de abas do navegador): nome, cor, recolher/expandir nas abas, abrir/fechar
   todos. Arraste uma aba para o grupo ou use o clique direito.
-- **Pedir à IA** (⌘⇧I / Ctrl+Shift+I): uma caixa no painel do projeto — escreva e Enter manda direto para o agente,
-  na conta do projeto (lembrada por projeto), no checkout ou numa tarefa nova; dá para mandar para uma sessão já
-  aberta. "Mais opções" abre o formulário completo (issue, só planejar, planejar → aprovar → implementar).
+- **Tela do agente** (botão **Agente**, ⌘⇧I / Ctrl+Shift+I, e a tela inicial do projeto): cada conta de IA num cartão
+  com o fôlego agora (5 h e semanal, com a contagem para o reset), o que está fazendo (livre, trabalhando, no limite),
+  os tokens e o custo da semana e o modelo mais usado; a recomendada (mais fôlego no grupo do projeto) vem marcada e um
+  clique abre o agente nela. Em cima, as sessões abertas no checkout/tarefa (estado, contexto, custo, continuar em
+  outra conta); numa tarefa, o que mudou e as ações (revisar, commitar, criar PR, publicar a revisão na PR). A seta ao
+  lado do botão abre direto numa conta. O agente fica nas abas do projeto — não há mais painel à direita.
 - **Pular permissões (bypass)** por projeto, em Ajustes do projeto (desligado por padrão): os agentes abrem sem pedir
   permissão (Claude, Codex, Gemini, Cursor). Um escudo na aba mostra os projetos com bypass.
 - **Tarefas:** "Nova tarefa" abre o agente **no seu checkout** (com uma branch nova, se quiser — só com o checkout
@@ -91,12 +94,14 @@ O app não é assinado por certificado comercial (decisão da ThomSoft):
   qualquer CLI (Claude → Claude, Claude → Cursor, Codex → Gemini…). Para gastar poucos tokens, o agente novo recebe um
   **resumo enxuto** (pedido original, últimos passos e o estado do git) e o histórico completo fica num arquivo que ele
   só lê se precisar; na mesma CLI (Claude/Codex) dá para **retomar a conversa inteira**. Também dá para passar o
-  trabalho sem esperar o limite: painel do agente → **Continuar em outra conta**.
+  trabalho sem esperar o limite: na tela do agente (⇄ na sessão) ou no clique direito da aba → **Continuar em outra conta**.
 - A CLI é procurada no PATH do seu terminal (lendo o `.zprofile` e o `.zshrc`) e nas pastas de instalação comuns
   (`~/.local/bin`, npm, Homebrew, nvm…); no Windows, no PATH do usuário gravado no registro.
 - **Editor como o VS Code** (Monaco, o editor do VS Code), que acompanha ao vivo o que o agente edita:
   - barra de atividades: Explorador (⌘⇧E), Busca (⌘⇧F, com maiúsculas/regex), Controle de código-fonte (⌃⇧G, com a
     contagem de alterações), Gerenciador de Soluções (.NET) e Extensões (⌘⇧X);
+  - **arquivo sem título** só na memória, como no VS Code: dois cliques na área vazia da barra de abas (ou ⌘N); ⌘S
+    pergunta onde gravar no projeto e a aba vira a do arquivo;
   - explorador com **todos os arquivos**, como o VS Code: os ignorados pelo `.gitignore` aparecem apagados e os
     repositórios dentro do projeto (uma pasta "workspace" que reúne vários repos) entram inteiros; pastas pesadas
     (`bin/`, `obj/`, `node_modules/`) são lidas ao abrir;
@@ -247,6 +252,23 @@ fixo, tenta reconectar a cada 10 s e atualiza tudo assim que a rede volta.
 - **Grade como planilha**: seleção retangular, ⌘C no formato padrão e o menu com JSON, CSV, Markdown, INSERT, UPDATE e
   lista para `IN (…)`; colar do Excel; soma e média da seleção; edição pendente (amarelo/verde/riscado) aplicada numa
   transação só e conferida pela chave; ⌘-clique na chave estrangeira abre o registro.
+- **Três jeitos de ver o resultado**: **Grade**, **JSON** (os objetos, com cor, e Copiar JSON) e **Ficha** (uma linha
+  por vez, campo a campo, com a descrição de cada coluna — boa para tabela larga; ⇧↩ ou dois cliques no nº da linha).
+  **Busca** no resultado (⌘F) que filtra e marca o trecho achado, **colunas escondidas** (ficam na aba), ordenar pelo
+  cabeçalho (no servidor na tabela aberta; na hora na consulta) e o **resumo da coluna** (nulos, distintos, mín./máx.,
+  média e os valores mais comuns).
+- **Estrutura da tabela** (aba Dados | Estrutura): descrição da tabela e de cada coluna (COMMENT / MS_Description),
+  tipo, nulo, padrão, numeração automática, chave primária e estrangeira (clique abre a outra tabela), índices, linhas
+  estimadas (e contar de verdade), tamanho com índices e o CREATE (o do SQLite como foi gravado; nos outros, montado do
+  catálogo).
+- **Alterar a estrutura** sem escrever SQL: tabela nova (colunas, chave, numeração, padrões e descrições), renomear,
+  esvaziar e excluir (digitando o nome), coluna nova, editar coluna (nome, tipo, nulo, padrão, descrição), excluir
+  coluna (no SQL Server, o DEFAULT que o servidor nomeou sai antes), índices e a descrição da tabela. O SQL aparece
+  antes de rodar (dá para ajustar à mão) e produção segue as regras de sempre: destravar, transação e Confirmar/Desfazer.
+  SQL Server, PostgreSQL, MySQL/MariaDB e SQLite/libSQL — testado nos bancos de verdade (`tests/db/ddl_test.mjs`).
+- **Lista de bancos**: cartões com a marca do banco, os ambientes (dev/hml/PROD), a segurança da conexão (TLS, legado,
+  SSH), os projetos, quem está conectado agora e **Testar** — abre e fecha uma conexão em cada ambiente e mostra a
+  latência e a versão do servidor (ou o problema). Clicar num ambiente abre a bancada já nele.
 - **Imagem do resultado (PNG)**: o cartão com a marca e o ponto verde comentando; esconda colunas e **mascare** dados
   pessoais (CPF, e-mail e telefone já vêm marcados). Copia, salva ou os dois (Dados → Ajustes).
 - **Produção travada**: abre somente leitura; destravar pede confirmação e cada alteração fica numa transação esperando

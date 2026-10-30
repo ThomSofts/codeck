@@ -268,7 +268,7 @@
     const w1 = $(".work .left").getBoundingClientRect().width;
     const expected = w0 + dx;
     if (Math.abs(w1 - expected) > 4) throw new Error(`largura ${w0} → ${w1} (esperado ${expected})`);
-    const lh = $(".right .lh"); if (lh) { click(lh); await sleep(200); if ($(".right .lim")) throw new Error("limites não recolheram"); click($(".right .lh")); }
+    if ($(".card.right")) throw new Error("o painel da direita voltou (o agente fica nas abas e na tela do Agente)");
     return `painel ${Math.round(w0)} → ${Math.round(w1)} px`;
   });
   await step("Modos Git/PRs mantêm os arquivos; painel de arquivos recolhe e abre", async () => {
@@ -538,29 +538,27 @@
   });
 
   // ============================================================ 6. agente de IA de verdade (telemetria)
-  await step("Agente Claude: abre, responde e mostra contexto/limites", async () => {
+  await step("Agente Claude: abre pela tela do Agente, responde e mostra contexto", async () => {
     if (!CTX.trusted) return "pulado — sem pasta confiável no teste";
     const p = await api("ws/open", { path: CTX.trusted });
     await go("#/work/" + p.id, 1500);
     click(byText(".sc", "checkout principal")); await sleep(300);
     const acc = (await api("ai")).accounts.find(a => a.provider === "claude" && a.name === CTX.account && a.installed);
     if (!acc) throw new Error("conta " + CTX.account + " não encontrada");
-    const trig = byText(".tact span.btn", "Agente");
-    click(trig.closest("button")); click(await waitFor(() => byText(".items .it", CTX.account)));
+    // botão Agente → tela com as contas → o cartão da conta abre o agente
+    click($(".agb > .btn"));
+    click(await waitFor(() => $$(".al .acc").find(e => txt(e.querySelector(".nm b")) === CTX.account)));
     await waitFor(() => byText(".tab", "Claude Code"), 10000);
-    await sleep(4000);
-    const box = await waitFor(".send textarea"); box.focus();
+    await sleep(5000);
     await type("Responda apenas: OK");
-    click(byText(".send .btn", "Enviar"));
-    await waitFor(() => byText(".right .pill", "terminou"), 90000);
-    // depois da resposta: contexto em % e os limites (5 h / semanal) da conta têm de aparecer no painel
-    await waitFor(() => /\d+%/.test(txt(byText(".right .kv", "Contexto"))), 25000).catch(() => { throw new Error("contexto não apareceu: " + txt(byText(".right .kv", "Contexto"))); });
-    await waitFor(() => $$(".right .lim .win").length > 0, 25000).catch(() => { throw new Error("limites da conta não apareceram"); });
-    const model = txt(byText(".right .kv", "Modelo")), ctxv = txt(byText(".right .kv", "Contexto"));
+    await press("Return");
+    // depois da resposta, a tela do Agente mostra a sessão com o modelo e o contexto em %
+    click($(".agb > .btn"));
+    const row = await waitFor(() => $$(".al .srow").find(e => /\d+%/.test(txt(e.querySelector(".ctx")))), 90000)
+      .catch(() => { throw new Error("a sessão não mostrou o contexto: " + txt($(".al .sess"))); });
     await shot("11-agente");
-    if (!/Opus|Sonnet|Haiku|Claude/i.test(model)) throw new Error("modelo não apareceu: " + model);
-    const lim = $$(".right .lim .win").length;
-    return `${model.replace(/\s+/g, " ")} · ${ctxv.replace(/\s+/g, " ")} · ${lim} janela(s) de limite`;
+    if (!/Opus|Sonnet|Haiku|Claude/i.test(txt(row))) throw new Error("modelo não apareceu: " + txt(row));
+    return txt(row).replace(/\s+/g, " ").slice(0, 120);
   });
 
   // ============================================================ 7. janela própria de projeto
@@ -610,7 +608,8 @@
     await go("#/work/" + apiRepo.id, 1200);
     for (const title of [taskTitle]) {
       click(byText(".sc.task", title)); await sleep(800);
-      click(await waitFor(() => $(".right .danger-text")));
+      click($(".agb > .btn"));
+      click(await waitFor(() => $(".al .task .dz")));
       click(await waitFor(() => byText("[role=alertdialog] button", "Remover worktree"))); await sleep(2500);
     }
     const left = (await api("ws")).projects.find(p => p.name === "demo-api").tasks.map(t => t.title);

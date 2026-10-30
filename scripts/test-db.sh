@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Bateria completa dos bancos de dados no macOS: sobe os bancos de verdade (Docker), os emuladores do Firebase e do
-# Android, o app Flutter de teste, e roda tests/db/run_tests.py contra todos — depois a tela no Chrome (tests/db/ui_test.mjs).
+# Android, o app Flutter de teste, e roda tests/db/run_tests.py contra todos, o SQL de estrutura nos bancos SQL
+# (tests/db/ddl_test.mjs) — depois a tela no Chrome (tests/db/ui_test.mjs).
 #
 #   scripts/test-db.sh                 tudo
 #   scripts/test-db.sh --sem-android   sem o emulador Android (o mais lento)
@@ -173,6 +174,11 @@ fi
 say "Testes (backend de verdade, pela API)"
 python3 -I "$ROOT/tests/db/run_tests.py" --plugins "$T/plugins" --targets "$TARGETS" --report "$T/relatorio.txt"
 CODE=$?
+if command -v node >/dev/null; then
+  say "Estrutura: o SQL de alteração da tela em cada banco SQL"
+  (cd "$ROOT/ui" && [ -d node_modules ] || npm ci --silent)
+  node "$ROOT/tests/db/ddl_test.mjs" "$T/plugins" "$TARGETS" || CODE=1
+fi
 cp "$T/relatorio.txt" "$ROOT/dist/test-db-relatorio.txt" 2>/dev/null || { mkdir -p "$ROOT/dist" && cp "$T/relatorio.txt" "$ROOT/dist/test-db-relatorio.txt"; }
 
 if $UI && command -v node >/dev/null && [ -d "/Applications/Google Chrome.app" ]; then

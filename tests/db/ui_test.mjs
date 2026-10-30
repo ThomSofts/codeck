@@ -64,7 +64,7 @@ try {
   await page.waitForTimeout(300);
   check((await clip()) === "Ana\t10.5\nBruno\t3", "⌘C copia o retângulo como texto (2 × 2)");
   await cell(1, 2).click({ button: "right" });
-  await page.click("text=JSON");
+  await page.click("[role=menu] >> text=JSON");
   await page.waitForTimeout(300);
   check(JSON.stringify(JSON.parse(await clip())) === JSON.stringify([{ nome: "Ana", saldo: 10.5 }, { nome: "Bruno", saldo: 3 }]), "Copiar como JSON");
   const sum = await page.locator(".rg .sum").textContent();
@@ -80,6 +80,88 @@ try {
   await confirmDialog("Aplicar");
   await page.waitForTimeout(800);
   check(sql("SELECT nome FROM clientes WHERE id = 3") === "Carla Dias", "Aplicar grava no banco");
+  await shot("00-grade");
+
+  // busca no resultado, colunas escondidas, JSON e ficha
+  await page.fill(".find input", "bru");
+  await page.waitForTimeout(200);
+  check(await page.locator(".rg .rgr").count() === 1 && await page.locator(".rg mark").count() >= 1, "a busca filtra as linhas e marca o trecho achado");
+  await page.fill(".find input", "");
+  await page.click(".colbtn");
+  await page.click(".pc:has-text('email')");
+  await page.keyboard.press("Escape");
+  await page.mouse.click(5, 5);
+  check(await page.locator(".rg .hc").count() === 3, "esconder uma coluna tira ela da grade");
+  await page.click(".rv .modes button:has-text('JSON')");
+  const js = await page.locator(".jcode").textContent();
+  check(/"nome": "Ana"/.test(js || "") && !/email/.test(js || ""), "visão JSON (sem a coluna escondida)");
+  await shot("04-json");
+  await page.click(".rv .modes button:has-text('Ficha')");
+  check(await page.locator(".fields .f").count() === 3 && /Linha 1/.test(await page.locator(".pos").textContent() || ""), "visão ficha mostra a linha campo a campo");
+  await page.click("button[title='Próxima (→)']");
+  check(/Linha 2/.test(await page.locator(".pos").textContent() || ""), "a ficha anda para a próxima linha");
+  await shot("05-ficha");
+  await page.click(".rv .modes button:has-text('Grade')");
+  await page.click(".colbtn");
+  await page.click(".pop button:has-text('Todas')");
+  await page.mouse.click(5, 5);
+
+  // estrutura: ver, coluna nova, índice, renomear e excluir coluna
+  await page.click(".pane button:has-text('Estrutura')");
+  await page.waitForSelector(".ts .col", { timeout: 10000 });
+  check(await page.locator(".ts .col").count() === 4, "a estrutura lista as colunas");
+  await page.click(".h4b");
+  check(/CREATE TABLE clientes/.test(await page.locator(".ddl").textContent() || ""), "a estrutura mostra o CREATE");
+  await shot("06-estrutura");
+  const runDrawer = async () => { await page.click(".drawer button:has-text('Executar')"); await page.waitForTimeout(900); };
+  await page.click(".ts .head button:has-text('Coluna')");
+  await page.locator(".drawer input.input").nth(0).fill("cidade");
+  await page.locator(".drawer input.input").nth(1).fill("TEXT");
+  check(/ALTER TABLE "clientes" ADD COLUMN "cidade" TEXT NULL;/.test(await page.locator(".drawer .sql").inputValue()), "o SQL da coluna nova aparece antes de rodar");
+  await shot("07-nova-coluna");
+  await runDrawer();
+  check(sql("SELECT group_concat(name) FROM pragma_table_info('clientes')").includes("cidade"), "coluna nova criada no banco");
+  check(await page.locator(".ts .col").count() === 5, "a estrutura relê depois da alteração");
+  await page.click(".ts button:has-text('Índice')");
+  await page.click(".drawer .pk:has-text('nome')");
+  await runDrawer();
+  check(sql("SELECT group_concat(name) FROM sqlite_master WHERE type = 'index'").includes("ix_clientes_nome"), "índice criado");
+  await page.locator(".ts .col", { hasText: "cidade" }).hover();
+  await page.locator(".ts .col", { hasText: "cidade" }).locator("button[title='Editar coluna']").click();
+  await page.locator(".drawer input.input").nth(0).fill("municipio");
+  await runDrawer();
+  check(sql("SELECT group_concat(name) FROM pragma_table_info('clientes')").includes("municipio"), "coluna renomeada");
+  await page.locator(".ts .col", { hasText: "municipio" }).hover();
+  await page.locator(".ts .col", { hasText: "municipio" }).locator("button[title='Excluir coluna']").click();
+  await confirmDialog("Excluir coluna");
+  await page.waitForTimeout(900);
+  check(!sql("SELECT group_concat(name) FROM pragma_table_info('clientes')").includes("municipio"), "coluna excluída");
+
+  // tabela nova, renomear e excluir pela árvore
+  await page.click("button[title='Nova tabela']");
+  await page.locator(".drawer input[placeholder='clientes']").fill("pedidos");
+  await page.click(".drawer button:has-text('Coluna')");
+  await page.locator(".drawer .tcr").nth(1).locator("input.input").nth(0).fill("total");
+  await page.locator(".drawer .tcr").nth(1).locator("input.input").nth(1).fill("REAL");
+  await shot("08-nova-tabela");
+  await runDrawer();
+  check(sql("SELECT count(*) FROM sqlite_master WHERE name = 'pedidos'") === "1", "tabela nova criada");
+  await page.waitForSelector(".obj:has-text('pedidos')", { timeout: 10000 });
+  await page.click(".obj:has-text('pedidos')", { button: "right" });
+  await page.click("[role=menu] >> text=Renomear…");
+  await page.locator(".dlg input.input").last().fill("pedidos2");
+  await confirmDialog("Ver o SQL");
+  await confirmDialog("Renomear");
+  await page.waitForTimeout(900);
+  check(sql("SELECT count(*) FROM sqlite_master WHERE name = 'pedidos2'") === "1", "tabela renomeada");
+  await page.click(".obj:has-text('pedidos2')", { button: "right" });
+  await page.click("[role=menu] >> text=Excluir a tabela…");
+  await page.locator(".dlg input.input").last().fill("pedidos2");
+  await confirmDialog("Excluir");
+  await page.waitForTimeout(900);
+  check(sql("SELECT count(*) FROM sqlite_master WHERE name LIKE 'pedidos%'") === "0", "tabela excluída (pedindo o nome)");
+  await page.locator(".tab:has-text('clientes')").click();
+  await page.click(".pane button:has-text('Dados')");
 
   // consulta + imagem
   await page.click("button[title='Nova consulta']");
@@ -129,8 +211,14 @@ try {
   await page.waitForTimeout(800);
   check(sql("SELECT saldo FROM clientes WHERE id = 1") === "10.5", "Desfazer devolve o valor");
 
-  // importar (só abre e lista — não importa nada)
+  // lista de bancos: o teste de conexão mostra latência e versão
   await page.goto(`${BASE}/#/data`);
+  await page.locator(".bc", { hasText: "Loja de teste" }).locator("button:has-text('Testar')").click();
+  await page.waitForSelector(".bc .hs.ok", { timeout: 15000 });
+  check(await page.locator(".bc .hs.ok").count() === 2, "Testar mostra os dois ambientes respondendo");
+  await shot("09-lista");
+
+  // importar (só abre e lista — não importa nada)
   await page.click("button:has-text('Importar')");
   await page.waitForSelector("text=Importar conexões", { timeout: 10000 });
   await page.waitForTimeout(1500);
@@ -140,7 +228,7 @@ try {
   // banco de servidor antigo como o import do DBeaver grava (legacy sem rc4): o cadastro tem de abrir
   const { bank: old } = await api("db/bank", { name: "Legado jTDS", engine: "sqlserver", envs: [{ kind: "dev", host: "10.0.0.1", tls: { mode: "pin", legacy: true } }] });
   await page.reload();   // fecha a importação e relê a lista
-  await page.locator(".brow", { hasText: "Legado jTDS" }).locator('button[title="Configurar"]').click();
+  await page.locator(".bc", { hasText: "Legado jTDS" }).locator('button[title="Configurar"]').click();
   await page.waitForSelector("text=Banco · Legado jTDS", { timeout: 5000 }).catch(() => {});
   check(await page.locator("text=Compatibilidade RC4").count() === 1, "o cadastro de um servidor antigo (sem rc4 gravado) abre");
   await page.keyboard.press("Escape");

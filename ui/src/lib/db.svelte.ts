@@ -32,9 +32,14 @@ export interface Column { name: string; type: string }
 export interface Result { statement: string; offset: number; columns?: Column[]; rows?: any[][]; affected?: number; truncated?: boolean; total?: number;
   messages?: string[]; ms: number }
 export interface DbObject { schema: string; name: string; kind: "table" | "view" | "procedure" | "function" }
-export interface TableInfo { schema: string; name: string; columns: { name: string; type: string; nullable: boolean; default: string | null; pk: number; identity: boolean }[];
+export interface TableInfo { schema: string; name: string;
+  columns: { name: string; type: string; nullable: boolean; default: string | null; pk: number; identity: boolean; comment?: string }[];
   fks: { name: string; columns: string[]; refSchema: string; refTable: string; refColumns: string[] }[];
-  indexes: { name: string; columns: string[]; unique: boolean; primary: boolean }[] }
+  indexes: { name: string; columns: string[]; unique: boolean; primary: boolean }[];
+  /** descrição da tabela, linhas estimadas e tamanho (dados + índices) — plugins a partir da 4.13; o SQLite traz o CREATE */
+  comment?: string; rows?: number; bytes?: number; ddl?: string }
+/** Como ver o resultado: grade, JSON ou ficha (uma linha por vez); a busca e as colunas escondidas valem para as três. */
+export interface ResultView { mode: "grid" | "json" | "record"; search: string; hidden: string[] }
 export interface Analysis { offset: number; first: string; write: boolean; txControl: boolean; noWhere: boolean; drop: boolean; alter: boolean; exec: boolean }
 
 export interface QueryTab {
@@ -46,6 +51,9 @@ export interface QueryTab {
   pendingTx?: { id: string; expires: string } | null;
   /** aba aberta de uma consulta salva: ⌘S grava nela */
   saved?: { id: string; scope: "bank" | "project" } | null;
+  view?: ResultView;
+  /** aba de tabela: Dados ou Estrutura */
+  pane?: "data" | "structure";
 }
 export interface SavedQuery { id: string; name: string; sql: string; scope: "bank" | "project"; store?: "local" | "repo"; updated: string }
 export interface Bench {
@@ -67,12 +75,14 @@ export const TLS_OFF_CODES = ["tls-unsupported", "tls-off-denied", "tls-off-publ
 export const quoteFor = (engine: Engine) => (id: string) =>
   engine === "sqlserver" ? `[${id.replace(/]/g, "]]")}]` : engine === "mysql" ? "`" + id.replace(/`/g, "``") + "`" : `"${id.replace(/"/g, '""')}"`;
 
+export const newView = (): ResultView => ({ mode: "grid", search: "", hidden: [] });
+
 let seq = 0;
 const newId = (p: string) => `${p}${Date.now().toString(36)}${(seq++).toString(36)}`;
 const LS = "codeck.db.benches";
 
 /** O que persiste da bancada entre aberturas do app: abas e textos (nunca resultados — podem ter dados sensíveis). */
-function readSaved(): Record<string, { bank: string | null; env: string | null; tabs: { id: string; title: string; kind: "sql" | "table"; sql: string; table?: any; saved?: any }[]; active: string | null }> {
+function readSaved(): Record<string, { bank: string | null; env: string | null; tabs: { id: string; title: string; kind: "sql" | "table"; sql: string; table?: any; saved?: any; view?: ResultView; pane?: any }[]; active: string | null }> {
   try { return JSON.parse(localStorage.getItem(LS) || "{}"); } catch { return {}; }
 }
 
@@ -134,7 +144,7 @@ class Db {
         key, repo: init.repo ?? null, bank: sv?.bank ?? init.bank ?? null, env: sv?.env ?? null, session: null, connecting: false, problem: null,
         app: (sv as any)?.app ?? null,
         objects: null, filter: "", infos: {},
-        tabs: (sv?.tabs || []).map(t => ({ ...t, results: [], pick: 0, running: false, queryId: null, ms: null, ranAt: null, error: null })),
+        tabs: (sv?.tabs || []).map(t => ({ ...t, view: { ...newView(), ...(t.view || {}), search: "" }, results: [], pick: 0, running: false, queryId: null, ms: null, ranAt: null, error: null })),
         active: sv?.active ?? null,
       };
       if (!b.tabs.length) b.tabs.push(this.blankTab(1));
@@ -145,14 +155,15 @@ class Db {
     return b;
   }
   blankTab(n: number): QueryTab {
-    return { id: newId("q"), title: `Consulta ${n}`, kind: "sql", sql: "", results: [], pick: 0, running: false, queryId: null, ms: null, ranAt: null, error: null };
+    return { id: newId("q"), title: `Consulta ${n}`, kind: "sql", sql: "", results: [], pick: 0, running: false, queryId: null, ms: null, ranAt: null, error: null, view: newView() };
   }
   persist() {
     clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       const out: any = {};
       for (const [k, b] of Object.entries(this.benches))
-        out[k] = { bank: b.bank, env: b.env, active: b.active, app: b.app, tabs: b.tabs.map(t => ({ id: t.id, title: t.title, kind: t.kind, sql: t.sql.slice(0, 200_000), table: t.table, saved: t.saved || null })) };
+        out[k] = { bank: b.bank, env: b.env, active: b.active, app: b.app, tabs: b.tabs.map(t => ({ id: t.id, title: t.title, kind: t.kind, sql: t.sql.slice(0, 200_000), table: t.table, saved: t.saved || null,
+          view: t.view ? { ...t.view, search: "" } : undefined, pane: t.pane })) };
       try { localStorage.setItem(LS, JSON.stringify(out)); } catch { /* cheio: fica só na memória */ }
     }, 400);
   }
@@ -259,12 +270,13 @@ class Db {
   }
 
   // ------------------------------------------------------------ consultas
-  async run(b: Bench, tab: QueryTab, sql: string, opts: { maxRows?: number } = {}) {
+  /** opts.confirm: a pessoa já viu e aprovou o SQL (alteração de estrutura) — não pergunta de novo. */
+  async run(b: Bench, tab: QueryTab, sql: string, opts: { maxRows?: number; confirm?: boolean } = {}) {
     if (!b.session || tab.running || !sql.trim()) return;
     tab.running = true; tab.error = null;
     tab.queryId = newId("r");
     const started = performance.now();
-    let confirm = false;
+    let confirm = !!opts.confirm;
     try {
       for (let attempt = 0; attempt < 4; attempt++) {
         try {
@@ -419,6 +431,47 @@ class Db {
       confirm: "Liberar" }))) return false;
     try { this.set(await post("db/link", { bank, repoId: repo, flags: { agents: on } })); await this.loadProject(repo); return true; }
     catch (e) { ui.error(e); return false; }
+  }
+
+  // ------------------------------------------------------------ estrutura (DDL) e saúde das conexões
+  /** Roda uma alteração de estrutura já revisada: produção continua pedindo para destravar e fica na transação esperando
+   *  Confirmar/Desfazer. Depois relê o catálogo (objetos e a estrutura das tabelas tocadas). */
+  async exec(b: Bench, statements: string[], touched: { schema: string; name: string }[] = []): Promise<boolean> {
+    if (!b.session || !statements.length) return false;
+    const sql = statements.join("\n");
+    const t = this.blankTab(0);
+    const r = await this.run(b, t, sql, { confirm: true });
+    if (!r || t.error) {
+      if (t.error) ui.error(new Error(t.error.message));
+      return false;
+    }
+    for (const x of touched) delete b.infos[`${x.schema}.${x.name}`];
+    for (const tab of b.tabs) if (tab.table && touched.some(x => x.schema === tab.table!.schema && x.name === tab.table!.name)) tab.info = await this.tableInfo(b, tab.table.schema, tab.table.name);
+    this.refreshObjects(b);
+    ui.toast(b.session?.pendingTx ? "Alteração feita — confirme ou desfaça na faixa de produção" : "Estrutura alterada");
+    return true;
+  }
+
+  /** Último teste de cada ambiente (Dados → Testar): latência, versão do servidor ou o problema. Só na memória. */
+  health = $state<Record<string, { at: number; ok: boolean; ms: number; server?: string; tls?: string | null; error?: string; busy?: boolean }>>({});
+  async ping(bank: string, env: string) {
+    const k = `${bank}:${env}`;
+    if (this.health[k]?.busy) return;
+    this.health[k] = { ...(this.health[k] || { at: 0, ok: false, ms: 0 }), busy: true };
+    const t0 = performance.now();
+    try {
+      const s: DbSession = await post("db/open", { bank, env, repoId: null }, { quiet: true });
+      const ms = Math.round(performance.now() - t0);
+      this.health[k] = { at: Date.now(), ok: true, ms, server: s.server, tls: s.tls ? s.tls.version : null };
+      post("db/close", { session: s.id }, { quiet: true }).catch(() => {});
+    } catch (e: any) {
+      const code = e instanceof ApiError ? e.data?.code || "" : "";
+      const error = code.startsWith("cert-") ? "certificado a conferir — abra o banco para aceitar"
+        : TLS_OFF_CODES.includes(code) ? "sem criptografia — abra o banco para decidir"
+        : code === "legacy-cbc" ? "servidor antigo (RC4) — abra o banco para decidir"
+        : code === "no-plugin" || /plugin/i.test(e?.message || "") ? (e?.message || "plugin não instalado") : (e?.message || String(e));
+      this.health[k] = { at: Date.now(), ok: false, ms: Math.round(performance.now() - t0), error };
+    }
   }
 
   // ------------------------------------------------------------ edições da grade

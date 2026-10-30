@@ -3,20 +3,24 @@
   // abas de consulta. Produção abre travada (somente leitura) e com a faixa vermelha; alteração em produção fica numa
   // transação esperando Confirmar/Desfazer, com o tempo correndo.
   import { Bot, Bookmark, BookmarkPlus, Radio, Smartphone, Upload, Undo2, Zap, Braces, ChevronDown, Clock, Database, Eye, FolderGit2, FileCode2, Filter, FunctionSquare, Image, Lock, LockOpen, Play, Plus, RefreshCw, Search, Settings2,
-    Square, Table2, TriangleAlert, Unplug, X } from "@lucide/svelte";
+    Square, Table2, TriangleAlert, Unplug, X, ListTree, Pencil, Trash2, Eraser, ShieldCheck, ShieldAlert, Copy, Keyboard } from "@lucide/svelte";
   import { onMount, untrack } from "svelte";
   import { get, post } from "../../lib/api";
   import { copyText } from "../../lib/clipboard";
-  import { db, ENGINE_LABEL, envName, isDoc, KIND_LABEL, quoteFor, type Bench, type DbBank, type DbObject, type QueryTab, type SavedQuery, type TableInfo, type AppDevice, type AppFile } from "../../lib/db.svelte";
+  import { db, ENGINE_LABEL, envName, isDoc, KIND_LABEL, newView, quoteFor, type Bench, type DbBank, type DbObject, type QueryTab, type SavedQuery, type TableInfo, type AppDevice, type AppFile } from "../../lib/db.svelte";
   import { sqlLiteral } from "../../lib/dbcopy";
+  import { canAlter, dropTable, renameTable, truncateTable } from "../../lib/dbddl";
   import { ago } from "../../lib/format";
   import { ui } from "../../lib/ui.svelte";
   import Drawer from "../Drawer.svelte";
   import Empty from "../Empty.svelte";
   import BankEditor from "./BankEditor.svelte";
+  import EngineMark from "./EngineMark.svelte";
   import PngDialog from "./PngDialog.svelte";
-  import ResultGrid from "./ResultGrid.svelte";
+  import ResultView from "./ResultView.svelte";
   import SqlEditor from "./SqlEditor.svelte";
+  import StructureEditor from "./StructureEditor.svelte";
+  import TableStructure from "./TableStructure.svelte";
 
   let { repo = null, bankId = null, onmanage = undefined }: { repo?: string | null; bankId?: string | null; onmanage?: () => void } = $props();
 
@@ -33,7 +37,7 @@
   let hq = $state("");
   let edH = $state(Number(localStorage.getItem("codeck.db.edH")) || 220);
   let treeW = $state(Number(localStorage.getItem("codeck.db.treeW")) || 250);
-  let structure = $state(false);
+  let newTable = $state(false);
   let sqlEd: SqlEditor | undefined = $state();
   let now = $state(Date.now());
 
@@ -133,7 +137,9 @@
     const t = { ...db.blankTab(0), title: "Do histórico", sql };
     b.tabs.push(t); b.active = t.id; historyOpen = false;
   }
-  $effect(() => { void b.tabs.map(t => t.sql + t.title); void b.active; void b.env; void b.bank; db.persist(); });
+  $effect(() => { void b.tabs.map(t => t.sql + t.title + JSON.stringify(t.view?.hidden || []) + t.view?.mode + t.pane); void b.active; void b.env; void b.bank; db.persist(); });
+  // aba antiga (de antes das visões): ganha a dela, para a busca e as colunas escondidas ficarem guardadas
+  $effect(() => { for (const t of b.tabs) if (!t.view) untrack(() => (t.view = newView())); });
 
   async function pickEnv(id: string) {
     if (id === b.env) return;
@@ -236,10 +242,10 @@
     return bank?.engine === "sqlserver" ? `SELECT TOP (${limit}) * FROM ${fullName(o)}${w}${ob}` : `SELECT * FROM ${fullName(o)}${w}${ob} LIMIT ${limit}`;
   }
   type TableTab = QueryTab & { where?: string; order?: { col: string; desc: boolean } | null };
-  function openTable(o: DbObject, where = "") {
+  function openTable(o: DbObject, where = "", pane: "data" | "structure" | null = null) {
     const existing = b.tabs.find(t => t.kind === "table" && t.table?.schema === o.schema && t.table?.name === o.name && !where) as TableTab | undefined;
-    if (existing) { b.active = existing.id; return; }
-    const t: TableTab = { ...db.blankTab(0), kind: "table", title: o.name, table: { schema: o.schema, name: o.name, kind: o.kind }, where, order: null, sql: "" };
+    if (existing) { b.active = existing.id; if (pane) existing.pane = pane; return; }
+    const t: TableTab = { ...db.blankTab(0), kind: "table", title: o.name, table: { schema: o.schema, name: o.name, kind: o.kind }, where, order: null, sql: "", pane: pane || "data" };
     t.sql = tableSql(o, where);
     b.tabs.push(t);
     b.active = t.id;
@@ -254,11 +260,63 @@
   }
   function objMenu(e: MouseEvent, o: DbObject) {
     e.preventDefault();
+    const alter = canAlter(bank?.engine) && !!b.session && !b.session.noWrite;
+    const E = bank?.engine as any;
     ui.contextMenu(e, [
-      ...(o.kind === "table" || o.kind === "view" ? [{ label: "Abrir dados", icon: Table2, onclick: () => openTable(o) }] : []),
+      ...(o.kind === "table" || o.kind === "view" ? [{ label: "Abrir dados", icon: Table2, onclick: () => openTable(o, "", "data") }, { label: "Estrutura", icon: ListTree, onclick: () => openTable(o, "", "structure") }] : []),
       { label: isDoc(bank?.engine) ? "Escrever a consulta" : "Escrever SELECT na consulta", icon: Braces, onclick: () => insertInQuery(o.kind === "procedure" ? (bank?.engine === "sqlserver" ? `EXEC ${fullName(o)}` : `CALL ${fullName(o)}()`) : tableSql(o, "", null, 100)) },
-      { label: "Copiar nome", onclick: () => copyText(fullName(o)) },
+      { label: "Copiar nome", icon: Copy, onclick: () => copyText(fullName(o)) },
+      ...(alter && o.kind === "table" ? [
+        { separator: true },
+        { label: "Renomear…", icon: Pencil, onclick: () => renameObj(o) },
+        { label: "Esvaziar…", icon: Eraser, danger: true, onclick: async () => {
+          const sql = truncateTable(E, o);
+          if (await ui.ask({ title: `Esvaziar ${o.name}?`, message: "Apaga todas as linhas e mantém a estrutura.", detail: sql, confirm: "Esvaziar", danger: true })) await exec(sql, [o]);
+        } },
+      ] : []),
+      ...(alter && (o.kind === "table" || o.kind === "view") ? [{ label: o.kind === "view" ? "Excluir a view…" : "Excluir a tabela…", icon: Trash2, danger: true, onclick: () => dropObj(o) }] : []),
     ]);
+  }
+  // ------------------------------------------------------------ estrutura: alterações (o SQL sempre aparece antes)
+  const locked = $derived(!!b.session && b.session.kind === "prod" && b.session.readOnly && !b.session.unlocked);
+  const exec = (sql: string[], touched: { schema: string; name: string }[]) => db.exec(b, sql, touched);
+  async function renameObj(o: { schema: string; name: string }) {
+    const v = await ui.ask({ title: `Renomear ${o.name}`, input: { label: "Novo nome", value: o.name, required: true }, confirm: "Ver o SQL" });
+    if (typeof v !== "string" || !v.trim() || v.trim() === o.name) return;
+    const sql = renameTable(bank!.engine as any, o, v.trim());
+    if (!(await ui.ask({ title: `Renomear para ${v.trim()}?`, message: "Consultas, views e procedures que usam o nome antigo deixam de funcionar.", detail: sql, confirm: "Renomear" }))) return;
+    if (await exec(sql, [o])) renamed(o, v.trim());
+  }
+  async function dropObj(o: DbObject) {
+    const sql = dropTable(bank!.engine as any, o, o.kind === "view");
+    const typed = await ui.ask({ title: `Excluir ${o.kind === "view" ? "a view" : "a tabela"} ${o.name}?`, danger: true, confirm: "Excluir", detail: sql,
+      message: o.kind === "view" ? "A view some (os dados das tabelas continuam)." : "A tabela e todos os dados somem. Para confirmar, digite o nome da tabela.",
+      input: o.kind === "view" ? undefined : { label: "Nome da tabela", placeholder: o.name, required: true } });
+    if (!typed || (o.kind !== "view" && typed !== o.name)) { if (typed) ui.toast("O nome não confere — nada foi excluído", "error"); return; }
+    if (await exec(sql, [o])) dropped(o);
+  }
+  function renamed(o: { schema: string; name: string }, to: string) {
+    for (const t of b.tabs as TableTab[]) if (t.table?.schema === o.schema && t.table?.name === o.name) {
+      t.table = { ...t.table, name: to }; t.title = to;
+      db.tableInfo(b, o.schema, to).then(info => (t.info = info));
+      rerunTable(t);
+    }
+  }
+  function dropped(o: { schema: string; name: string }) {
+    for (const t of [...b.tabs]) if (t.table?.schema === o.schema && t.table?.name === o.name) closeTab(t);
+  }
+  async function countRows(t: QueryTab): Promise<number | null> {
+    if (!t.table || isDoc(bank?.engine)) return null;
+    const s = db.blankTab(0);
+    const r = await db.run(b, s, `SELECT ${bank?.engine === "sqlserver" ? "COUNT_BIG(*)" : "COUNT(*)"} FROM ${fullName(t.table)}`);
+    const v = r?.results?.[0]?.rows?.[0]?.[0];
+    if (s.error) ui.error(new Error(s.error.message));
+    return v == null ? null : Number(v);
+  }
+  async function reloadInfo(t: QueryTab) {
+    if (!t.table) return;
+    delete b.infos[`${t.table.schema}.${t.table.name}`];
+    t.info = await db.tableInfo(b, t.table.schema, t.table.name);
   }
   function insertInQuery(text: string) {
     let t = b.tabs.find(x => x.id === b.active && x.kind === "sql") || b.tabs.find(x => x.kind === "sql");
@@ -317,9 +375,12 @@
     const col = (b.infos[`${ref.schema}.${ref.name}`]?.columns.find(c => c.name === fk.refColumns[0])?.type) || "";
     openTable(ref, `${q(fk.refColumns[0])} = ${sqlLiteral(value, bank!.engine, col || (typeof value === "number" ? "INT" : ""))}`);
   }
-  function sortBy(col: string) {
+  /** dois cliques no cabeçalho: ↑ → ↓ → sem ordem; pelo menu, a direção escolhida ("" = sem ordem) */
+  function sortBy(col: string, desc?: boolean) {
     const t = tab as TableTab;
-    t.order = t.order?.col === col ? (t.order.desc ? null : { col, desc: true }) : { col, desc: false };
+    if (!col) t.order = null;
+    else if (desc !== undefined) t.order = { col, desc };
+    else t.order = t.order?.col === col ? (t.order.desc ? null : { col, desc: true }) : { col, desc: false };
     rerunTable(t);
   }
 
@@ -353,16 +414,23 @@
 <div class="wb" class:prod style="--tw:{treeW}px">
   <!-- barra: banco, ambiente, conexão -->
   <div class="top">
-    {#if banks.length + (appUsable ? 1 : 0) > 1}
-      <select class="select bsel" value={b.bank} onchange={(e) => pickBank((e.target as HTMLSelectElement).value)}>
-        {#each banks as x (x.id)}<option value={x.id}>{x.link?.alias || x.name}</option>{/each}
-        {#if appUsable}<option value="app">📱 Banco do app</option>{/if}
-      </select>
-    {:else if isApp}
-      <span class="bname"><Smartphone size={14} /><b>Banco do app</b></span>
-    {:else}
-      <span class="bname"><span class="dot" style="background:{bank?.color}"></span><b>{bank?.link?.alias || bank?.name}</b></span>
-    {/if}
+    <div class="capsule" class:live={!!b.session} class:busy={b.connecting} class:bad={!b.session && !!(b.problem || appProblem)} style="--bc:{bank?.color || 'var(--accent)'}">
+      {#if isApp}<EngineMark engine="app" size={30} />{:else if bank}<EngineMark engine={bank.engine} size={30} />{/if}
+      <div class="cm">
+        {#if banks.length + (appUsable ? 1 : 0) > 1}
+          <select class="bsel" value={b.bank} onchange={(e) => pickBank((e.target as HTMLSelectElement).value)} title="Trocar de banco">
+            {#each banks as x (x.id)}<option value={x.id}>{x.link?.alias || x.name}</option>{/each}
+            {#if appUsable}<option value="app">📱 Banco do app</option>{/if}
+          </select>
+        {:else}
+          <b class="bname ell">{isApp ? "Banco do app" : bank?.link?.alias || bank?.name}</b>
+        {/if}
+        <span class="cst tiny ell">
+          <span class="sd"></span>
+          {#if b.connecting}Conectando…{:else if bank && !isApp && db.plugin(bank.engine) && !db.plugin(bank.engine)!.installed}<button class="link" onclick={async () => { if (await db.installPlugin(bank!.engine)) db.connect(b); }}>Instalar o plugin de {ENGINE_LABEL[bank.engine]}</button>{:else if b.session}{b.session.server}{#if b.session.tls}<span class="tls" title={`${b.session.tls.version} · ${b.session.tls.cipher}`}><ShieldCheck size={11} /> {b.session.tls.version}</span>{:else if bank?.engine !== "sqlite" && !isApp}<span class="tls off" title="sem criptografia"><ShieldAlert size={11} /> sem TLS</span>{/if}{:else if b.problem}<span class="err">{b.problem}</span>{:else if appProblem}<span class="err">{appProblem}</span>{:else}desconectado{/if}
+        </span>
+      </div>
+    </div>
     {#if isApp}
       <select class="select asel" value={b.app?.device || ""} title="Aparelho" onchange={(e) => pickDevice((e.target as HTMLSelectElement).value)}>
         {#if !appDevices}<option value="">procurando aparelhos…</option>{:else if !appDevices.length}<option value="">nenhum aparelho ligado</option>{/if}
@@ -376,12 +444,9 @@
     {/if}
     <div class="envs" role="tablist" aria-label="Ambiente" class:hidden={isApp}>
       {#each bank?.envs || [] as e (e.id)}
-        <button role="tab" class="ek {e.kind}" class:on={e.id === b.env} aria-selected={e.id === b.env} onclick={() => pickEnv(e.id)}>{envName(e)}</button>
+        <button role="tab" class="ek {e.kind}" class:on={e.id === b.env} aria-selected={e.id === b.env} onclick={() => pickEnv(e.id)}><i></i>{envName(e)}</button>
       {/each}
     </div>
-    <span class="tiny muted conn ell">
-      {#if b.connecting}Conectando…{:else if bank && db.plugin(bank.engine) && !db.plugin(bank.engine)!.installed}<button class="link" onclick={async () => { if (await db.installPlugin(bank!.engine)) db.connect(b); }}>Instalar o plugin de {ENGINE_LABEL[bank.engine]}</button>{:else if b.session}{b.session.server}{b.session.tls ? ` · ${b.session.tls.version}` : bank?.engine === "sqlite" ? "" : " · sem criptografia"}{:else if b.problem}<span class="err">{b.problem}</span>{:else if appProblem}<span class="err">{appProblem}</span>{/if}
-    </span>
     <span class="grow"></span>
     {#if prod && b.session}
       {#if b.session.readOnly && !b.session.unlocked}
@@ -390,15 +455,17 @@
         <button class="btn sm danger" title="Alterações liberadas nesta conexão — clique para travar de novo" onclick={() => db.lock(b)}><LockOpen size={13} /> Destravado</button>
       {/if}
     {/if}
-    <button class="btn sm ghost icon" title="Reconectar" onclick={() => db.connect(b)}><RefreshCw size={14} /></button>
-    {#if b.session}<button class="btn sm ghost icon" title="Desconectar" onclick={() => db.disconnect(b)}><Unplug size={14} /></button>{/if}
     {#if repo && !isApp && bank?.link}
       <button class="btn sm ghost" class:agents={bank.link.agents} title={bank.link.agents ? "Agentes de IA deste projeto podem consultar este banco (MCP) — clique para desligar" : "Liberar este banco para os agentes de IA deste projeto (MCP)"}
-        onclick={async () => { if (await db.setAgents(bank!.id, repo!, !bank!.link!.agents)) banks = db.project[repo!] || banks; }}><Bot size={13} /> {bank.link.agents ? "Agentes: sim" : "Agentes"}</button>
+        onclick={async () => { if (await db.setAgents(bank!.id, repo!, !bank!.link!.agents)) banks = db.project[repo!] || banks; }}><Bot size={13} /> <span class="lbl">{bank.link.agents ? "Agentes: sim" : "Agentes"}</span></button>
     {/if}
-    <button class="btn sm ghost icon" title="Histórico de consultas (só neste computador)" onclick={openHistory}><Clock size={14} /></button>
-    {#if !isApp}<button class="btn sm ghost icon" title="Configurar este banco" onclick={() => (editing = bank)}><Settings2 size={14} /></button>
-    {:else}<button class="btn sm ghost icon" title="Procurar aparelhos e arquivos de novo" onclick={loadDevices}><Smartphone size={14} /></button>{/if}
+    <div class="tools">
+      <button class="btn sm ghost icon" title="Reconectar" onclick={() => db.connect(b)}><RefreshCw size={14} class={b.connecting ? "spin" : ""} /></button>
+      {#if b.session}<button class="btn sm ghost icon" title="Desconectar" onclick={() => db.disconnect(b)}><Unplug size={14} /></button>{/if}
+      <button class="btn sm ghost icon" title="Histórico de consultas (só neste computador)" onclick={openHistory}><Clock size={14} /></button>
+      {#if !isApp}<button class="btn sm ghost icon" title="Configurar este banco" onclick={() => (editing = bank)}><Settings2 size={14} /></button>
+      {:else}<button class="btn sm ghost icon" title="Procurar aparelhos e arquivos de novo" onclick={loadDevices}><Smartphone size={14} /></button>{/if}
+    </div>
   </div>
   {#if isApp && b.session?.app}
     {@const a = b.session.app}
@@ -426,18 +493,24 @@
   <div class="main">
     <!-- objetos -->
     <aside class="tree">
-      <div class="tf"><Search size={13} /><input class="input" placeholder="Filtrar tabelas…" bind:value={b.filter} />
-        <button class="btn sm ghost icon" title="Recarregar objetos" onclick={() => db.refreshObjects(b)}><RefreshCw size={12} /></button></div>
+      <div class="th">
+        <span class="dbn ell" title="Banco/base conectada"><Database size={13} /> {b.session?.database || env?.database || (env?.file || b.app?.path || "").split(/[\\/]/).pop() || "—"}</span>
+        {#if b.objects}<span class="tiny muted">{b.objects.length}</span>{/if}
+        <span class="grow"></span>
+        {#if canAlter(bank?.engine) && b.session && !b.session.noWrite && !isApp}<button class="btn sm ghost icon" title="Nova tabela" onclick={() => (newTable = true)}><Plus size={14} /></button>{/if}
+        <button class="btn sm ghost icon" title="Recarregar objetos" onclick={() => db.refreshObjects(b)}><RefreshCw size={12} /></button>
+      </div>
+      <div class="tf"><Search size={13} /><input placeholder="Filtrar tabelas…" bind:value={b.filter} />{#if b.filter}<button class="clr" title="Limpar" onclick={() => (b.filter = "")}><X size={11} /></button>{/if}</div>
       <div class="tl">
         {#if (saved.length || repo) && !isApp}
           <div class="gh sv">
-            <button class="ghb" onclick={() => (closedGroups.saved = !closedGroups.saved)}><ChevronDown size={12} class={closedGroups.saved ? "rot" : ""} /> Consultas salvas <span class="tiny muted">{saved.length}</span></button>
+            <button class="ghb" onclick={() => (closedGroups.saved = !closedGroups.saved)}><ChevronDown size={12} class={closedGroups.saved ? "rot" : ""} /> Consultas salvas <span class="gn">{saved.length}</span></button>
             {#if repo}<button class="btn sm ghost icon wh" title={savedWhere === "repo" ? "Consultas do projeto no repositório (versionadas) — clique para guardar só neste computador" : "Consultas do projeto só neste computador — clique para guardar no repositório"}
               onclick={() => setWhere(savedWhere === "repo" ? "local" : "repo")}>{#if savedWhere === "repo"}<FolderGit2 size={12} />{:else}<Bookmark size={12} />{/if}</button>{/if}
           </div>
           {#if !closedGroups.saved}
             {#each saved.filter(q => !b.filter || q.name.toLowerCase().includes(b.filter.toLowerCase())) as q (q.scope + q.id)}
-              <button class="obj" title={q.sql.slice(0, 300)} onclick={() => openSaved(q)} oncontextmenu={(e) => savedMenu(e, q)}>
+              <button class="obj sq" class:cur={tab?.saved?.id === q.id} title={q.sql.slice(0, 300)} onclick={() => openSaved(q)} oncontextmenu={(e) => savedMenu(e, q)}>
                 {#if q.store === "repo"}<FolderGit2 size={13} />{:else}<Bookmark size={13} />{/if}<span class="ell">{q.name}</span>
                 {#if repo}<span class="tiny muted sc">{q.scope === "bank" ? "banco" : "projeto"}</span>{/if}
               </button>
@@ -445,19 +518,22 @@
             {#if !saved.length}<p class="tiny muted pad0">⌘S numa consulta salva aqui.</p>{/if}
           {/if}
         {/if}
-        {#if b.session && !b.objects}<p class="tiny muted pad">Lendo objetos…</p>{/if}
+        {#if b.session && !b.objects}
+          <div class="skel"><span class="shim"></span><span class="shim"></span><span class="shim"></span><span class="shim"></span></div>
+        {/if}
         {#each groups.items as g (g.k)}
-          <button class="gh" onclick={() => (closedGroups[g.k] = !closedGroups[g.k])}><ChevronDown size={12} class={closedGroups[g.k] ? "rot" : ""} /> {g.label} <span class="tiny muted">{g.list.length}</span></button>
+          <button class="gh" onclick={() => (closedGroups[g.k] = !closedGroups[g.k])}><ChevronDown size={12} class={closedGroups[g.k] ? "rot" : ""} /> {g.label} <span class="gn">{g.list.length}</span></button>
           {#if !closedGroups[g.k]}
             {#each g.list.slice(0, 3000) as o (o.schema + "." + o.name)}
               {@const I = g.icon}
-              <button class="obj" title={`${o.schema}.${o.name}`} ondblclick={() => (o.kind === "table" || o.kind === "view") && openTable(o)}
+              <button class="obj k-{o.kind}" class:cur={tab?.table?.schema === o.schema && tab?.table?.name === o.name} title={`${o.schema}.${o.name}`}
                 onclick={() => (o.kind === "table" || o.kind === "view") && openTable(o)} oncontextmenu={(e) => objMenu(e, o)}>
                 <I size={13} /><span class="ell">{#if o.schema && o.schema !== groups.defSchema && bank?.engine !== "sqlite" && bank?.engine !== "mysql"}<span class="muted">{o.schema}.</span>{/if}{o.name}</span>
               </button>
             {/each}
           {/if}
         {/each}
+        {#if b.objects && !groups.items.length && b.filter}<p class="tiny muted pad">Nada com “{b.filter}”.</p>{/if}
       </div>
     </aside>
     <div class="vr" role="separator" aria-orientation="vertical" onpointerdown={(e) => drag(e, "tree")}></div>
@@ -466,15 +542,15 @@
     <section class="work">
       <div class="tabs" role="tablist">
         {#each b.tabs as t (t.id)}
-          <div class="tab" class:on={t.id === tab?.id} role="tab" tabindex="0" aria-selected={t.id === tab?.id} onclick={() => (b.active = t.id)} onkeydown={(e) => e.key === "Enter" && (b.active = t.id)}
-            ondblclick={() => t.kind === "sql" && renameTab(t)} title={t.kind === "table" ? `${t.table?.schema}.${t.table?.name}` : "Dois cliques renomeia"}>
-            {#if t.kind === "table"}<Table2 size={12} />{:else}<Braces size={12} />{/if}
+          <div class="tab" class:on={t.id === tab?.id} class:tt={t.kind === "table"} role="tab" tabindex="0" aria-selected={t.id === tab?.id} onclick={() => (b.active = t.id)} onkeydown={(e) => e.key === "Enter" && (b.active = t.id)}
+            ondblclick={() => t.kind === "sql" && renameTab(t)} onauxclick={(e) => e.button === 1 && closeTab(t)} title={t.kind === "table" ? `${t.table?.schema}.${t.table?.name}` : "Dois cliques renomeia"}>
+            {#if t.kind === "table"}{#if t.table?.kind === "view"}<Eye size={12} />{:else}<Table2 size={12} />{/if}{:else if t.saved}<Bookmark size={12} />{:else}<Braces size={12} />{/if}
             <span class="ell">{t.title}</span>
             {#if t.running}<span class="spin"></span>{/if}
             <button class="x" title="Fechar" onclick={(e) => { e.stopPropagation(); closeTab(t); }}><X size={11} /></button>
           </div>
         {/each}
-        <button class="btn sm ghost icon" title="Nova consulta" onclick={newTab}><Plus size={14} /></button>
+        <button class="btn sm ghost icon nt" title="Nova consulta" onclick={newTab}><Plus size={14} /></button>
       </div>
 
       {#if tab}
@@ -493,36 +569,44 @@
               <button class="btn sm ghost" disabled={!tab.sql.trim()} onclick={() => saveTab(tab)} title={tab.saved ? "Salvar alterações na consulta" : "Salvar esta consulta"}><BookmarkPlus size={13} /> {tab.saved ? "Salvar" : "Salvar…"} <span class="kbd">⌘S</span></button>
             {/if}
             <span class="grow"></span>
-            {#if res?.columns?.length}<button class="btn sm ghost" onclick={() => (png = { cols: res!.columns!.map((_, i) => i), rows: res!.rows!.map((_, i) => i), tab })}><Image size={13} /> Imagem</button>{/if}
+            {#if tab.ranAt && !tab.running}<span class="tiny muted">{tab.error ? "erro" : footer}</span>{/if}
           </div>
           <div class="hr" role="separator" aria-orientation="horizontal" onpointerdown={(e) => drag(e, "ed")}></div>
         {:else}
           {@const tt = tab as TableTab}
           <div class="bar tbar">
-            <Filter size={13} class="muted" />
-            <input class="input mono where" placeholder={bank?.engine === "mongodb" ? "{cidade: 'Recife'}  (filtro · Enter aplica)" : bank?.engine === "redis" ? "padrão das chaves: usuario:1*  (Enter aplica)" : bank?.engine === "firebase" ? (env?.host?.startsWith("https://") ? "orderByChild('cidade').equalTo('Recife')" : "where('cidade', '==', 'Recife')") : "WHERE …  (Enter aplica)"} bind:value={tt.where} onkeydown={(e) => e.key === "Enter" && rerunTable(tt)} />
-            {#if tab.running}<button class="btn sm danger" onclick={() => db.cancel(b, tab)}><Square size={12} /> Cancelar</button>
-            {:else}<button class="btn sm" onclick={() => rerunTable(tt)}><RefreshCw size={12} /> Atualizar</button>{/if}
-            <button class="btn sm ghost" class:on={structure} onclick={() => (structure = !structure)}>Estrutura</button>
-            {#if res?.columns?.length}<button class="btn sm ghost" onclick={() => (png = { cols: res!.columns!.map((_, i) => i), rows: res!.rows!.map((_, i) => i), tab })}><Image size={13} /> Imagem</button>{/if}
-            {#if !editable && tab.info && tab.table?.kind === "table"}<span class="tiny muted" title="Sem chave primária, não dá para saber qual linha alterar com segurança">somente leitura (sem chave primária)</span>{/if}
+            <div class="pane" role="tablist" aria-label="Dados ou estrutura">
+              <button role="tab" class:on={tab.pane !== "structure"} aria-selected={tab.pane !== "structure"} onclick={() => (tab.pane = "data")}><Table2 size={13} /> Dados</button>
+              <button role="tab" class:on={tab.pane === "structure"} aria-selected={tab.pane === "structure"} onclick={() => { tab.pane = "structure"; if (!tab.info && tab.table) db.tableInfo(b, tab.table.schema, tab.table.name).then(i => (tab.info = i)); }}><ListTree size={13} /> Estrutura</button>
+            </div>
+            {#if tab.pane !== "structure"}
+              <label class="where"><Filter size={13} />
+                <input class="mono" placeholder={bank?.engine === "mongodb" ? "{cidade: 'Recife'}  (filtro · Enter aplica)" : bank?.engine === "redis" ? "padrão das chaves: usuario:1*  (Enter aplica)" : bank?.engine === "firebase" ? (env?.host?.startsWith("https://") ? "orderByChild('cidade').equalTo('Recife')" : "where('cidade', '==', 'Recife')") : "WHERE …  (Enter aplica no servidor)"} bind:value={tt.where} onkeydown={(e) => e.key === "Enter" && rerunTable(tt)} />
+                {#if tt.where}<button class="clr" title="Tirar o filtro" onclick={() => { tt.where = ""; rerunTable(tt); }}><X size={11} /></button>{/if}
+              </label>
+              {#if tab.running}<button class="btn sm danger" onclick={() => db.cancel(b, tab)}><Square size={12} /> Cancelar</button>
+              {:else}<button class="btn sm" onclick={() => rerunTable(tt)}><RefreshCw size={12} /> Atualizar</button>{/if}
+              {#if !editable && tab.info && tab.table?.kind === "table"}<span class="tiny muted ro" title="Sem chave primária, não dá para saber qual linha alterar com segurança"><Lock size={11} /> só leitura (sem chave primária)</span>{/if}
+            {:else}
+              <span class="tiny muted">{tab.table?.schema && bank?.engine !== "sqlite" ? tab.table.schema + "." : ""}{tab.table?.name}</span>
+            {/if}
           </div>
         {/if}
 
         <div class="out">
-          {#if tab.error}
+          {#if tab.error && !(tab.kind === "table" && tab.pane === "structure")}
             <div class="errbox"><TriangleAlert size={15} /><pre>{tab.error.message}</pre></div>
           {/if}
-          {#if structure && tab.kind === "table" && tab.info}
-            <div class="struct">
-              <table>
-                <thead><tr><th>Coluna</th><th>Tipo</th><th>Nulo</th><th>Padrão</th><th></th></tr></thead>
-                <tbody>{#each tab.info.columns as c (c.name)}<tr><td><b>{c.name}</b></td><td class="mono">{c.type}</td><td>{c.nullable ? "sim" : "não"}</td><td class="mono ell">{c.default ?? ""}</td>
-                  <td class="tiny">{c.pk ? "🔑 PK" : ""}{c.identity ? " auto" : ""}</td></tr>{/each}</tbody>
-              </table>
-              {#if tab.info.indexes.length}<h4>Índices</h4><ul>{#each tab.info.indexes as ix (ix.name)}<li><b>{ix.name}</b> ({ix.columns.join(", ")}){ix.primary ? " · primária" : ix.unique ? " · única" : ""}</li>{/each}</ul>{/if}
-              {#if tab.info.fks.length}<h4>Chaves estrangeiras</h4><ul>{#each tab.info.fks as fk (fk.name)}<li>{fk.columns.join(", ")} → <b>{fk.refTable}</b> ({fk.refColumns.join(", ")})</li>{/each}</ul>{/if}
-            </div>
+          {#if tab.kind === "table" && tab.pane === "structure"}
+            {#if tab.info}
+              {#key tab.table?.schema + "." + tab.table?.name}
+                <TableStructure info={tab.info} engine={bank?.engine || "postgres"} kind={tab.table?.kind} {prod} {locked} onexec={exec}
+                  onopen={(t2) => openTable({ ...t2, kind: "table" }, "", "structure")} oncount={isDoc(bank?.engine) ? undefined : () => countRows(tab)}
+                  onrenamed={(n) => renamed(tab.table!, n)} ondropped={() => dropped(tab.table!)} onrefresh={() => reloadInfo(tab)} />
+              {/key}
+            {:else}
+              <div class="skel big"><span class="shim"></span><span class="shim"></span><span class="shim"></span></div>
+            {/if}
           {:else}
             {#if tab.results.filter(r => r.columns?.length).length > 1}
               <div class="sets">
@@ -537,17 +621,28 @@
             {/if}
             {#if res?.columns?.length}
               <div class="gridwrap">
-                <ResultGrid columns={res.columns} rows={res.rows || []} engine={bank?.engine || "postgres"} copyFormat={db.data?.prefs.copyFormat || "tsv"}
-                  editable={editable} {onapply} {onfk} footer={footer}
+                <ResultView columns={res.columns} rows={res.rows || []} engine={bank?.engine || "postgres"} view={tab.view ?? newView()} copyFormat={db.data?.prefs.copyFormat || "tsv"}
+                  editable={editable} info={tab.info || null} {onapply} {onfk} footer={footer}
                   sort={tab.kind === "table" ? (tab as TableTab).order || null : null} onsort={tab.kind === "table" ? sortBy : undefined}
-                  onpng={(cols, rows) => (png = { cols, rows, tab })} {flash} />
+                  onpng={(cols, rows) => (png = { cols, rows, tab })} {flash}>
+                  {#snippet tools()}
+                    <button class="btn sm ghost" title="Imagem (PNG) do resultado" onclick={() => (png = { cols: res!.columns!.map((_, i) => i), rows: res!.rows!.map((_, i) => i), tab })}><Image size={13} /> Imagem</button>
+                  {/snippet}
+                </ResultView>
               </div>
               {#if res.truncated}<div class="trunc tiny">Mostrando as primeiras {res.rows?.length.toLocaleString("pt-BR")} linhas.
                 <button class="link" onclick={() => db.run(b, tab, tab.kind === "table" ? tab.sql.replace(/TOP \(\d+\)|LIMIT \d+|limit\(\d+\)|limitToFirst\(\d+\)/i, (m) => m.replace(/\d+/, "10000")) : tab.sql, { maxRows: 10000 })}>Buscar até 10.000</button></div>{/if}
             {:else if !tab.running && !tab.error && !affected.length && tab.ranAt}
               <p class="tiny muted pad">Executado sem resultado ({tab.ms} ms).</p>
+            {:else if tab.running && !tab.results.length}
+              <div class="skel big"><span class="shim"></span><span class="shim"></span><span class="shim"></span></div>
             {:else if !tab.ranAt && !tab.running && tab.kind === "sql"}
-              <p class="tiny muted pad hint">⌘↩ executa o comando onde está o cursor (ou o trecho selecionado) · ⇧⌘↩ executa tudo · clique numa tabela à esquerda para abrir os dados</p>
+              <div class="welcome">
+                <div class="wk"><Keyboard size={16} /><span><span class="kbd">⌘↩</span> executa o comando do cursor (ou o trecho selecionado)</span></div>
+                <div class="wk"><Play size={16} /><span><span class="kbd">⇧⌘↩</span> executa o script inteiro · <span class="kbd">⌘S</span> salva a consulta</span></div>
+                <div class="wk"><Table2 size={16} /><span>Clique numa tabela à esquerda para ver os dados; botão direito para a <b>estrutura</b>, renomear ou excluir</span></div>
+                <div class="wk"><Search size={16} /><span>No resultado: <b>Grade</b>, <b>JSON</b> ou <b>Ficha</b>, busca (<span class="kbd">⌘F</span>) e colunas escondidas</span></div>
+              </div>
             {/if}
           {/if}
         </div>
@@ -576,6 +671,11 @@
 {#if editing}
   <BankEditor bank={editing === "new" ? null : editing} onclose={() => (editing = null)} onsaved={() => loadBanks()} />
 {/if}
+{#if newTable && bank}
+  <StructureEditor engine={bank.engine} what={{ kind: "table", schema: groups.defSchema && !isDoc(bank.engine) ? groups.defSchema : (bank.engine === "mysql" ? b.session?.database || "" : "") }} {prod}
+    onexec={async (sql, touched) => { const ok = await exec(sql, touched); if (ok && touched[0]) setTimeout(() => openTable({ ...touched[0], kind: "table" }, "", "structure"), 300); return ok; }}
+    onclose={() => (newTable = false)} />
+{/if}
 {#if png && bank && (env || isApp)}
   {@const r = png.tab.results[png.tab.pick]}
   <PngDialog columns={png.cols.map(i => r.columns![i])} rows={png.rows.map(ri => png!.cols.map(ci => r.rows![ri][ci]))}
@@ -587,19 +687,39 @@
 
 <style>
   .center { height: 100%; display: grid; place-items: center; }
-  .wb { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-  .top { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex: none; min-width: 0; }
-  .bsel { width: auto; max-width: 240px; height: 28px; }
-  .bname { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; white-space: nowrap; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; }
-  .envs { display: inline-flex; background: var(--surface-2); border-radius: 8px; padding: 2px; gap: 2px; }
-  .ek { border: 0; background: transparent; color: var(--muted); font: 600 12px var(--font); padding: 4px 10px; border-radius: 6px; cursor: pointer; }
-  .ek.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
-  .ek.on.prod { background: var(--bad); color: #fff; }
-  .ek.on.hml { color: var(--warn); }
-  .ek.on.dev { color: var(--good); }
-  .conn { min-width: 0; max-width: 40%; }
+  .wb { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--surface); }
+  /* barra de cima: o cartão da conexão (marca do banco, nome, estado), os ambientes e as ferramentas */
+  .top { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex: none; min-width: 0;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--bc, var(--accent)) 4%, var(--surface)), var(--surface)); }
+  .capsule { display: flex; align-items: center; gap: 10px; min-width: 0; max-width: 46%; padding: 4px 12px 4px 4px; border-radius: 12px;
+    border: 1px solid var(--line); background: var(--surface-2); flex: 0 1 auto; transition: border-color var(--t), box-shadow var(--t); }
+  .capsule.live { border-color: color-mix(in srgb, var(--good) 28%, var(--line)); }
+  .capsule.bad { border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
+  .cm { display: grid; gap: 1px; min-width: 0; }
+  .bsel { appearance: none; border: 0; background: none; color: var(--text); font: 650 13.5px var(--font); padding: 0 16px 0 0; cursor: pointer; min-width: 0; max-width: 260px;
+    background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position: right 6px top 55%, right 2px top 55%; background-size: 4px 4px; background-repeat: no-repeat; outline: none; }
+  .bname { font-size: 13.5px; }
+  .cst { display: flex; align-items: center; gap: 6px; color: var(--muted); min-width: 0; }
+  .sd { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+  .capsule.live .sd { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 20%, transparent); animation: beat 2.4s ease-in-out infinite; }
+  .capsule.busy .sd { background: var(--warn); animation: beat .9s ease-in-out infinite; }
+  .capsule.bad .sd { background: var(--bad); }
+  @keyframes beat { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 0%, transparent); opacity: .65; } }
+  .tls { display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; border-radius: 99px; background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); font-weight: 600; flex: none; }
+  .tls.off { background: var(--warn-soft); color: var(--warn); }
   .err { color: var(--bad); }
+  .envs { display: inline-flex; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 2px; gap: 2px; flex: none; }
+  .ek { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--muted); font: 650 12px var(--font); padding: 4px 11px; border-radius: 8px; cursor: pointer;
+    transition: background var(--t-fast), color var(--t-fast); }
+  .ek i { width: 6px; height: 6px; border-radius: 50%; background: var(--good); opacity: .55; }
+  .ek.hml i { background: var(--warn); } .ek.prod i { background: var(--bad); }
+  .ek:hover { color: var(--text); }
+  .ek.on { background: var(--surface-3); color: var(--text); box-shadow: var(--shadow-1); }
+  .ek.on i { opacity: 1; }
+  .ek.on.prod { background: var(--bad); color: #fff; }
+  .ek.on.prod i { background: #fff; }
+  .tools { display: flex; gap: 2px; padding-left: 6px; border-left: 1px solid var(--line); flex: none; }
   .lockb { color: var(--good); }
   .agents { color: var(--accent); background: var(--accent-soft); }
   .asel { width: auto; max-width: 230px; height: 28px; }
@@ -607,39 +727,80 @@
   .hidden { display: none; }
   .appbar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--line); flex: none; flex-wrap: wrap; }
   .appbar .pend { color: var(--warn); font-weight: 650; }
-  .prodbar { display: flex; align-items: center; gap: 6px; justify-content: center; padding: 3px; background: var(--bad); color: #fff; font: 700 11px var(--font); letter-spacing: .06em; flex: none; }
+  .prodbar { display: flex; align-items: center; gap: 6px; justify-content: center; padding: 3px; color: #fff; font: 700 11px var(--font); letter-spacing: .08em; flex: none;
+    background: repeating-linear-gradient(-45deg, var(--bad), var(--bad) 12px, color-mix(in srgb, var(--bad) 85%, #000) 12px, color-mix(in srgb, var(--bad) 85%, #000) 24px); }
   .wb.prod .tabs { box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--bad) 55%, transparent); }
   .txbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--bad-soft); border-bottom: 1px solid var(--bad); font-size: 13px; flex: none; }
   .txbar :global(svg) { color: var(--bad); }
   .main { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--tw) 4px minmax(0, 1fr); }
-  .tree { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
-  .tf { display: flex; align-items: center; gap: 6px; padding: 8px; color: var(--muted); }
-  .tf .input { height: 27px; }
-  .tl { flex: 1; overflow: auto; padding: 0 4px 10px; }
-  .gh { display: flex; align-items: center; gap: 5px; width: 100%; border: 0; background: none; color: var(--text-2); font: 650 11.5px var(--font); padding: 6px 6px 4px; cursor: pointer; text-transform: uppercase; letter-spacing: .03em; }
+  /* árvore de objetos */
+  .tree { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--bg-2); }
+  .th { display: flex; align-items: center; gap: 6px; padding: 8px 8px 2px 12px; }
+  .dbn { display: inline-flex; align-items: center; gap: 6px; font: 650 12.5px var(--font); color: var(--text-2); min-width: 0; }
+  .dbn :global(svg) { color: var(--accent); flex: none; }
+  .tf { display: flex; align-items: center; gap: 6px; margin: 6px 8px; padding: 0 8px; height: 28px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--muted);
+    transition: border-color var(--t-fast), box-shadow var(--t-fast); }
+  .tf:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .tf input { flex: 1; min-width: 0; border: 0; outline: none; background: none; color: var(--text); font: 12.5px var(--font); }
+  .clr { display: grid; place-items: center; border: 0; background: none; color: var(--muted); cursor: pointer; padding: 2px; border-radius: 4px; }
+  .clr:hover { background: var(--surface-3); color: var(--text); }
+  .tl { flex: 1; overflow: auto; padding: 0 6px 10px; }
+  .gh { display: flex; align-items: center; gap: 5px; width: 100%; border: 0; background: none; color: var(--muted); font: 700 10.5px var(--font); padding: 10px 6px 4px; cursor: pointer; text-transform: uppercase; letter-spacing: .07em; }
+  .gh:hover { color: var(--text-2); }
   .gh :global(.rot) { transform: rotate(-90deg); }
-  .obj { display: flex; align-items: center; gap: 7px; width: 100%; border: 0; background: none; color: var(--text); font: 12.5px var(--font); padding: 4px 8px 4px 16px; border-radius: 6px; cursor: pointer; text-align: left; min-width: 0; }
-  .obj:hover { background: var(--surface-2); }
+  .gn { margin-left: auto; font: 650 10px var(--font); padding: 1px 6px; border-radius: 99px; background: var(--surface-3); color: var(--text-2); letter-spacing: 0; }
+  .obj { position: relative; display: flex; align-items: center; gap: 7px; width: 100%; border: 0; background: none; color: var(--text-2); font: 12.5px var(--font); padding: 4px 8px 4px 14px;
+    border-radius: 7px; cursor: pointer; text-align: left; min-width: 0; transition: background var(--t-fast), color var(--t-fast); }
+  .obj:hover { background: var(--surface-2); color: var(--text); }
+  .obj.cur { background: var(--accent-soft); color: var(--text); }
+  .obj.cur::before { content: ""; position: absolute; left: 4px; top: 6px; bottom: 6px; width: 2px; border-radius: 2px; background: var(--accent); }
   .obj :global(svg) { color: var(--muted); flex: none; }
+  .obj.k-table :global(svg) { color: var(--accent); }
+  .obj.k-view :global(svg) { color: var(--info); }
+  .obj.k-procedure :global(svg), .obj.k-function :global(svg) { color: var(--warn); }
+  .obj.sq :global(svg) { color: var(--good); }
+  .skel { display: grid; gap: 8px; padding: 10px 14px; }
+  .skel .shim { height: 11px; }
+  .skel .shim:nth-child(2n) { width: 70%; }
+  .skel.big { padding: 22px; gap: 12px; }
+  .skel.big .shim { height: 14px; }
   .vr { cursor: col-resize; }
   .vr:hover { background: var(--accent-soft); }
+  /* abas e o trabalho */
   .work { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-  .tabs { display: flex; align-items: center; gap: 2px; padding: 4px 6px 0; border-bottom: 1px solid var(--line); overflow-x: auto; flex: none; }
-  .tab { display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 10px; border-radius: 8px 8px 0 0; font-size: 12.5px; color: var(--muted); cursor: pointer; max-width: 200px; flex: none; }
+  .tabs { display: flex; align-items: center; gap: 4px; padding: 6px 8px 0; border-bottom: 1px solid var(--line); overflow-x: auto; flex: none; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { position: relative; display: flex; align-items: center; gap: 6px; height: 31px; padding: 0 6px 0 11px; border-radius: 9px 9px 0 0; font: 500 12.5px var(--font); color: var(--muted);
+    cursor: pointer; max-width: 210px; flex: none; transition: background var(--t-fast), color var(--t-fast); }
+  .tab:hover { background: var(--surface-2); color: var(--text-2); }
   .tab.on { background: var(--surface-2); color: var(--text); }
-  .tab .x { border: 0; background: none; color: inherit; opacity: .5; cursor: pointer; padding: 2px; border-radius: 4px; display: grid; }
+  .tab.on::after { content: ""; position: absolute; left: 10px; right: 10px; top: 0; height: 2px; border-radius: 0 0 2px 2px; background: var(--accent); }
+  .tab :global(svg) { flex: none; }
+  .tab.tt :global(svg:first-child) { color: var(--accent); }
+  .tab .x { border: 0; background: none; color: inherit; opacity: 0; cursor: pointer; padding: 2px; border-radius: 4px; display: grid; }
+  .tab:hover .x, .tab.on .x { opacity: .55; }
   .tab .x:hover { opacity: 1; background: var(--surface-3); }
-  .spin { width: 10px; height: 10px; border: 2px solid var(--accent); border-right-color: transparent; border-radius: 50%; animation: sp .8s linear infinite; }
+  .nt { margin-bottom: 2px; }
+  .spin { width: 10px; height: 10px; border: 2px solid var(--accent); border-right-color: transparent; border-radius: 50%; animation: sp .8s linear infinite; flex: none; }
   @keyframes sp { to { transform: rotate(360deg); } }
   .ed { flex: none; min-height: 80px; border-bottom: 1px solid var(--line); }
-  .bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; flex: none; border-bottom: 1px solid var(--line); }
-  .tbar .where { height: 28px; flex: 1; font-size: 12.5px; }
+  .bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; flex: none; border-bottom: 1px solid var(--line); min-width: 0; }
+  .pane { display: flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--bg-2); border: 1px solid var(--line); flex: none; }
+  .pane button { display: inline-flex; align-items: center; gap: 5px; height: 25px; padding: 0 10px; border: 0; border-radius: 7px; background: none;
+    color: var(--muted); font: 600 12px var(--font); cursor: pointer; transition: background var(--t-fast), color var(--t-fast); }
+  .pane button:hover { color: var(--text); }
+  .pane button.on { background: var(--surface-3); color: var(--text); box-shadow: var(--shadow-1); }
+  .where { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 120px; height: 28px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2); color: var(--muted);
+    transition: border-color var(--t-fast), box-shadow var(--t-fast); }
+  .where:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .where input { flex: 1; min-width: 0; border: 0; outline: none; background: none; color: var(--text); font: 12.5px var(--mono); }
+  .ro { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
   .bar .on { background: var(--accent-soft); color: var(--accent); }
   .hr { height: 4px; margin-top: -4px; cursor: row-resize; flex: none; position: relative; z-index: 2; }
   .hr:hover { background: var(--accent-soft); }
   .out { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .gridwrap { flex: 1; min-height: 0; }
-  .errbox { display: flex; gap: 10px; margin: 10px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--bad-soft); color: var(--text); }
+  .errbox { display: flex; gap: 10px; margin: 10px; padding: 10px 12px; border-radius: 10px; background: var(--bad-soft); color: var(--text); border: 1px solid color-mix(in srgb, var(--bad) 30%, transparent); }
   .errbox :global(svg) { color: var(--bad); flex: none; margin-top: 2px; }
   .errbox pre { margin: 0; white-space: pre-wrap; font: 12.5px var(--mono); }
   .sets { display: flex; gap: 6px; padding: 6px 10px; flex: none; flex-wrap: wrap; }
@@ -647,16 +808,11 @@
   .trunc { padding: 4px 12px 8px; color: var(--muted); flex: none; }
   .link { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
   .pad { padding: 10px 12px; }
-  .hint { line-height: 1.6; }
-  .struct { overflow: auto; padding: 10px 14px; font-size: 12.5px; }
-  .struct table { border-collapse: collapse; width: 100%; }
-  .struct th { text-align: left; color: var(--muted); font-weight: 600; padding: 4px 8px; border-bottom: 1px solid var(--line-2); }
-  .struct td { padding: 4px 8px; border-bottom: 1px solid var(--line); max-width: 260px; }
-  .struct h4 { margin: 14px 0 6px; font-size: 12.5px; }
-  .struct ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
-  .mono { font-family: var(--mono); }
+  .welcome { display: grid; gap: 10px; align-content: start; padding: 22px 24px; max-width: 640px; animation: fade .3s; }
+  .wk { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 11px; background: var(--surface-2); border: 1px solid var(--line); font-size: 12.5px; color: var(--text-2); }
+  .wk :global(svg) { color: var(--accent); flex: none; }
   .gh.sv { display: flex; align-items: center; padding: 0; }
-  .ghb { display: flex; align-items: center; gap: 5px; flex: 1; border: 0; background: none; color: var(--text-2); font: 650 11.5px var(--font); padding: 6px 6px 4px; cursor: pointer; text-transform: uppercase; letter-spacing: .03em; text-align: left; }
+  .ghb { display: flex; align-items: center; gap: 5px; flex: 1; border: 0; background: none; color: var(--muted); font: 700 10.5px var(--font); padding: 10px 6px 4px; cursor: pointer; text-transform: uppercase; letter-spacing: .07em; text-align: left; }
   .ghb :global(.rot) { transform: rotate(-90deg); }
   .wh { width: 22px; height: 22px; }
   .sc { margin-left: auto; flex: none; }
@@ -667,4 +823,5 @@
   .hi pre { margin: 0; font: 12px var(--mono); white-space: pre-wrap; max-height: 80px; overflow: hidden; }
   .hi .tiny.muted { grid-column: 2; }
   .bad { color: var(--bad); }
+  @media (max-width: 1100px) { .capsule { max-width: 38%; } .top .lbl { display: none; } }
 </style>

@@ -29,7 +29,7 @@ export const COMMANDS: Command[] = [
   c("workbench.action.quickOpen", "Abrir arquivo do projeto (Ir para arquivo)", "Geral", "app", "mod+p"),
   c("workbench.action.openSettings", "Configurações", "Geral", "app", "mod+,"),
   c("workbench.action.openGlobalKeybindings", "Atalhos de teclado", "Geral", "app", "mod+k mod+s"),
-  c("codeck.askAi", "Pedir à IA (planejar/implementar)", "Geral", "app", "mod+shift+i"),
+  c("codeck.askAi", "Abrir agente (escolher a conta de IA)", "Geral", "app", "mod+shift+i"),
   // ---- visões e painéis
   c("workbench.view.explorer", "Mostrar o Explorador", "Visões", "app", "mod+shift+e"),
   c("workbench.view.search", "Buscar no projeto", "Visões", "app", "mod+shift+f"),
@@ -40,7 +40,6 @@ export const COMMANDS: Command[] = [
   c("workbench.actions.view.problems", "Mostrar/esconder Problemas", "Visões", "app", "mod+shift+m"),
   c("workbench.action.toggleSidebarVisibility", "Mostrar/esconder a barra lateral do projeto", "Visões", "app", "mod+b"),
   c("workbench.action.togglePanel", "Mostrar/esconder o painel inferior", "Visões", "app", "mod+j"),
-  c("workbench.action.toggleAuxiliaryBar", "Mostrar/esconder o painel do agente (direita)", "Visões", "app", "mod+alt+b"),
   // ---- terminal
   c("workbench.action.terminal.toggleTerminal", "Ir para o terminal (e voltar)", "Terminal", "app", "ctrl+`"),
   c("workbench.action.terminal.new", "Novo terminal", "Terminal", "app", ["ctrl+shift+`", "mod+t"]),

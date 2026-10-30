@@ -1,9 +1,10 @@
 <script lang="ts">
   // Área de trabalho (v3): projetos abertos em abas; em cada um, o checkout principal e as tarefas (worktrees) à
-  // esquerda com os arquivos; no centro, abas de agentes, terminais e arquivos; à direita, o agente e os limites.
-  // ⌘/Ctrl+P abre arquivo · ⇧F busca no projeto · T novo terminal · W fecha a aba · 1…9 troca de projeto · ⇧I pede à IA.
+  // esquerda com os arquivos; no centro, abas de agentes, terminais e arquivos. Sem aba (ou pelo botão Agente), a tela
+  // inicial escolhe a IA — com o fôlego, o consumo e o estado de cada conta.
+  // ⌘/Ctrl+P abre arquivo · ⇧F busca no projeto · T novo terminal · W fecha a aba · 1…9 troca de projeto · ⇧I abre a tela do agente.
   // As abas de projeto podem ficar em GRUPOS (como no navegador): nome, cor, recolher/expandir e quantos estão abertos.
-  import { Bot, GitPullRequest, PanelLeft, Layers, Play, RefreshCw, ChevronDown, Code2, FolderGit2, GitBranch, AppWindow, Columns2, GitCompareArrows, LayoutGrid, PanelRight, Settings2, Plus, Search, SquareTerminal, X, Sparkles, FolderPlus, FolderMinus, Palette, Pencil, FolderOpen, Trash2, ChevronRight, Files, Blocks, Boxes, Copy, Pin, ListX, TriangleAlert, Minus, Minimize2, ShieldOff, Bug, Gauge, Brush, WandSparkles, Database } from "@lucide/svelte";
+  import { ArrowRightLeft, Bot, GitPullRequest, PanelLeft, Layers, Play, RefreshCw, ChevronDown, Code2, FolderGit2, GitBranch, AppWindow, Columns2, GitCompareArrows, LayoutGrid, Settings2, Plus, Search, SquareTerminal, X, FolderPlus, FolderMinus, Palette, Pencil, FolderOpen, Trash2, ChevronRight, Files, Blocks, Boxes, Copy, Pin, ListX, TriangleAlert, Minus, Minimize2, ShieldOff, Bug, Gauge, Brush, WandSparkles, Database } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { get, post } from "../lib/api";
   import { send } from "../lib/native";
@@ -18,8 +19,9 @@
   import Menu from "../components/Menu.svelte";
   import ProviderIcon from "../components/ProviderIcon.svelte";
   import AgentIcon from "../components/work/AgentIcon.svelte";
-  import AgentPanel from "../components/work/AgentPanel.svelte";
-  import Editor, { dirty, docs, forget, keyOf, saveDoc } from "../components/work/Editor.svelte";
+  import AgentLauncher from "../components/work/AgentLauncher.svelte";
+  import { handoffMenu } from "../components/ai/handoff";
+  import Editor, { dirty, docs, fileName, forget, isUntitled, keyOf, saveDoc, UNTITLED } from "../components/work/Editor.svelte";
   import FileTree, { type FsChange } from "../components/work/FileTree.svelte";
   import FileIcon from "../components/work/FileIcon.svelte";
   import DiffEditor from "../components/work/DiffEditor.svelte";
@@ -87,7 +89,20 @@
     document.body.classList.add("resizing");
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
   }
-  function readViews() { try { return JSON.parse(localStorage.getItem(LS) || "{}"); } catch { return {}; } }
+  function readViews(): Record<string, View> {
+    try {
+      const all: Record<string, View> = JSON.parse(localStorage.getItem(LS) || "{}");
+      // arquivo sem título vive só na memória: não volta ao reabrir o app
+      for (const vw of Object.values(all)) {
+        const gone = (vw.files || []).filter(f => isUntitled(f.path)).map(f => f.key);
+        if (!gone.length) continue;
+        vw.files = vw.files.filter(f => !gone.includes(f.key));
+        vw.order = (vw.order || []).filter(k => !gone.includes(k));
+        if (gone.includes(vw.active || "")) vw.active = null;
+      }
+      return all;
+    } catch { return {}; }
+  }
   $effect(() => { const v = JSON.stringify(views); try { localStorage.setItem(LS, v); } catch { /* sem armazenamento */ } });
 
   $effect(() => { if (!repos.loaded) repos.load(false); });
@@ -136,7 +151,9 @@
     return list.sort((a, b) => pos(a.key) - pos(b.key));
   });
   // sem aba escolhida: o 1º terminal/arquivo; se não houver, a tela inicial (abrir agente, terminal, nova tarefa)
-  const activeTab = $derived(tabs.find(t => t.key === v?.active) || tabs.find(t => t.kind === "term" || t.kind === "file" || t.kind === "diff" || t.kind === "devtools") || null);
+  // "x:launch" (botão Agente, ⌘⇧I) mostra a tela inicial mesmo com abas abertas
+  const LAUNCH = "x:launch";
+  const activeTab = $derived(v?.active === LAUNCH ? null : tabs.find(t => t.key === v?.active) || tabs.find(t => t.kind === "term" || t.kind === "file" || t.kind === "diff" || t.kind === "devtools") || null);
   // repositório Git do escopo (o worktree da tarefa é um repositório próprio): status, diff, commit
   const gitRepo = $derived(task?.repoId || p?.id || "");
   $effect(() => { const g = gitRepo; if (!g) return; return scm.watch(g); });
@@ -159,7 +176,6 @@
   $effect(() => { const id = p?.id; if (id && !(id in db.project)) untrack(() => { db.loadProject(id); db.loadFlutter(id); }); });
   const leftOpen = $derived(v?.leftOpen !== false);
   const splitTab = $derived(v?.split && v.split !== activeTab?.key ? tabs.find(t => t.key === v!.split) || null : null);
-  const activeTerm = $derived(activeTab?.kind === "term" ? activeTab.term! : (scopeTerms.find(t => t.kind === "agent") || null));
 
   function focusTab(key: string) {
     if (!v) return;
@@ -216,6 +232,7 @@
       v!.scope = fr.scope;
       if (fr.tab === "git") v!.mode = "git";
       else if (fr.tab === "ai") v!.mode = "ai";
+      else if (fr.tab === "agent") { v!.mode = "code"; v!.active = LAUNCH; }
       else if (fr.tab === "code") { v!.mode = "code"; v!.active = fr.termId ? "t:" + fr.termId : null; }
       else { v!.mode = "code"; v!.active = "r:" + (fr.scope || "main"); }
       work.focusRequest = null;
@@ -223,9 +240,8 @@
   });
   let comparing = $state<string | null>(null);
   let asking = $state<{ preset?: any } | null>(null);
-  /** "Pedir à IA" (⌘⇧I, botão): o campo de pedido no painel da direita — Enter manda direto ao agente da conta do
-   *  projeto. O diálogo completo (issue, fluxos) abre pelo "Mais opções" do painel. */
-  function ask() { if (v) v.right = true; work.focusComposer(p?.id); }
+  /** Botão Agente / ⌘⇧I: a tela inicial, para escolher com qual conta de IA abrir o agente. */
+  function launch() { if (v) { v.mode = "code"; v.active = LAUNCH; } }
   function asked(r: { projectId: string; taskId: string | null; termId?: string }) {
     asking = null;
     if (!v) return;
@@ -339,8 +355,28 @@
         forgetUnused(prev.key, prev.path);
       } else v.files = [...v.files, { k: "file", key, path, scope, line, preview: !!o.preview }];
     }
-    v.recent = [path, ...(v.recent || []).filter(x => x !== path)].slice(0, 30);
+    if (!isUntitled(path)) v.recent = [path, ...(v.recent || []).filter(x => x !== path)].slice(0, 30);
     focusTab(key);
+  }
+  /** Arquivo sem título, só na memória (dois cliques na área vazia das abas, ⌘N — como no VS Code). */
+  function newUntitled() {
+    if (!p || !v) return;
+    const used = new Set(v.files.map(f => f.path));
+    let n = 1;
+    while (used.has(`${UNTITLED}Sem título-${n}`)) n++;
+    openFile(`${UNTITLED}Sem título-${n}`, undefined, { preview: false });
+  }
+  /** O sem título foi salvo no projeto: a aba vira a do arquivo (no mesmo lugar) e o documento da memória sai. */
+  function savedAs(oldKey: string, rel: string) {
+    if (!p || !v) return;
+    const key = keyOf(p.id, v.scope, rel);
+    if (v.files.some(f => f.key === key)) { v.files = v.files.filter(f => f.key !== key); v.order = v.order.filter(k => k !== key); forget(key); }
+    v.files = v.files.map(f => (f.key === oldKey ? { ...f, key, path: rel, preview: false } : f));
+    v.order = v.order.map(k => (k === oldKey ? key : k));
+    if (v.active === oldKey) v.active = key;
+    if (v.split === oldKey) v.split = key;
+    v.recent = [rel, ...(v.recent || []).filter(x => x !== rel)].slice(0, 30);
+    forget(oldKey);
   }
   /** "Abrir alterações": o diff do arquivo (preparado = HEAD × índice; senão índice × disco). */
   function openDiff(path: string, staged = false) {
@@ -424,9 +460,11 @@
       ...(t.file?.preview ? [{ label: "Fixar a aba", icon: Pin, onclick: () => pinTab(t.key) }] : []),
       ...(t.kind === "file" && decor.get(t.file!.path) ? [{ label: "Abrir alterações", icon: GitCompareArrows, onclick: () => openDiff(t.file!.path, false) }] : []),
       ...(t.kind === "diff" ? [{ label: "Abrir o arquivo", icon: Code2, onclick: () => openFile(t.file!.path, undefined, { preview: false }) }] : []),
-      { label: "Revelar no explorador", icon: Files, onclick: () => reveal(t.file!.path) },
-      { label: "Copiar caminho", icon: Copy, onclick: () => copyText(rootPath + "/" + t.file!.path, "Caminho copiado") },
-      { label: "Copiar caminho relativo", icon: Copy, onclick: () => copyText(t.file!.path, "Caminho relativo copiado") },
+      ...(isUntitled(t.file!.path) ? [] : [
+        { label: "Revelar no explorador", icon: Files, onclick: () => reveal(t.file!.path) },
+        { label: "Copiar caminho", icon: Copy, onclick: () => copyText(rootPath + "/" + t.file!.path, "Caminho copiado") },
+        { label: "Copiar caminho relativo", icon: Copy, onclick: () => copyText(t.file!.path, "Caminho relativo copiado") },
+      ]),
       { separator: true },
       { label: "Fechar outras", icon: ListX, onclick: () => closeMany(tabs.filter(x => x !== t && closable(x))) },
       { label: "Fechar à direita", onclick: () => closeMany(tabs.slice(idx + 1).filter(closable)) },
@@ -496,7 +534,6 @@
       }),
       kb.on("workbench.action.togglePanel", () => { if (!here()) return false; v!.panel = !v!.panel; }),
       kb.on("workbench.action.toggleSidebarVisibility", () => { if (!here()) return false; v!.leftOpen = !leftOpen; }),
-      kb.on("workbench.action.toggleAuxiliaryBar", () => { if (!here()) return false; v!.right = !v!.right; }),
       kb.on("workbench.action.terminal.new", () => { if (!here()) return false; newTerm(); }),
       kb.on("workbench.action.terminal.toggleTerminal", () => {
         if (!here()) return false;
@@ -505,7 +542,7 @@
         if (!t) return void newTerm();
         if (v!.hidden?.includes(t.id)) restore(t.id); else focusTab("t:" + t.id);
       }),
-      kb.on("codeck.askAi", () => { if (!here()) return false; ask(); }),
+      kb.on("codeck.askAi", () => { if (!here()) return false; launch(); }),
       kb.on("workbench.action.closeActiveEditor", () => {
         if (!here() || !activeTab || !["term", "file", "diff", "devtools"].includes(activeTab.kind)) return false;
         closeTab(activeTab);
@@ -537,11 +574,7 @@
         if (!other) return false;
         v!.split = activeTab.key; v!.active = other.key;
       }),
-      kb.on("workbench.action.files.newUntitledFile", () => {
-        if (!here()) return false;
-        v!.left = "files"; v!.leftOpen = true; v!.mode = "code";
-        setTimeout(() => fileTree?.newIn("file"), 40);
-      }),
+      kb.on("workbench.action.files.newUntitledFile", () => { if (!here()) return false; newUntitled(); }),
       kb.on("workbench.files.action.showActiveFileInExplorer", () => { if (!here() || !activeTab?.file) return false; reveal(activeTab.file.path); }),
       kb.on("workbench.action.files.saveAll", () => { if (!here()) return false; saveAll(); }),
     ];
@@ -587,7 +620,7 @@
   const tabMenu = (x: Project) => {
     const g = work.groupOf(x.id);
     return [
-      { label: "Pedir à IA…", icon: Sparkles, onclick: () => { go("/work/" + x.id, "soft"); if (views[x.id]) views[x.id].right = true; work.focusComposer(x.id); } },
+      { label: "Abrir agente…", icon: Bot, onclick: () => { go("/work/" + x.id, "soft"); if (views[x.id]) { views[x.id].mode = "code"; views[x.id].active = LAUNCH; } } },
       { label: "Abrir em janela própria", icon: AppWindow, onclick: () => popOut(x) },
       { label: "Ajustes do projeto", icon: Settings2, onclick: () => { go("/work/" + x.id, "soft"); settingsOpen = true; } },
       { separator: true },
@@ -627,33 +660,17 @@
             {#key task.id}<Review project={p!} {task} onagent={(id) => focusTab("t:" + id)} />{/key}
           {:else if tab?.kind === "file" && tab.file}
             <Editor repoId={p!.id} taskId={v!.scope} {gitRepo} path={tab.file.path} line={tab.file.line || 0} onpin={() => pinTab(tab.key)}
-              onreveal={reveal} />
+              onreveal={reveal} onsaveas={(rel) => savedAs(tab.key, rel)} />
           {:else if tab?.kind === "devtools"}
             <DevToolsPane repoId={p!.id} taskId={v!.scope} page={tab.page || ""} />
           {:else if tab?.kind === "diff" && tab.file}
             {#key tab.key}<DiffEditor repoId={p!.id} taskId={v!.scope} {gitRepo} path={tab.file.path} staged={!!tab.file.staged} onopen={(f) => openFile(f, undefined, { preview: false })} />{/key}
           {:else}
-            <div class="start">
-              <h3>{task ? task.title : p!.name}</h3>
-              <p class="muted">{task ? `Worktree em ${task.path.replace(/^\/Users\/[^/]+/, "~")}` : "Checkout principal"}</p>
-              {#if resumable.length}
-                <div class="resume">
-                  <span class="small muted">Retomar de onde parou</span>
-                  {#each resumable as r (r.sid)}
-                    <button class="btn sm" onclick={() => newAgent(r.account, r.sid)}><AgentIcon provider={r.provider} size={14} /> {r.title} <span class="tiny muted">há {ago(r.updated)}</span></button>
-                  {/each}
-                </div>
-              {/if}
-              <button class="askcta" onclick={ask}><Sparkles size={18} /><span><b>Pedir à IA</b><span class="tiny muted">escreva o pedido no painel — Enter manda direto para o agente da conta do projeto</span></span><span class="kbd">{kb.label("codeck.askAi")}</span></button>
-              <div class="cards">
-                {#each work.ai.filter(a => a.installed).slice(0, 6) as a (a.id)}
-                  <button class="cardbtn" onclick={() => newAgent(a.id)}><AgentIcon provider={a.provider} size={20} /><span><b>{a.name}</b><span class="tiny muted">{a.label}{a.group ? " · " + a.group : ""}{a.email ? " · " + a.email : ""}</span></span></button>
-                {/each}
-                <button class="cardbtn" onclick={() => newTerm()}><SquareTerminal size={20} /><span><b>Terminal</b><span class="tiny muted">shell na pasta {task ? "da tarefa" : "do projeto"}</span></span></button>
-                {#if !task}<button class="cardbtn accent" onclick={() => (newTask = {})}><Plus size={20} /><span><b>Nova tarefa</b><span class="tiny muted">agente + branch (worktree opcional)</span></span></button>{/if}
-              </div>
-              <p class="tiny muted keys"><span class="kbd">{kb.label("workbench.action.quickOpen")}</span> abrir arquivo · <span class="kbd">{kb.label("workbench.view.search")}</span> buscar · <span class="kbd">{kb.label("workbench.action.terminal.new")}</span> terminal · <span class="kbd">{kb.label("workbench.action.closeActiveEditor")}</span> fechar aba</p>
-            </div>
+            {#key p!.id + (task?.id || "")}
+              <AgentLauncher project={p!} {task} {resumable} onagent={(id) => newAgent(id)} onterm={() => newTerm()} onresume={(acc, sid) => newAgent(acc, sid)}
+                onfocus={(id) => work.load().then(() => focusTab("t:" + id))} ontask={task ? undefined : () => (newTask = {})}
+                onreview={() => task && focusTab("r:" + task.id)} onremoved={() => setScope(null)} />
+            {/key}
           {/if}
 {/snippet}
 
@@ -713,7 +730,7 @@
       </Empty>
     </div>
   {:else}
-    <div class="grid" class:noright={!v.right} class:noleft={!leftOpen} style="--lw:{sizes.left}px;--rw:{sizes.right}px">
+    <div class="grid" class:noleft={!leftOpen} style="--lw:{sizes.left}px">
       <!-- esquerda: escopo (principal / tarefas) + arquivos -->
       <aside class="card left" class:hidden={!leftOpen}>
         <div class="hsplit r" role="separator" aria-orientation="vertical" title="Arraste para redimensionar" onpointerdown={(e) => drag(e, "left")}></div>
@@ -789,18 +806,20 @@
             <button role="tab" class:on={mode === "ai"} aria-selected={mode === "ai"} title="Skills e MCPs do projeto e das contas de IA" onclick={() => v && (v.mode = "ai")}><WandSparkles size={13} /> <span class="lbl l-mode">IA</span></button>
             {#if (db.project[p.id] || []).length || db.flutter[p.id]?.openable?.length || mode === "db"}<button role="tab" class:on={mode === "db"} aria-selected={mode === "db"} title="Bancos de dados deste projeto" onclick={() => v && (v.mode = "db")}><Database size={13} /> <span class="lbl l-mode">Banco</span></button>{/if}
           </div>
-          <span class="hgrow"></span>
+          <span class="hgrow" role="presentation" ondblclick={() => mode === "code" && newUntitled()}></span>
           <div class="tact">
             {#if hasSln}<DotnetBar repoId={p.id} taskId={v.scope} onterm={(id) => { work.load().then(() => focusTab("t:" + id)); }} />{/if}
             <RunBar repoId={p.id} taskId={v.scope} onconfigs={() => (launchOpen = true)} />
-            <button class="btn sm ask" title={`Pedir à IA (${kb.label("codeck.askAi")})`} onclick={ask}><Sparkles size={14} /> <span class="lbl l-ask">Pedir à IA</span></button>
-            <Menu items={agentItems} align="right">{#snippet trigger()}<span class="btn sm"><Bot size={14} /> <span class="lbl l-ag">Agente</span> <ChevronDown size={12} /></span>{/snippet}</Menu>
-            <button class="btn sm ghost" title={`Novo terminal (${kb.label("workbench.action.terminal.new")})`} onclick={() => newTerm()}><SquareTerminal size={14} /></button>
-            <button class="btn sm ghost icon" title="Painel do agente" onclick={() => (v.right = !v.right)}><PanelRight size={15} /></button>
+            <div class="agb" class:on={v.active === LAUNCH}>
+              <button class="btn sm" title={`Escolher a IA e abrir o agente (${kb.label("codeck.askAi")})`} onclick={launch}><Bot size={14} /> <span class="lbl l-ag">Agente</span></button>
+              <Menu items={agentItems} align="right">{#snippet trigger()}<span class="btn sm caret" title="Abrir direto numa conta"><ChevronDown size={12} /></span>{/snippet}</Menu>
+            </div>
+            <button class="btn sm ghost icon" title={`Novo terminal (${kb.label("workbench.action.terminal.new")})`} onclick={() => newTerm()}><SquareTerminal size={14} /></button>
           </div>
         </div>
         {#if tabs.length}
-          <div class="tl" class:other={mode !== "code"} role="tablist" aria-label="Abas abertas" bind:this={tabsEl}
+          <div class="tl" class:other={mode !== "code"} role="tablist" aria-label="Abas abertas" tabindex="-1" bind:this={tabsEl}
+            ondblclick={(e) => { if (e.target === e.currentTarget) newUntitled(); }}
             onwheel={(e) => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && tabsEl) { tabsEl.scrollLeft += e.deltaY; e.preventDefault(); } }}>
             {#each tabs as t (t.key)}
               {@const s = t.kind === "term" ? work.session(t.term) : null}
@@ -816,6 +835,8 @@
                   ...(v?.split ? [{ label: "Fechar a divisão", onclick: () => v && (v.split = null) }] : []),
                   ...(t.kind === "term" && t.term?.kind === "run" ? [{ label: "Reiniciar", icon: RefreshCw, onclick: () => restart(t.term!) }] : []),
                   ...(t.kind === "term" && t.term?.alive ? [{ label: "Minimizar (continua rodando)", icon: Minimize2, onclick: () => minimize(t.term!.id) }] : []),
+                  ...(t.kind === "term" && t.term?.kind === "agent" && t.term.alive && work.ai.filter(a => a.installed).length > 1
+                    ? [{ label: "Continuar em outra conta…", icon: ArrowRightLeft, onclick: () => setTimeout(() => handoffMenu(e, t.term!, (id) => work.load().then(() => focusTab("t:" + id)))) }] : []),
                   ...(t.file ? [{ separator: true }, ...fileTabMenu(t)] : []),
                   ...(t.kind !== "review" ? [{ separator: true }, { label: "Fechar", icon: X, onclick: () => closeTab(t) }] : []),
                 ])}>
@@ -827,8 +848,8 @@
                 {:else if t.kind === "prs"}<GitPullRequest size={13} />
                 {:else if t.kind === "devtools"}<Gauge size={13} />
                 {:else if t.kind === "diff"}<GitCompareArrows size={13} class="dicon" />
-                {:else}<FileIcon name={t.file!.path.split("/").pop() || ""} size={14} />{/if}
-                <span class="ell tname">{t.kind === "term" ? t.term!.title : t.kind === "review" ? "Revisão" : t.kind === "devtools" ? "DevTools" : t.kind === "git" ? "Git" : t.kind === "prs" ? `PRs${prCount ? " · " + prCount : ""}` : t.file!.path.split("/").pop() + (t.kind === "diff" ? (t.file!.staged ? " (preparado)" : " (alterações)") : "")}</span>
+                {:else}<FileIcon name={isUntitled(t.file!.path) ? "untitled.txt" : fileName(t.file!.path)} size={14} />{/if}
+                <span class="ell tname">{t.kind === "term" ? t.term!.title : t.kind === "review" ? "Revisão" : t.kind === "devtools" ? "DevTools" : t.kind === "git" ? "Git" : t.kind === "prs" ? `PRs${prCount ? " · " + prCount : ""}` : fileName(t.file!.path) + (t.kind === "diff" ? (t.file!.staged ? " (preparado)" : " (alterações)") : "")}</span>
                 {#if fd && t.kind === "file"}<span class="tl-g" title={fd.label}>{fd.letter}</span>{/if}
                 {#if s}<span class="sdot {STATUS[s.status]?.[1]}" class:pulse={s.status === "working"} title={STATUS[s.status]?.[0]}></span>{/if}
                 {#if t.kind === "file" && dirty[t.key]}<span class="dirty" title="não salvo — passe o mouse para fechar"></span>{/if}
@@ -891,13 +912,6 @@
           onbranch={() => v && (v.mode = "git")} onproblems={() => v && (v.panel = !v.panel)} />
       </section>
 
-      {#if v.right}
-        <aside class="card right">
-          <div class="hsplit l" role="separator" aria-orientation="vertical" title="Arraste para redimensionar" onpointerdown={(e) => drag(e, "right")}></div>
-          <AgentPanel project={p} {task} term={activeTerm} onremoved={() => setScope(null)} onreview={() => task && focusTab("r:" + task.id)}
-            onstarted={asked} onmore={(t) => (asking = { preset: t.trim() ? { text: t } : null })} />
-        </aside>
-      {/if}
     </div>
   {/if}
 </div>
@@ -963,21 +977,11 @@
   .ptab.ing.on { box-shadow: inset 0 -2px 0 var(--g), var(--shadow-1); }
   .ptab.drop { box-shadow: -2px 0 0 var(--accent); }
   .ptab.dragging { opacity: 0.45; }
-  .ask { color: var(--accent); border-color: var(--accent-line); }
-  .ask :global(svg) { color: var(--accent); }
-  .askcta { display: flex; align-items: center; gap: 12px; width: min(720px, 100%); margin-top: 18px; padding: 14px 16px; border-radius: 12px;
-    border: 1px solid var(--accent-line); background: var(--accent-soft); color: var(--text); font: 13px var(--font); text-align: left; cursor: pointer;
-    transition: transform var(--t) var(--spring), border-color var(--t); }
-  .askcta:hover { transform: translateY(-2px); border-color: var(--accent); }
-  .askcta > span:nth-child(2) { display: grid; flex: 1; }
-  .askcta :global(svg) { color: var(--accent); flex: none; }
   .cmp { display: flex; align-items: center; gap: 6px; margin: 2px 4px 4px; padding: 6px 8px; border: 1px dashed var(--accent-line); border-radius: 8px;
     background: var(--accent-soft); color: var(--accent); font: 600 12px var(--font); cursor: pointer; text-align: left; }
   .empty { flex: 1; display: grid; place-items: center; }
-  .grid { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--lw) minmax(0, 1fr) var(--rw); gap: 10px; }
-  .grid.noright { grid-template-columns: var(--lw) minmax(0, 1fr); }
-  .grid.noleft { grid-template-columns: minmax(0, 1fr) var(--rw); }
-  .grid.noleft.noright { grid-template-columns: minmax(0, 1fr); }
+  .grid { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--lw) minmax(0, 1fr); gap: 10px; }
+  .grid.noleft { grid-template-columns: minmax(0, 1fr); }
   .modes { display: flex; gap: 2px; padding: 2px; margin: 0 6px 4px 0; border-radius: 9px; background: var(--bg-2); border: 1px solid var(--line); flex: none; }
   .modes button { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border: 0; border-radius: 7px; background: none;
     color: var(--muted); font: 600 12.5px var(--font); cursor: pointer; transition: background var(--t), color var(--t); }
@@ -989,7 +993,7 @@
   .tl.other .tab.on { background: none; color: var(--muted); }
   .tl.other .tab.on::after { display: none; }
   .left.hidden { display: none; }
-  .left, .right { position: relative; }
+  .left { position: relative; }
   .hsplit { position: absolute; top: 0; bottom: 0; width: 10px; z-index: 6; cursor: col-resize; }
   .hsplit.r { right: -8px; } .hsplit.l { left: -8px; }
   .hsplit::after { content: ""; position: absolute; top: 30%; bottom: 30%; left: 4px; width: 2px; border-radius: 2px; background: transparent; transition: background var(--t); }
@@ -1034,14 +1038,13 @@
   .tree { flex: 1; min-height: 0; }
   .center { display: flex; flex-direction: column; container-type: inline-size; }
   /* barra de ferramentas que cabe em qualquer largura: os rótulos somem antes dos botões */
-  @container (max-width: 1020px) { .l-ask { display: none; } }
   @container (max-width: 930px) { .l-ag { display: none; } }
   @container (max-width: 860px) { .l-mode { display: none; } }
   @container (max-width: 760px) { .l-run { display: none; } }
   .tabs { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--line); padding: 4px 6px 0; flex: none; min-width: 0; }
   .tl { display: flex; gap: 1px; overflow-x: auto; min-width: 0; flex: none; padding: 0 6px; border-bottom: 1px solid var(--line); background: var(--bg-2); scrollbar-width: none; }
   .tl::-webkit-scrollbar { display: none; }
-  .hgrow { flex: 1; min-width: 4px; }
+  .hgrow { flex: 1; min-width: 4px; align-self: stretch; }
   .tab { display: flex; align-items: center; gap: 6px; height: 33px; padding: 0 6px 0 10px; color: var(--muted); font: 500 12.5px var(--font);
     cursor: pointer; max-width: 230px; flex: none; position: relative; transition: background var(--t-fast), color var(--t-fast); border-right: 1px solid var(--line); }
   .tab:hover { background: var(--surface-2); color: var(--text-2); }
@@ -1089,7 +1092,13 @@
   .sdot.accent { background: var(--accent); } .sdot.good { background: var(--good); } .sdot.warn { background: var(--warn); } .sdot.info { background: var(--info); }  .sdot.bad { background: var(--bad); }
   .pulse { animation: ping 1.2s var(--ease) infinite; }
   .dirty { width: 7px; height: 7px; border-radius: 50%; background: var(--text-2); flex: none; }
-  .tact { display: flex; align-items: center; gap: 4px; padding-bottom: 4px; }
+  /* encolhe junto com a barra: executando/depurando, a RunBar cresce e antes empurrava estes botões para fora da tela */
+  .tact { display: flex; align-items: center; gap: 4px; padding-bottom: 4px; min-width: 0; flex: 0 1 auto; justify-content: flex-end; }
+  .agb { display: flex; align-items: center; flex: none; }
+  .agb > .btn { border-top-right-radius: 0; border-bottom-right-radius: 0; color: var(--accent); }
+  .agb > .btn :global(svg) { color: var(--accent); }
+  .agb :global(.caret) { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; padding: 0 5px; }
+  .agb.on > .btn { background: var(--accent-soft); border-color: var(--accent-line); }
   .tab :global(.running) { color: var(--good); animation: ping 1.6s var(--ease) infinite; border-radius: 50%; }
   .body { flex: 1; min-height: 0; position: relative; display: grid; grid-template-columns: minmax(0, 1fr); }
   .body.split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
@@ -1099,20 +1108,4 @@
   .unsplit { position: absolute; z-index: 5; top: 6px; right: 8px; display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 6px;
     background: var(--surface-3); color: var(--text-2); cursor: pointer; opacity: 0.6; }
   .unsplit:hover { opacity: 1; }
-  .start { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 24px; text-align: center; animation: fade 0.3s; }
-  .start h3 { margin: 0; font-size: 18px; }
-  .start p { margin: 0; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; width: min(720px, 100%); margin: 10px 0 10px; }
-  .cardbtn { display: flex; align-items: center; gap: 12px; padding: 14px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--surface-2);
-    color: var(--text); font: 13px var(--font); text-align: left; cursor: pointer; transition: border-color var(--t), transform var(--t) var(--spring); }
-  .cardbtn:hover { border-color: var(--accent); transform: translateY(-2px); }
-  .cardbtn { min-width: 0; overflow: hidden; }
-  .cardbtn span { display: grid; min-width: 0; }
-  .cardbtn span span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .cardbtn.accent { border-style: dashed; color: var(--accent); }
-  .cardbtn :global(svg) { flex: none; }
-  .keys { margin-top: 8px; }
-  .resume { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; margin-top: 14px; }
-  .right { overflow: hidden; }
-  @media (max-width: 1100px) { .grid, .grid.noright { grid-template-columns: var(--lw) minmax(0, 1fr); } .right { display: none; } }
 </style>

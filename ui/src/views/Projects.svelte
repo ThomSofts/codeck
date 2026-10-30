@@ -3,7 +3,7 @@
   // alterações, commits para enviar, tarefas abertas), depois os grupos como blocos (filtram a lista) e, abaixo, todos
   // os clones desta máquina numa lista limpa (feita para centenas de repositórios), com busca, filtros e exibição num
   // menu só. Teclado: digitar busca · ↑/↓ escolhe · Enter abre · ⌘/Ctrl+Enter abre sem sair daqui · Esc limpa.
-  import { ArrowDown, ArrowUp, Check, ChevronDown, Code2, FolderGit2, FolderOpen, FolderPlus, Layers, LayoutGrid, List, ListFilter, Pencil, Pin, PinOff, Play, Search, Settings2, SlidersHorizontal, Sparkles, Terminal, Trash2, WandSparkles, X } from "@lucide/svelte";
+  import { ArrowDown, ArrowUp, Check, ChevronDown, Code2, FolderGit2, FolderOpen, FolderPlus, Layers, LayoutGrid, List, ListFilter, Pencil, Pin, PinOff, Play, Search, Settings2, SlidersHorizontal, Bot, Terminal, Trash2, WandSparkles, X } from "@lucide/svelte";
   import { tick, untrack } from "svelte";
   import { get, post } from "../lib/api";
   import { ago } from "../lib/format";
@@ -165,7 +165,7 @@
   async function open(r: LocalRepo, mode: "go" | "ask" | "stay" = "go") {
     try {
       const id = await work.open(r.id);
-      if (mode === "ask") work.focus(id, null);
+      if (mode === "ask") work.launch(id);
       else if (mode === "go") go("/work/" + id, "soft");
       else ui.toast(`${r.name} aberto nas abas`);
     } catch (e) { ui.error(e); }
@@ -183,7 +183,7 @@
     return [
       { label: openIds.has(r.id) ? "Ir para o projeto" : "Abrir projeto", icon: Play, onclick: () => open(r), kbd: "Enter" },
       ...(openIds.has(r.id) ? [] : [{ label: "Abrir sem sair do hub", icon: Layers, onclick: () => open(r, "stay"), kbd: kbd("mod+enter") }]),
-      { label: "Pedir à IA…", icon: Sparkles, onclick: () => open(r, "ask") },
+      { label: "Abrir agente…", icon: Bot, onclick: () => open(r, "ask") },
       { label: "Skills e MCPs…", icon: WandSparkles, onclick: () => work.open(r.id).then(id => work.openRepo(id, "ai")).catch(ui.error) },
       { label: pinnedSet.has(r.id) ? "Desafixar do topo" : "Fixar no topo", icon: pinnedSet.has(r.id) ? PinOff : Pin, onclick: () => togglePin(r.id) },
       { label: "Gerenciar repositório…", icon: Settings2, onclick: () => (ui.repoHub = { localId: r.id }) },
@@ -388,7 +388,7 @@
                       r.lastCommit ? `Último commit ${ago(r.lastCommit.date)}: ${r.lastCommit.subject}` : ""].filter(Boolean).join("\n")}>{x.last ? ago(new Date(x.last).toISOString()) : "nunca"}</span>
                     <span class="acts" role="presentation" onclick={(e) => e.stopPropagation()}>
                       {@render pinBtn(r.id)}
-                      <button class="btn sm ghost icon" title="Pedir à IA" onclick={() => open(r, "ask")}><Sparkles size={13} /></button>
+                      <button class="btn sm ghost icon" title="Abrir agente" onclick={() => open(r, "ask")}><Bot size={13} /></button>
                       <button class="btn sm go" class:primary={isOpen} onclick={() => open(r)}>{isOpen ? "Ir" : "Abrir"}</button>
                       <Menu items={repoMenu(r)} />
                     </span>
@@ -416,7 +416,7 @@
                     <div class="acts" role="presentation" onclick={(e) => e.stopPropagation()}>
                       {@render pinBtn(r.id)}
                       <span class="grow"></span>
-                      <button class="btn sm ghost icon" title="Pedir à IA" onclick={() => open(r, "ask")}><Sparkles size={13} /></button>
+                      <button class="btn sm ghost icon" title="Abrir agente" onclick={() => open(r, "ask")}><Bot size={13} /></button>
                       <Menu items={repoMenu(r)} />
                       <button class="btn sm" class:primary={isOpen} onclick={() => open(r)}><Play size={12} /> {isOpen ? "Ir" : "Abrir"}</button>
                     </div>

@@ -12,7 +12,7 @@
   // "Em andamento": um cartão por projeto com trabalho no meio do caminho — o que pede você primeiro (agente
   // perguntando), depois o que está rodando, depois o que ficou pela metade (alterações, commits para enviar, tarefas).
   // Os abertos nas abas entram sempre. Clique continua de onde parou; o x fecha o projeto aberto.
-  import { ArrowRight, ArrowUp, ChevronDown, GitBranch, ListTodo, MessageCircleQuestion, Sparkles, X } from "@lucide/svelte";
+  import { ArrowRight, ArrowUp, ChevronDown, GitBranch, ListTodo, MessageCircleQuestion, Bot, X } from "@lucide/svelte";
   import { ago } from "../../lib/format";
   import { prefs } from "../../lib/prefs.svelte";
   import { work } from "../../lib/work.svelte";
@@ -81,7 +81,7 @@
               {#if x.tasks.length && (x.need || x.working || x.standby || x.changes || x.ahead)}<span class="mt" title={x.tasks.map(t => t.title).join("\n")}><ListTodo size={11} />{x.tasks.length}</span>{/if}
               <span class="grow"></span>
               {#if x.last}<span class="when">{ago(new Date(x.last).toISOString())}</span>{/if}
-              <button class="ask" title="Pedir à IA" onclick={(e) => { e.stopPropagation(); onopen(x.r, "ask"); }}><Sparkles size={12} /></button>
+              <button class="ask" title="Abrir agente" onclick={(e) => { e.stopPropagation(); onopen(x.r, "ask"); }}><Bot size={12} /></button>
               <span class="go">{x.open ? "Ir" : "Continuar"} <ArrowRight size={12} /></span>
             </div>
           </div>

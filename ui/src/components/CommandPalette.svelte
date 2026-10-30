@@ -43,7 +43,7 @@
       { group: "Ações", label: "Conectar conta do GitHub", icon: Plus, run: () => go("/settings/github") },
       ...work.projects.map(p => ({ group: "Projetos abertos", label: p.name, sub: work.groupOf(p.id)?.name || p.path, icon: Code2, provider: p.provider || undefined,
                                     run: () => go("/work/" + p.id) })),
-      ...work.projects.map(p => ({ group: "Pedir à IA", label: `Pedir à IA em ${p.name}`, sub: "planejar e/ou implementar", icon: Sparkles, run: () => work.focus(p.id, null) })),
+      ...work.projects.map(p => ({ group: "Abrir agente", label: `Abrir agente em ${p.name}`, sub: "escolher a conta de IA", icon: Sparkles, run: () => work.launch(p.id) })),
       ...work.groups.map(g => ({ group: "Grupos", label: g.name, sub: `${g.repoIds.length} projeto(s) — abrir todos`, icon: Layers, run: async () => { await work.openGroup(g.id); const id = g.repoIds[0]; if (id) go("/work/" + id); } })),
       ...repos.local.filter(r => !/[\\/]\.worktrees[\\/]/.test(r.path)).map(r => ({ group: "Repositórios", label: r.name, sub: r.status?.branch || r.path, icon: FolderGit2, provider: r.provider || undefined,
                                   run: () => go("/repo/" + r.id) })),
@@ -54,7 +54,7 @@
         provider: b.provider, run: () => go("/builds/" + encodeURIComponent(b.key)) })),
     ];
     const t = q.trim().toLowerCase();
-    if (!t) return out.filter(i => !["Pull requests", "Builds", "Pedir à IA", "Comandos"].includes(i.group)).slice(0, 40);
+    if (!t) return out.filter(i => !["Pull requests", "Builds", "Abrir agente", "Comandos"].includes(i.group)).slice(0, 40);
     const words = t.split(/\s+/);
     return out.map(i => {
       const hay = `${i.label} ${i.sub || ""} ${i.group}`.toLowerCase();

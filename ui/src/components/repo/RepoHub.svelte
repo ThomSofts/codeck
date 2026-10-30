@@ -2,7 +2,7 @@
   // Gestão de um repositório: o que acompanhar (PRs, builds, deploys, issues e notificações), o que está acontecendo
   // nele agora, a pasta local (abrir, mover para outra pasta, clonar, limpar) e a organização (grupo, favorito, tags).
   import { ArrowDown, ArrowUp, Bell, BellOff, CircleDot, Code2, Download, Eye, EyeOff, ExternalLink, FolderInput, FolderOpen, GitBranch, GitPullRequest,
-    Hammer, Layers, Lock, Pin, PinOff, Play, Rocket, Sparkles, Terminal, Trash2 } from "@lucide/svelte";
+    Hammer, Layers, Lock, Pin, PinOff, Play, Rocket, Bot, Terminal, Trash2 } from "@lucide/svelte";
   import { get, post } from "../../lib/api";
   import { ago } from "../../lib/format";
   import { fileManagerName, pickFolder } from "../../lib/native";
@@ -206,7 +206,7 @@
         </div>
         <div class="btns">
           <button class="btn sm primary" onclick={openProject}><Play size={13} /> Abrir projeto</button>
-          <button class="btn sm" onclick={async () => { const id = await work.open(local!.id); ui.repoHub = null; work.focus(id, null); }}><Sparkles size={13} /> Pedir à IA</button>
+          <button class="btn sm" onclick={async () => { const id = await work.open(local!.id); ui.repoHub = null; work.launch(id); }}><Bot size={13} /> Abrir agente</button>
           <button class="btn sm" onclick={() => openIn("editor")}><Code2 size={13} /> Editor</button>
           <button class="btn sm" onclick={() => openIn("files")}><FolderOpen size={13} /> {fileManagerName()}</button>
           <button class="btn sm" onclick={() => openIn("terminal")}><Terminal size={13} /> Terminal</button>

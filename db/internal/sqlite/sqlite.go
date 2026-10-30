@@ -97,6 +97,11 @@ func (Dialect) Table(ctx context.Context, q engine.Queryer, schema, name string)
 		t.Columns = append(t.Columns, c)
 	}
 	rows.Close()
+	// o SQLite guarda o CREATE como foi escrito: é a estrutura mais fiel que dá para mostrar
+	var ddl sql.NullString
+	if q.QueryRowContext(ctx, `SELECT sql FROM `+engine.QuoteWith(`"`, `"`, schema)+`.sqlite_master WHERE name = ?`, name).Scan(&ddl) == nil {
+		t.DDL = ddl.String
+	}
 	for i := range t.Columns { // INTEGER PRIMARY KEY sozinha é o rowid: o SQLite numera
 		if pks == 1 && t.Columns[i].PK == 1 && (t.Columns[i].Type == "INTEGER" || t.Columns[i].Type == "integer") {
 			t.Columns[i].Identity = true

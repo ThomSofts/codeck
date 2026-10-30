@@ -119,7 +119,7 @@
   });
 </script>
 
-<div class="rb" class:dbg={dbgLive.length > 0} class:stopped role="toolbar" aria-label="Executar e depurar">
+<div class="rb" class:dbg={dbgLive.length > 0} class:live={live.length > 0} class:stopped role="toolbar" aria-label="Executar e depurar">
   {#if live.length}
     {#if dbgLive.length}
       {#if stopped}
@@ -127,9 +127,12 @@
       {:else}
         <button class="ib" title={`Pausar (${kb.label("workbench.action.debug.pause")})`} disabled={building || starting} onclick={() => debug.control(act, "pause")}><Pause size={13} /></button>
       {/if}
-      <button class="ib" title={`Passar por cima (${kb.label("workbench.action.debug.stepOver")})`} disabled={!stopped} onclick={() => debug.control(act, "next")}><StepForward size={14} /></button>
-      <button class="ib" title={`Entrar (${kb.label("workbench.action.debug.stepInto")})`} disabled={!stopped} onclick={() => debug.control(act, "stepIn")}><ArrowDownToLine size={14} /></button>
-      <button class="ib" title={`Sair (${kb.label("workbench.action.debug.stepOut")})`} disabled={!stopped} onclick={() => debug.control(act, "stepOut")}><ArrowUpFromLine size={14} /></button>
+      <!-- passo a passo só parado (antes ficavam desabilitados o tempo todo e a barra crescia à toa) -->
+      {#if stopped}
+        <button class="ib" title={`Passar por cima (${kb.label("workbench.action.debug.stepOver")})`} onclick={() => debug.control(act, "next")}><StepForward size={14} /></button>
+        <button class="ib" title={`Entrar (${kb.label("workbench.action.debug.stepInto")})`} onclick={() => debug.control(act, "stepIn")}><ArrowDownToLine size={14} /></button>
+        <button class="ib" title={`Sair (${kb.label("workbench.action.debug.stepOut")})`} onclick={() => debug.control(act, "stepOut")}><ArrowUpFromLine size={14} /></button>
+      {/if}
       <span class="sep"></span>
     {/if}
     {#if hot}
@@ -163,7 +166,8 @@
 </div>
 
 <style>
-  .rb { display: flex; align-items: center; gap: 2px; padding: 2px; border-radius: 9px; background: var(--bg-2); border: 1px solid var(--line); flex: none; min-width: 0; }
+  /* encolhe com a barra do projeto (o nome do alvo e o estado cortam com reticências) — nunca empurra os botões vizinhos para fora */
+  .rb { display: flex; align-items: center; gap: 2px; padding: 2px; border-radius: 9px; background: var(--bg-2); border: 1px solid var(--line); flex: 0 1 auto; min-width: 0; overflow: hidden; }
   .rb.dbg { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
   .ib { display: grid; place-items: center; width: 26px; height: 24px; border: 0; border-radius: 6px; background: none; color: var(--text-2); cursor: pointer; flex: none; }
   .ib:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
@@ -174,13 +178,13 @@
   .ib.tools { color: var(--accent); }
   .ib.nodbg { color: var(--good); }
   .sep { width: 1px; height: 16px; background: var(--line-2); margin: 0 2px; flex: none; }
-  .st { display: inline-flex; align-items: center; gap: 5px; max-width: 150px; height: 22px; padding: 0 8px; margin: 0 2px; border-radius: 6px; flex: none;
+  .st { display: inline-flex; align-items: center; gap: 5px; max-width: 150px; min-width: 0; height: 22px; padding: 0 8px; margin: 0 2px; border-radius: 6px; flex: 0 1 auto;
     background: var(--accent-soft); color: var(--accent); font: 650 11px var(--font); }
   .st.warn { background: var(--warn-soft); color: var(--warn); }
-  .dev { display: inline-flex; align-items: center; gap: 5px; height: 24px; max-width: 160px; padding: 0 7px; border: 0; border-radius: 6px; background: none;
-    color: var(--text-2); font: 600 11.5px var(--font); cursor: pointer; flex: none; }
+  .dev { display: inline-flex; align-items: center; gap: 5px; height: 24px; max-width: 160px; min-width: 0; padding: 0 7px; border: 0; border-radius: 6px; background: none;
+    color: var(--text-2); font: 600 11.5px var(--font); cursor: pointer; flex: 0 1 auto; }
   .dev:hover { background: var(--surface-3); color: var(--text); }
-  .start { display: flex; align-items: center; min-width: 0; }
+  .start { display: flex; align-items: center; min-width: 0; flex: 0 1 auto; }
   .gob { display: inline-flex; align-items: center; gap: 6px; height: 24px; max-width: 260px; min-width: 0; padding: 0 9px; border: 0; border-radius: 6px 0 0 6px; cursor: pointer;
     background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); font: 650 12px var(--font); transition: background var(--t-fast); }
   .gob:hover:not(:disabled) { background: color-mix(in srgb, var(--good) 26%, transparent); }
@@ -190,7 +194,10 @@
     background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); flex: none; }
   .caret:hover { background: color-mix(in srgb, var(--good) 26%, transparent); }
   .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  @container (max-width: 1100px) { .gob { max-width: 180px; } .gob .kind { display: none; } }
+  /* rodando, o estado já diz o que está no ar: o alvo fica mais curto */
+  .rb.live .gob { max-width: 150px; }
+  .rb.live .gob .kind, .rb.live .nodbg { display: none; }
+  @container (max-width: 1100px) { .gob { max-width: 180px; } .gob .kind { display: none; } .rb.live .gob .lbl { display: none; } }
   @container (max-width: 900px) { .gob { max-width: 130px; } .st { display: none; } .dev { max-width: 110px; } }
   @container (max-width: 760px) { .gob .lbl { display: none; } .dev span { display: none; } }
 </style>

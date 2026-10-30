@@ -113,7 +113,8 @@ func (Dialect) Objects(ctx context.Context, q engine.Queryer) ([]engine.Object, 
 func (Dialect) Table(ctx context.Context, q engine.Queryer, schema, name string) (*engine.TableInfo, error) {
 	t := &engine.TableInfo{Schema: schema, Name: name, Columns: []engine.Column{}, FKs: []engine.ForeignKey{}, Indexes: []engine.Index{}}
 	rows, err := q.QueryContext(ctx, `
-		SELECT c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE = 'YES', c.COLUMN_DEFAULT, COALESCE(k.ORDINAL_POSITION, 0), c.EXTRA LIKE '%auto_increment%'
+		SELECT c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE = 'YES', c.COLUMN_DEFAULT, COALESCE(k.ORDINAL_POSITION, 0), c.EXTRA LIKE '%auto_increment%',
+		       c.COLUMN_COMMENT
 		  FROM information_schema.COLUMNS c
 		  LEFT JOIN information_schema.KEY_COLUMN_USAGE k ON k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME
 		       AND k.COLUMN_NAME = c.COLUMN_NAME AND k.CONSTRAINT_NAME = 'PRIMARY'
@@ -124,7 +125,7 @@ func (Dialect) Table(ctx context.Context, q engine.Queryer, schema, name string)
 	for rows.Next() {
 		var c engine.Column
 		var def sql.NullString
-		if err := rows.Scan(&c.Name, &c.Type, &c.Nullable, &def, &c.PK, &c.Identity); err != nil {
+		if err := rows.Scan(&c.Name, &c.Type, &c.Nullable, &def, &c.PK, &c.Identity, &c.Comment); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -134,6 +135,9 @@ func (Dialect) Table(ctx context.Context, q engine.Queryer, schema, name string)
 		t.Columns = append(t.Columns, c)
 	}
 	rows.Close()
+	// TABLE_ROWS é estimativa no InnoDB; view tem o comentário "VIEW" e nada de tamanho
+	t.Stats(ctx, q, `SELECT IF(TABLE_TYPE = 'VIEW', '', TABLE_COMMENT), TABLE_ROWS, DATA_LENGTH + INDEX_LENGTH
+		  FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`, schema, name)
 	rows, err = q.QueryContext(ctx, `
 		SELECT CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
 		  FROM information_schema.KEY_COLUMN_USAGE

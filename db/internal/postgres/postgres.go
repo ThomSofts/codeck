@@ -89,7 +89,8 @@ func (Dialect) Table(ctx context.Context, q engine.Queryer, schema, name string)
 	rows, err := q.QueryContext(ctx, `
 		SELECT a.attname, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, pg_get_expr(d.adbin, d.adrelid),
 		       COALESCE((SELECT k.ord FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) WHERE k.attnum = a.attnum), 0)::int,
-		       a.attidentity <> '' OR COALESCE(pg_get_expr(d.adbin, d.adrelid), '') LIKE 'nextval(%'
+		       a.attidentity <> '' OR COALESCE(pg_get_expr(d.adbin, d.adrelid), '') LIKE 'nextval(%',
+		       COALESCE(col_description(c.oid, a.attnum), '')
 		  FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
 		  LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
 		  LEFT JOIN pg_index i ON i.indrelid = c.oid AND i.indisprimary
@@ -100,7 +101,7 @@ func (Dialect) Table(ctx context.Context, q engine.Queryer, schema, name string)
 	for rows.Next() {
 		var c engine.Column
 		var def sql.NullString
-		if err := rows.Scan(&c.Name, &c.Type, &c.Nullable, &def, &c.PK, &c.Identity); err != nil {
+		if err := rows.Scan(&c.Name, &c.Type, &c.Nullable, &def, &c.PK, &c.Identity, &c.Comment); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -110,6 +111,11 @@ func (Dialect) Table(ctx context.Context, q engine.Queryer, schema, name string)
 		t.Columns = append(t.Columns, c)
 	}
 	rows.Close()
+	// reltuples é a estimativa do último ANALYZE (-1 = nunca analisada: sem número)
+	t.Stats(ctx, q, `
+		SELECT obj_description(c.oid, 'pg_class'), CASE WHEN c.reltuples < 0 THEN NULL ELSE c.reltuples::bigint END,
+		       CASE WHEN c.relkind IN ('r', 'p', 'm') THEN pg_total_relation_size(c.oid) END
+		  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2`, schema, name)
 	rows, err = q.QueryContext(ctx, `
 		SELECT con.conname, a.attname, rn.nspname, rc.relname, ra.attname
 		  FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace

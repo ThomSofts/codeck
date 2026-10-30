@@ -18,11 +18,24 @@
   const mdModes = new Map<string, MdMode>();
   const lspStatus = new Map<string, (s: string) => void>();
 
+  /** Arquivo sem título (duplo clique na área vazia das abas, ⌘N): só na memória até "Salvar como". */
+  export const UNTITLED = "untitled:";
+  export const isUntitled = (rel: string) => rel.startsWith(UNTITLED);
+  /** O nome que aparece na aba: o do arquivo, ou "Sem título-1". */
+  export const fileName = (rel: string) => (isUntitled(rel) ? rel.slice(UNTITLED.length) : rel.split("/").pop() || rel);
+
   /** Abre (ou reaproveita) o documento de um arquivo do projeto. Binário/grande demais: devolve a explicação. */
   export async function loadDoc(monaco: typeof Monaco, repoId: string, taskId: string | null, rel: string): Promise<Doc | { note: string }> {
     const k = keyOf(repoId, taskId, rel);
     const ex = docs.get(k);
     if (ex) return ex;
+    if (isUntitled(rel)) {
+      const model = monaco.editor.createModel("", "plaintext", monaco.Uri.from({ scheme: "untitled", path: "/" + encodeURIComponent(k) }));
+      const d: Doc = { model, mtime: 0, saved: model.getAlternativeVersionId(), view: null, root: "", repoId, taskId, rel };
+      model.onDidChangeContent(() => { dirty[k] = model.getAlternativeVersionId() !== d.saved; });
+      docs.set(k, d);
+      return d;
+    }
     const f = await apiGet<any>("ws/file", { repoId, taskId, path: rel });
     if (f.binary || f.tooLarge) return { note: f.binary ? "Arquivo binário — não dá para editar aqui." : `Arquivo grande demais (${Math.round(f.size / 1e6)} MB).` };
     if (docs.has(k)) return docs.get(k)!;   // outro editor abriu enquanto este lia
@@ -72,8 +85,10 @@
     (ed as any)._commandService?.executeCommand(id).catch(() => {});
   }
 
-  let { repoId, taskId = null, gitRepo = null, path, line = 0, onreveal, onpin }:
-    { repoId: string; taskId?: string | null; gitRepo?: string | null; path: string; line?: number; onreveal?: (dir: string) => void; onpin?: () => void } = $props();
+  let { repoId, taskId = null, gitRepo = null, path, line = 0, onreveal, onpin, onsaveas }:
+    { repoId: string; taskId?: string | null; gitRepo?: string | null; path: string; line?: number; onreveal?: (dir: string) => void; onpin?: () => void;
+      /** o arquivo sem título foi gravado no projeto: a aba passa a ser a do arquivo */
+      onsaveas?: (rel: string) => void } = $props();
   let host: HTMLDivElement | undefined = $state();
   let editor: Monaco.editor.IStandaloneCodeEditor | null = null;
   let monaco: typeof Monaco | null = null;
@@ -126,9 +141,29 @@
     if (!wasDirty) await save(true);
   }
 
+  /** "Salvar como" do arquivo sem título: pergunta o caminho no projeto, grava e troca a aba para o arquivo. */
+  async function saveAs(d: Doc) {
+    const first = d.model.getLineContent(1).trim().replace(/[^\w\- .]+/g, "").trim().slice(0, 40);
+    const r = await ui.ask({ title: "Salvar como", message: "Caminho dentro do projeto (as pastas que faltarem são criadas).", confirm: "Salvar",
+      input: { label: "Arquivo", value: first ? first.replace(/\s+/g, "-").toLowerCase() + ".txt" : "sem-titulo.txt", required: true } });
+    if (typeof r !== "string" || !r.trim()) return;
+    const rel = r.trim().replace(/\\/g, "/").replace(/^\.?\/+/, "");
+    try {
+      const ex = await apiGet<any>("ws/file", { repoId, taskId, path: rel }).catch(() => null);
+      if (ex && !(await ui.ask({ title: `${rel} já existe`, message: "Substituir o arquivo pelo texto deste?", confirm: "Substituir", danger: true }))) return;
+      await apiPost("ws/file", { repoId, taskId, path: rel, text: d.model.getValue() });
+      d.saved = d.model.getAlternativeVersionId();
+      dirty[key] = false;
+      ui.toast(`${rel.split("/").pop()} salvo`);
+      scm.touch(gitRepo);
+      onsaveas?.(rel);
+    } catch (e) { ui.error(e); }
+  }
+
   async function save(quiet = false) {
     const d = docs.get(key);
     if (!d || !editor) return;
+    if (isUntitled(d.rel)) { if (!quiet) await saveAs(d); return; }
     try {
       if (prefs.get("editor.formatOnSave") && !quiet) await editor.getAction("editor.action.formatDocument")?.run().catch(() => {});
       await saveDoc(d);
@@ -146,7 +181,7 @@
   // o arquivo aberto e sem alteração sua acompanha o disco (o agente editando aparece ao vivo)
   async function syncFromDisk() {
     const k = key, d = docs.get(k);
-    if (!d || dirty[k] || document.hidden) return;
+    if (!d || dirty[k] || document.hidden || isUntitled(d.rel)) return;
     try {
       const f = await apiGet<any>("ws/file", { repoId, taskId, path: relP });
       if (f.text !== undefined && f.mtime !== d.mtime && f.text !== d.model.getValue()) {
@@ -166,7 +201,7 @@
   let gutTimer: ReturnType<typeof setTimeout> | undefined;
   async function loadBase() {
     const k = key;
-    if (!prefs.get("editor.gitGutter")) { base = null; paintGutter(); return; }
+    if (!prefs.get("editor.gitGutter") || isUntitled(relP)) { base = null; paintGutter(); return; }
     try {
       const r = await apiGet<{ text: string; exists: boolean; binary?: boolean; tooLarge?: boolean }>("ws/base", { repoId, taskId, path: relP, ref: "INDEX" });
       if (k !== key) return;
@@ -235,7 +270,13 @@
   }
 
   // ------------------------------------------------------------ barra de status
+  // digitando, o cursor muda a cada tecla: a barra de status é atualizada uma vez por quadro, não por evento
+  let pubFrame = 0;
   function publish() {
+    if (pubFrame) return;
+    pubFrame = requestAnimationFrame(() => { pubFrame = 0; publishNow(); });
+  }
+  function publishNow() {
     if (!editor) return;
     updateSyms();
     const m = editor.getModel(), p = editor.getPosition(), s = editor.getSelection();
@@ -297,7 +338,7 @@
     });
     const t = setInterval(syncFromDisk, 3000);
     return () => {
-      disposed = true; clearInterval(t); for (const s of subs) s.dispose(); mdSub?.dispose(); clearTimeout(mdTimer); clearTimeout(gutTimer);
+      disposed = true; clearInterval(t); cancelAnimationFrame(pubFrame); pubFrame = 0; for (const s of subs) s.dispose(); mdSub?.dispose(); clearTimeout(mdTimer); clearTimeout(gutTimer);
       lspStatus.delete(key);
       if (edState.editor === editor) edState.editor = null;
       editor?.dispose(); editor = null;
@@ -332,7 +373,10 @@
       inlayHints: { enabled: prefs.get("editor.inlayHints") }, codeLens: !!prefs.get("editor.codeLens"),
       wordWrap: (prefs.get("editor.wordWrap") ? "on" : "off") as "on" | "off", lineNumbers: (prefs.get("editor.lineNumbers") ? "on" : "off") as "on" | "off",
       stickyScroll: { enabled: !!prefs.get("editor.stickyScroll") }, renderWhitespace: prefs.get("editor.renderWhitespace"),
-      cursorStyle: prefs.get("editor.cursorStyle"), cursorBlinking: prefs.get("editor.cursorBlinking"), cursorSmoothCaretAnimation: "on",
+      cursorStyle: prefs.get("editor.cursorStyle"), cursorBlinking: prefs.get("editor.cursorBlinking"),
+      // "explicit": anima só quando você move o cursor (clique, setas) — com "on" ele animava a cada tecla e, digitando
+      // rápido, ficava para trás do texto
+      cursorSmoothCaretAnimation: "explicit",
       bracketPairColorization: { enabled: !!prefs.get("editor.bracketPairs") },
       ...(tab ? { tabSize: tab, detectIndentation: false } : { detectIndentation: true }) };
   }
@@ -369,7 +413,7 @@
       if ((!isMd || mdMode !== "preview") && (!a || a === document.body || host?.contains(a))) editor.focus();
     }).catch(e => (note = e.message));
   });
-  const crumbs = $derived(relP.split("/"));
+  const crumbs = $derived(isUntitled(relP) ? [fileName(relP)] : relP.split("/"));
 </script>
 
 <div class="ed" class:md={isMd && !note} class:split={isMd && mdMode === "split"}>

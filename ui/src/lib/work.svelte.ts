@@ -70,10 +70,8 @@ class Work {
   pendingTask = $state<{ projectId: string; preset: any } | null>(null);
   /** "Pedir à IA" pedido de outra tela (issue, PR…): a tela do projeto abre o diálogo já preenchido */
   pendingAsk = $state<{ projectId: string; preset: any } | null>(null);
-  /** ⌘⇧I / "Pedir à IA": o painel do agente do projeto põe o cursor no campo de pedido (e consome o pedido) */
-  composeFocus = $state<{ projectId: string; at: number } | null>(null);
   /** abrir um projeto já numa aba (ex.: a Git), vindo de um link de repositório */
-  focusRequest = $state<{ projectId: string; scope: string | null; tab: "git" | "review" | "code" | "ai"; termId?: string | null } | null>(null);
+  focusRequest = $state<{ projectId: string; scope: string | null; tab: "git" | "review" | "code" | "ai" | "agent"; termId?: string | null } | null>(null);
   private timer: ReturnType<typeof setInterval> | null = null;
   /** projetos sendo fechados: nem a rota (que muda um quadro depois, na transição) nem o polling os trazem de volta */
   closing = new Set<string>();
@@ -340,9 +338,10 @@ class Work {
     this.rememberAccount(projectId, accountId);
     try { await post("ws/settings", { repoId: projectId, account: accountId }); } catch (e) { ui.error(e); }
   }
-  focusComposer(projectId?: string | null) {
-    const id = projectId || this.active;
-    if (id) this.composeFocus = { projectId: id, at: Date.now() };
+  /** Abre o projeto na tela do agente (escolher a conta de IA). */
+  launch(projectId: string) {
+    this.focusRequest = { projectId, scope: null, tab: "agent" };
+    go("/work/" + projectId);
   }
   /** Abre o projeto já numa tarefa/aba (vindo do quadro, das issues…). */
   focus(projectId: string, scope: string | null, termId?: string | null) {

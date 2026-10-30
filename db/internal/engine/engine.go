@@ -48,6 +48,7 @@ type Column struct {
 	Default  *string `json:"default"`
 	PK       int     `json:"pk"` // posição na chave primária (0 = fora dela)
 	Identity bool    `json:"identity"`
+	Comment  string  `json:"comment,omitempty"` // a descrição (COMMENT, MS_Description)
 }
 
 type ForeignKey struct {
@@ -71,11 +72,33 @@ type TableInfo struct {
 	Columns []Column     `json:"columns"`
 	FKs     []ForeignKey `json:"fks"`
 	Indexes []Index      `json:"indexes"`
+	Comment string       `json:"comment,omitempty"`
+	Rows    *int64       `json:"rows,omitempty"`  // estimativa do catálogo (sem varrer a tabela)
+	Bytes   *int64       `json:"bytes,omitempty"` // dados + índices
+	DDL     string       `json:"ddl,omitempty"`   // o CREATE guardado pelo banco, quando ele guarda (SQLite)
+}
+
+// Stats lê a descrição, a estimativa de linhas e o tamanho da tabela numa consulta à parte. É extra: sem permissão
+// para o catálogo de tamanhos (ou num banco que não tem), a estrutura chega mesmo assim, só sem esses números.
+func (t *TableInfo) Stats(ctx context.Context, q Queryer, query string, args ...any) {
+	var comment sql.NullString
+	var rows, bytes sql.NullInt64
+	if err := q.QueryRowContext(ctx, query, args...).Scan(&comment, &rows, &bytes); err != nil {
+		return
+	}
+	t.Comment = comment.String
+	if rows.Valid && rows.Int64 >= 0 {
+		t.Rows = &rows.Int64
+	}
+	if bytes.Valid && bytes.Int64 >= 0 {
+		t.Bytes = &bytes.Int64
+	}
 }
 
 // Queryer: *sql.Conn, *sql.Tx e *sql.DB.
 type Queryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
