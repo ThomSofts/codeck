@@ -67,10 +67,19 @@ sealed class MainForm : Form
     bool? holdAwake;          // segurando o PC acordado (Configurações → Geral → "Com a tela bloqueada…")
     bool screensaverOn;
 
+    // Modo attach (depuração): a chave do backend vem de CODECK_TOKEN ou do arquivo que ele gravou (CODECK_TOKEN_FILE)
+    static string AttachToken()
+    {
+        var t = Env.GetValueOrDefault("CODECK_TOKEN");
+        if (!string.IsNullOrEmpty(t)) return t;
+        var file = Env.GetValueOrDefault("CODECK_TOKEN_FILE");
+        try { return string.IsNullOrEmpty(file) ? "" : File.ReadAllText(file).Trim(); } catch (Exception) { return ""; }
+    }
+
     public MainForm(EventWaitHandle showSignal)
     {
         AdoptLegacyData();
-        token = attach ? Env.GetValueOrDefault("CODECK_TOKEN") ?? "" : Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+        token = attach ? AttachToken() : Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
         baseUrl = $"http://127.0.0.1:{port}/";
         http.DefaultRequestHeaders.Add("X-Codeck-Token", token);
         baseIcon = LoadIcon(SystemInformation.SmallIconSize);   // bandeja
@@ -175,7 +184,7 @@ sealed class MainForm : Form
             return;
         }
         Directory.CreateDirectory(dataDir);
-        var psi = new ProcessStartInfo(python, $"\"{script}\"")
+        var psi = new ProcessStartInfo(python, $"-I -B -u \"{script}\"")   // -I: PYTHONPATH/PYTHONHOME não entram no backend
         {
             UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = dataDir,
             RedirectStandardOutput = true, RedirectStandardError = true,
@@ -233,22 +242,11 @@ sealed class MainForm : Form
         core.Settings.IsStatusBarEnabled = false;
         core.Settings.AreDefaultContextMenusEnabled = attach;
         await core.AddScriptToExecuteOnDocumentCreatedAsync(
-            $"window.CODECK_TOKEN = {JsonSerializer.Serialize(token)}; window.CODECK_PLATFORM = 'windows';" +
-            (selfTest != null ? " window.__CD_SELFTEST = true;" : ""));
-        core.NewWindowRequested += (_, e) => { e.Handled = true; OpenExternal(e.Uri); }; // target=_blank → navegador
-        core.NavigationStarting += (_, e) =>
-        {
-            if (e.Uri.StartsWith("http", StringComparison.OrdinalIgnoreCase) && !e.Uri.StartsWith(baseUrl, StringComparison.OrdinalIgnoreCase))
-            {
-                e.Cancel = true;
-                OpenExternal(e.Uri);
-            }
-        };
-        core.WebMessageReceived += (_, e) => OnWebMessage(e.WebMessageAsJson);
+            WindowSafety.TokenScript(baseUrl, token, selfTest != null ? " window.__CD_SELFTEST = true;" : ""));
+        WindowSafety.Guard(core, baseUrl);
+        core.WebMessageReceived += (_, e) => { if (WindowSafety.FromUs(e.Source, baseUrl)) OnWebMessage(e.WebMessageAsJson); };
         core.NavigateToString(Splash("Iniciando…"));
     }
-
-    static void OpenExternal(string url) => Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
 
     void Fatal(string text)
     {
@@ -655,10 +653,45 @@ sealed class ProjectWindow : Form
             await view.EnsureCoreWebView2Async(env);
             var core = view.CoreWebView2;
             core.Settings.IsStatusBarEnabled = false;
-            await core.AddScriptToExecuteOnDocumentCreatedAsync(
-                $"window.CODECK_TOKEN = {JsonSerializer.Serialize(token)}; window.CODECK_PLATFORM = 'windows';");
-            core.NewWindowRequested += (_, e) => { e.Handled = true; Process.Start(new ProcessStartInfo(e.Uri) { UseShellExecute = true }); };
+            core.Settings.AreDevToolsEnabled = false;
+            core.Settings.AreDefaultContextMenusEnabled = false;
+            await core.AddScriptToExecuteOnDocumentCreatedAsync(WindowSafety.TokenScript(baseUrl, token, ""));
+            WindowSafety.Guard(core, baseUrl);
             core.Navigate(baseUrl + "#" + hash);
+        };
+    }
+}
+
+// A janela guarda a chave da API (que abre terminais): só a nossa tela roda nela, e para fora só vai http(s)/e-mail.
+static class WindowSafety
+{
+    static string Origin(string baseUrl) => baseUrl.TrimEnd('/');
+
+    /// A chave só entra no quadro principal da página do nosso servidor (nunca num iframe ou outra origem).
+    public static string TokenScript(string baseUrl, string token, string extra) =>
+        $"if (window === window.top && location.origin === {JsonSerializer.Serialize(Origin(baseUrl))}) {{ " +
+        $"window.CODECK_TOKEN = {JsonSerializer.Serialize(token)}; window.CODECK_PLATFORM = 'windows';{extra} }}";
+
+    public static bool FromUs(string source, string baseUrl) =>
+        source.StartsWith(baseUrl, StringComparison.OrdinalIgnoreCase);
+
+    /// file://, \\servidor, search-ms:, ms-*: e afins nunca chegam ao shell do Windows.
+    public static void OpenExternal(string url)
+    {
+        if (Uri.TryCreate(url, UriKind.Absolute, out var u) && (u.Scheme is "http" or "https" or "mailto"))
+            Process.Start(new ProcessStartInfo(u.AbsoluteUri) { UseShellExecute = true });
+    }
+
+    public static void Guard(CoreWebView2 core, string baseUrl)
+    {
+        core.NewWindowRequested += (_, e) => { e.Handled = true; OpenExternal(e.Uri); }; // target=_blank → navegador
+        core.NavigationStarting += (_, e) =>
+        {
+            var uri = e.Uri;
+            if (FromUs(uri, baseUrl) || uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase)
+                || uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase)) return;   // data: = splash (NavigateToString)
+            e.Cancel = true;
+            OpenExternal(uri);
         };
     }
 }

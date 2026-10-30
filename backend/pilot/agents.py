@@ -171,13 +171,18 @@ _usage = load_json(USAGE_FILE, {})   # conta -> {rateLimits, updated, source, pl
 _lock = threading.Lock()
 
 
+def _win_curl():
+    """curl do Windows pelo caminho completo: pelo nome, o cmd procuraria antes na pasta atual (a do repositório)."""
+    return os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32", "curl.exe")
+
+
 def _hook_cmd(sid, secret, nt=None):
     """POST da linha de status/hook no servidor local. A resposta vai para o nulo: no SessionStart/UserPromptSubmit o
     que o hook imprime entra no CONTEXTO do agente (antes o {"ok": true} ia parar na conversa)."""
     nt = os.name == "nt" if nt is None else nt
     url = f"http://127.0.0.1:{getattr(ctx, 'port', None) or DEFAULT_PORT}/hook/{sid}/{secret}"
     return f"curl -s -m 2 -o /dev/null -X POST -H 'Content-Type: application/json' --data-binary @- {url}" if not nt else \
-        f"curl.exe -s -m 2 -o NUL -X POST -H \"Content-Type: application/json\" --data-binary @- {url}"
+        f"\"{_win_curl()}\" -s -m 2 -o NUL -X POST -H \"Content-Type: application/json\" --data-binary @- {url}"
 
 
 # Pular as permissões (por projeto, desligado por padrão). O OpenCode não tem flag de linha de comando para isso — as
@@ -435,7 +440,7 @@ def hook(sid, secret, payload):
             s["cost"] = cost.get("total_cost_usd")
             s["lines"] = [cost.get("total_lines_added"), cost.get("total_lines_removed")] if "total_lines_added" in cost else s.get("lines")
             s["claudeSession"] = payload.get("session_id") or s.get("claudeSession")
-            s["transcript"] = payload.get("transcript_path") or s.get("transcript")
+            s["transcript"] = _own_transcript(s, payload.get("transcript_path")) or s.get("transcript")
             rl = payload.get("rate_limits")
             if rl:
                 lim = _norm_claude_limits(rl)
@@ -827,6 +832,17 @@ def forget_resume(sid):
     db = _resume_db()
     if db.pop(sid, None) is not None:
         save_json(RESUME_FILE, db)
+
+
+def _own_transcript(s, path):
+    """O transcript que o hook informa só vale dentro da pasta da conta (é lido e pode ir para a PR)."""
+    if not isinstance(path, str) or not path.endswith(".jsonl"):
+        return None
+    try:
+        root = os.path.realpath(get_account(s["account"])["dir"])
+    except Exception:  # noqa: BLE001
+        return None
+    return path if os.path.realpath(path).startswith(root + os.sep) else None
 
 
 def last_message(sid):

@@ -3,7 +3,9 @@
 # Só use depois que o build N estiver publicado nas DUAS plataformas — senão você tranca quem não tem para onde ir.
 #   scripts/set-required.sh 7     → quem está no build < 7 vê a tela de atualização obrigatória
 #   scripts/set-required.sh 0     → tira a obrigatoriedade
+# O latest.json vai assinado (o app recusa o que não confere): a chave vem do Keychain (codeck-update-signing).
 set -euo pipefail
+export PATH="/opt/homebrew/bin:$PATH"
 N="${1:?uso: set-required.sh <build>}"
 CONFIG="$HOME/.config/thomsoft/downloads.env"
 # shellcheck source=/dev/null
@@ -20,5 +22,9 @@ jq --argjson n "$N" '.required = $n' "$tmp/latest.json" > "$tmp/new.json"
 diff <(jq . "$tmp/latest.json") <(jq . "$tmp/new.json") || true
 read -r -p "Publicar? [s/N] " ok; [ "$ok" = s ] || exit 0
 mv "$tmp/new.json" "$tmp/latest.json"
-run "cd /codeck; lcd $tmp; put latest.json;"
+key="$(mktemp)"; chmod 600 "$key"
+security find-generic-password -s codeck-update-signing -a codeck -w | base64 -D > "$key"
+openssl dgst -sha256 -sign "$key" "$tmp/latest.json" | base64 | tr -d '\n' > "$tmp/latest.json.sig"
+rm -f "$key"
+run "cd /codeck; lcd $tmp; put latest.json; put latest.json.sig;"
 echo "✓ required = $N"

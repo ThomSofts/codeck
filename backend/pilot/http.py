@@ -2,6 +2,8 @@
 
 Toda rota /api exige a chave da execução (X-Codeck-Token) e os POSTs exigem também o header X-Codeck: 1 —
 header custom força preflight de CORS, que não respondemos, então nenhum site consegue agir por você.
+Além disso: só atendemos o Host 127.0.0.1/localhost na nossa porta (um site com DNS apontando para cá — DNS
+rebinding — é recusado antes de qualquer coisa) e, quando há Origin, ela tem de ser a nossa.
 """
 import ctypes
 import hmac
@@ -15,7 +17,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import accounts, agents, aitools, aiusage, analytics, azure, boards, cascade, catalogs, debug, dotnet, editor, engine, extensions, git, github, kanban, launch, library, lsp, power, prreview, rules, terminals, tracking, update, workspace, ws
+from . import accounts, agents, aitools, aiusage, analytics, azure, boards, cascade, catalogs, debug, dotnet, editor, engine, extensions, git, github, kanban, launch, library, lsp, power, prreview, rules, terminals, tracking, trust, update, workspace, ws
 from .core import (APP_BUILD, APP_PLATFORM, APP_VERSION, ARCHIVE_FILE, CONFIG_FILE, DATA, DEFAULT_PORT, PRODUCT, RULES_FILE, OfflineError,
                    STATIC_DIR, TOKEN, ctx, load_json, lock, log_activity, log_build, log_deploy, notifications, notify_seq,
                    now_iso, pr_summary, read_activity, save_json, state, wake)
@@ -1015,6 +1017,7 @@ def get_ws_run_configs(qs, body):
 @route("POST", "/api/ws/run")
 def post_ws_run(qs, body):
     terminals.hint_size(body.get("cols"), body.get("rows"))
+    trust.require(body.get("repoId"), "as configurações de execução (launch.json, tasks.json, scripts do package.json)")
     return workspace.run(body.get("repoId"), body.get("taskId"), body.get("configId"))
 
 
@@ -1100,12 +1103,14 @@ def get_dotnet_solution(qs, body):
 @route("POST", "/api/dotnet/build")
 def post_dotnet_build(qs, body):
     terminals.hint_size(body.get("cols"), body.get("rows"))
+    trust.require(body.get("repoId"), "a compilação .NET (o MSBuild roda os alvos e pacotes do projeto)")
     return dotnet.build(body.get("repoId"), body.get("taskId"), body.get("target"), body.get("config"), body.get("action") or "Build")
 
 
 @route("POST", "/api/dotnet/start")
 def post_dotnet_start(qs, body):
     terminals.hint_size(body.get("cols"), body.get("rows"))
+    trust.require(body.get("repoId"), "a execução .NET (compila e roda o projeto)")
     return dotnet.start(body.get("repoId"), body.get("taskId"), body.get("projects") or [], body.get("config"), body.get("profile"))
 
 
@@ -1168,6 +1173,7 @@ def post_debug_install(qs, body):
 @route("POST", "/api/debug/start")
 def post_debug_start(qs, body):
     terminals.hint_size(body.get("cols"), body.get("rows"))
+    trust.require(body.get("repoId"), "a configuração de depuração (launch.json e a tarefa que roda antes)")
     return debug.start(body.get("repoId"), body.get("taskId"), body.get("configId"), bool(body.get("noDebug")), body.get("device") or None)
 
 
@@ -1279,6 +1285,22 @@ def get_dotnet_problems(qs, body):
 @route("POST", "/api/dotnet/open-vs")
 def post_dotnet_open_vs(qs, body):
     return dotnet.open_in_vs(body.get("repoId"), body.get("taskId"), body.get("target"))
+
+
+# ---------------------------------------------------------------- confiança por projeto (o que vem do repositório só roda depois)
+@route("GET", "/api/trust")
+def get_trust(qs, body):
+    return trust.public()
+
+
+@route("POST", "/api/trust")
+def post_trust(qs, body):
+    return trust.trust(body.get("repoId")) if body.get("trusted", True) else trust.untrust(body.get("repoId"))
+
+
+@route("POST", "/api/trust/all")
+def post_trust_all(qs, body):
+    return trust.set_all(bool(body.get("all")))
 
 
 # ---------------------------------------------------------------- extensões do VS Code (temas, ícones, snippets)
@@ -1499,6 +1521,15 @@ def get_remote_repos(qs, body):
 
 
 # ---------------------------------------------------------------- servidor
+# A janela guarda a chave da API e abre terminais: só roda script nosso. O worker do TypeScript (Monaco) usa eval,
+# mas é outro arquivo, sem esta política (ela vai só no HTML). Estilos inline: Monaco e Svelte usam.
+CSP = ("default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
+       "img-src 'self' data: blob: https:; font-src 'self' data: blob:; media-src 'self' data: blob:; "
+       "connect-src 'self' ws://127.0.0.1:* ws://localhost:*; frame-src http://127.0.0.1:* http://localhost:*; "
+       "object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+MAX_BODY = 64 * 1024 * 1024   # maior pedido aceito (anexos do quadro vão em base64, até 25 MB cada)
+
+
 def _send_deadline(conn, secs):
     """Prazo para cada envio no socket (só no envio — a leitura do WebSocket espera o quanto for preciso)."""
     try:
@@ -1521,16 +1552,38 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "public, max-age=31536000, immutable" if cache else "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        if ctype == "text/html":
+            self.send_header("Content-Security-Policy", CSP)
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.end_headers()
         self.wfile.write(raw)
 
     def authorized(self):
-        return not TOKEN or hmac.compare_digest(self.headers.get("X-Codeck-Token") or "", TOKEN)
+        return bool(TOKEN) and hmac.compare_digest((self.headers.get("X-Codeck-Token") or "").encode(), TOKEN.encode())
+
+    def local_request(self):
+        """Host e Origin têm de ser este servidor: barra DNS rebinding e páginas de outros sites."""
+        port = self.server.server_address[1]
+        allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        if (self.headers.get("Host") or "").lower() not in allowed:
+            return False
+        origin = self.headers.get("Origin")
+        return origin is None or origin.lower() in {"http://" + h for h in allowed}
+
+    def token_in_protocol(self):
+        """A chave do WebSocket vem no subprotocolo "codeck.<token>" (o navegador não manda cabeçalho)."""
+        proto = next((p for p in ws.WebSocket.offered_protocols(self) if p.startswith("codeck.")), "")
+        ok = bool(TOKEN) and hmac.compare_digest(proto[len("codeck."):].encode(), TOKEN.encode())
+        return proto if ok else None
 
     def static(self, path):
         rel = urllib.parse.unquote(path).lstrip("/") or "index.html"
-        full = os.path.normpath(os.path.join(STATIC_DIR, rel))
-        if not full.startswith(STATIC_DIR) or not os.path.isfile(full):
+        full = os.path.realpath(os.path.join(STATIC_DIR, rel))
+        root = os.path.realpath(STATIC_DIR)
+        if os.path.commonpath([full, root]) != root or not os.path.isfile(full):
             full = os.path.join(STATIC_DIR, "index.html")   # app de página única
         if not os.path.isfile(full):
             return self.send(503, b"<h1>Tela n\xc3\xa3o compilada</h1><p>Rode: cd ui && npm install && npm run build</p>", "text/html")
@@ -1550,6 +1603,8 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(res, extensions.RawFile):   # arquivo de extensão (ícone, fonte, tema): bytes com o tipo certo
                 return self.send(200, res.data, res.ctype)
             return self.send(200, res)
+        except trust.TrustRequired as e:   # a tela pergunta se confia no projeto e repete o pedido
+            return self.send(409, {"error": str(e), "trust": e.payload()})
         except LookupError as e:
             return self.send(404, {"error": str(e).strip("'")})
         except (ValueError, git.GitError) as e:
@@ -1560,6 +1615,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(500, {"error": str(e)[:600]})
 
     def do_GET(self):
+        if not self.local_request():
+            return self.send(403, {"error": "forbidden"})
         path = urllib.parse.urlparse(self.path).path
         if path.startswith("/ws/term/"):
             return self.terminal_socket(path[len("/ws/term/"):])
@@ -1573,15 +1630,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def terminal_socket(self, tid):
         """WebSocket de um terminal. A chave vem no subprotocolo "codeck.<token>" (o navegador não manda cabeçalho)."""
-        offered = ws.WebSocket.offered_protocols(self)
-        proto = next((p for p in offered if p.startswith("codeck.")), "")
-        if TOKEN and not hmac.compare_digest(proto[len("codeck."):], TOKEN):
+        proto = self.token_in_protocol()
+        if not proto:
             return self.send(401, {"error": "abra pelo app"})
         try:
             term = terminals.get(tid)
         except LookupError:
             return self.send(404, {"error": "Terminal não encontrado"})
-        sock = ws.WebSocket.accept(self, proto or None)
+        sock = ws.WebSocket.accept(self, proto)
         # quem manda a saída ao vivo é a thread que lê o PTY: uma tela que parou de ler (janela suspensa, conexão
         # meio morta) travava essa thread no envio — o processo parava de ser lido, o agente travava na escrita e
         # nem os pedidos colados chegavam mais. Com prazo, a conexão cai e a tela reconecta de onde parou.
@@ -1636,9 +1692,13 @@ class Handler(BaseHTTPRequestHandler):
         parts = path.strip("/").split("/")
         if len(parts) != 3:
             return self.send(404, {"error": "rota não encontrada"})
-        length = min(int(self.headers.get("Content-Length") or 0), 2_000_000)
         try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 <= length <= 2_000_000:
+                return self.send(413, {"error": "pedido grande demais"})
             payload = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(payload, dict):
+                raise ValueError("JSON inválido")
             return self.send(200, agents.hook(parts[1], parts[2], payload))
         except PermissionError:
             return self.send(403, {"error": "forbidden"})
@@ -1647,18 +1707,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def lsp_socket(self, lang):
         """WebSocket de um servidor de linguagem na pasta do projeto/tarefa (?repoId=…&taskId=…)."""
-        offered = ws.WebSocket.offered_protocols(self)
-        proto = next((p for p in offered if p.startswith("codeck.")), "")
-        if TOKEN and not hmac.compare_digest(proto[len("codeck."):], TOKEN):
+        proto = self.token_in_protocol()
+        if not proto:
             return self.send(401, {"error": "abra pelo app"})
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         try:
             root = workspace._root(q1(qs, "repoId"), q1(qs, "taskId"))
         except Exception as e:  # noqa: BLE001
             return self.send(400, {"error": str(e)})
-        sock = ws.WebSocket.accept(self, proto or None)
+        sock = ws.WebSocket.accept(self, proto)
         try:
-            bridge = lsp.Bridge(lang, root, sock)
+            bridge = lsp.Bridge(lang, root, sock, trusted=trust.is_trusted(q1(qs, "repoId")))
         except LookupError as e:
             sock.send_text(json.dumps({"codeck": "unavailable", "message": str(e)}))
             sock.close()
@@ -1674,16 +1733,31 @@ class Handler(BaseHTTPRequestHandler):
             sock.closed = True
 
     def do_POST(self):
+        if not self.local_request():
+            return self.send(403, {"error": "forbidden"})
         if self.path.startswith("/hook/"):
             return self.agent_hook(urllib.parse.urlparse(self.path).path)
         if self.headers.get("X-Codeck") != "1" or not self.authorized():
             return self.send(403, {"error": "forbidden"})
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if not 0 <= length <= MAX_BODY:
+            self.close_connection = True
+            return self.send(413, {"error": "pedido grande demais"})
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return self.send(400, {"error": "JSON inválido"})
+        if not isinstance(body, dict):
             return self.send(400, {"error": "JSON inválido"})
         return self.dispatch(POST, body)
+
+    def do_PUT(self):
+        return self.send(405, {"error": "método não permitido"})
+
+    do_DELETE = do_PATCH = do_OPTIONS = do_PUT
 
 
 def _watch_parent(parent):

@@ -14,16 +14,20 @@ de ferramenta.
 
 | | |
 |---|---|
-| **Windows** | baixe `Codeck-<versão>-setup.exe` em `https://thomsoft.com.br/downloads/codeck/latest.json` (campo `windows.url`) e rode. Instala no seu perfil, sem administrador. |
-| **macOS** | baixe o `.dmg` (campo `macos.url` do mesmo `latest.json`) e arraste o Codeck para Aplicativos. |
+A instalação oficial é pela ThomSoft: **[thomsoft.com.br/codeck](https://thomsoft.com.br/codeck/)**. A página
+confere a assinatura da versão e o SHA-256 do instalador no seu navegador antes de salvar o arquivo.
 
-Os mesmos instaladores ficam em [Releases](https://github.com/ThomSofts/codeck/releases/latest).
+| | |
+|---|---|
+| **Windows** | baixe o instalador (`.exe`) na página e rode. Instala no seu perfil, sem administrador. |
+| **macOS** | baixe o `.dmg` na página e arraste o Codeck para Aplicativos. |
 
 Depois de instalado, o app **se atualiza sozinho**:
 - Ele consulta o `latest.json`, mostra um aviso e o botão **Atualizar agora**.
 - Antes de instalar, confere o que se perderia ao reabrir — arquivos sem salvar (com "Salvar tudo" ali mesmo), agentes
   trabalhando, processos rodando e projetos abertos — e só então baixa, mostrando o progresso.
-- Antes de instalar, confere o SHA-256 do instalador baixado.
+- Só aceita uma versão nova se o `latest.json` vier com a **assinatura da ThomSoft** (`latest.json.sig`, ECDSA P-256),
+  e só baixa do site da ThomSoft. Antes de instalar, confere o SHA-256 do instalador, que também está assinado.
 - Na primeira abertura de cada versão nova, copia os dados locais (contas, quadro, projetos, regras, histórico) para
   `backups/` dentro da pasta de dados, antes de qualquer migração — guarda as 5 últimas cópias.
 - Quando há uma versão obrigatória (`required`), ele bloqueia o uso até atualizar.
@@ -256,6 +260,18 @@ enviar por HTTPS; remotos SSH usam as suas chaves.
   - No Windows é cifrado com **DPAPI**: só a sua conta do Windows decifra.
   - O `config.json` guarda apenas a referência, e a tela nunca recebe o PAT de volta. Tokens do GitHub seguem o mesmo caminho.
 - O backend atende só em `127.0.0.1:47821` e exige uma **chave nova a cada execução**, que só o app conhece. Outros programas da máquina não leem a fila nem agem por você.
+  - Recusa pedidos com outro `Host` ou outra `Origin` (um site com DNS apontando para cá não passa) e manda uma CSP
+    que só deixa rodar o script do próprio app.
+  - A chave não fica no ambiente: git, editores e scripts dos repositórios não a herdam.
+  - A janela só carrega a tela do app; links abrem fora só se forem `http(s)` ou `mailto`.
+- **Confiança por projeto.** O que vem de um repositório e executa código — executar/depurar pelo `launch.json` e
+  `tasks.json`, scripts do `package.json`, build/execução .NET, a preparação de tarefas e os servidores de linguagem
+  de C#, Rust e do SDK do Dart dentro do repo — só roda depois que você confia no projeto. A pergunta aparece uma vez,
+  com "não perguntar novamente" (confia em todos). Ajuste em Configurações → Dados e privacidade e nos Ajustes do projeto.
+- **A revisão automática de PRs pela IA não roda nada da PR:** sem Bash, sem os hooks/configurações do `.claude/`
+  do repositório e sem MCP do projeto; o diff vai pronto.
+- O PAT do git vai só para o host do provedor (`github.com`, `dev.azure.com/<org>`), nunca para outro remoto ou
+  submódulo; o do Azure não segue redirecionamento.
 - O backend encerra junto com o app (watchdog do processo-pai; no Windows também um Job Object).
 - Dados por usuário, fora do repositório:
   - macOS: `~/Library/Application Support/Codeck`
@@ -310,10 +326,14 @@ linguagem, tarefas em worktree, revisão, tela dividida, quadro, ajustes, janela
 ## Publicar uma versão
 
 1. Suba o `+N` do arquivo `VERSION`, faça commit e push na `main`.
-2. **Windows:** o GitHub Actions gera o instalador e testa: instala sem janela, abre o app, atualiza por cima e desinstala. Depois publica no site da ThomSoft (`downloads/codeck/`) e no GitHub Releases. Ele só roda quando o `VERSION` muda, para não gastar a cota.
-3. **macOS:** no Mac, rode `scripts/release-macos.sh`. Ele gera o `.dmg` e publica no mesmo lugar.
-4. O `latest.json` fica no site, mas aponta o download para o GitHub Releases: o site corta downloads rápidos por volta de 4 MB, e o instalador do Windows tem cerca de 100 MB. O site fica como espelho (`mirrors`), e o app retoma o download de onde parou se a conexão cair.
-5. Cada plataforma atualiza só a própria parte do `latest.json`. Para obrigar quem está abaixo do build N a atualizar, rode `scripts/set-required.sh N`, só depois de N estar publicado nas duas plataformas.
+2. **Windows:** o GitHub Actions gera o instalador e testa: instala sem janela, abre o app, atualiza por cima e desinstala. Depois publica no site da ThomSoft (`downloads/codeck/`), com o `latest.json` assinado, e guarda uma cópia no GitHub Releases (repositório privado, só histórico). Ele só roda quando o `VERSION` muda, para não gastar a cota.
+3. **macOS:** no Mac, rode `scripts/release-macos.sh`. Ele gera o `.dmg`, publica no mesmo lugar e confere a assinatura servida, como o app confere.
+4. Tudo é baixado do site da ThomSoft. O site corta conexões longas por volta de 4 MB; o app e a página de download pedem o instalador por partes e retomam de onde pararam.
+5. Cada plataforma atualiza só a própria parte do `latest.json` e o assina de novo. Para obrigar quem está abaixo do build N a atualizar, rode `scripts/set-required.sh N`, só depois de N estar publicado nas duas plataformas.
+
+**A chave que assina o `latest.json`** (ECDSA P-256; a pública está em `backend/pilot/update.py` e na página do site):
+- **Mac:** Keychain, serviço `codeck-update-signing` (o PEM em base64), com uma cópia em `~/.config/thomsoft/codeck-update-signing.pem` (0600). **Guarde uma cópia fora deste Mac:** sem ela, nenhuma atualização nova é aceita pelos apps instalados.
+- **GitHub:** secret `CODECK_SIGNING_KEY`.
 
 As credenciais do FTP do site são as mesmas do Chefinho.
 - **Mac:** `~/.config/thomsoft/downloads.env` com a senha no Keychain (`thomsoft-downloads-ftp`).
@@ -321,4 +341,4 @@ As credenciais do FTP do site são as mesmas do Chefinho.
 
 ## Licença
 
-Codeck é um projeto open-source da [ThomSoft](https://thomsoft.com.br), de uso gratuito sob a licença MIT — veja [LICENSE](LICENSE).
+Codeck é um produto da [ThomSoft](https://thomsoft.com.br), de uso gratuito. Veja [LICENSE](LICENSE).

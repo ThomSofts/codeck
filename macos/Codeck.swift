@@ -5,6 +5,7 @@
 // backend não responde, então nenhum outro programa da máquina consegue ler a fila ou agir por você.
 // Desenvolvimento: CODECK_ATTACH=1 + CODECK_PORT=<porta> conecta num backend já rodando (debug no VS Code).
 import Cocoa
+import Security
 import ServiceManagement
 import UserNotifications
 import WebKit
@@ -16,7 +17,20 @@ let selfTestScript = env["CODECK_SELFTEST"]
 let selfTestOut = env["CODECK_SELFTEST_OUT"] ?? NSTemporaryDirectory()
 let port = Int(env["CODECK_PORT"] ?? "") ?? 47821
 let baseURL = URL(string: "http://127.0.0.1:\(port)/")!
-let token = attachMode ? (env["CODECK_TOKEN"] ?? "") : UUID().uuidString + UUID().uuidString
+// Chave da execução: 32 bytes aleatórios do gerador seguro. Em attach, vem de CODECK_TOKEN ou do arquivo que o backend
+// gravou (CODECK_TOKEN_FILE).
+let token: String = {
+    if attachMode {
+        if let t = env["CODECK_TOKEN"], !t.isEmpty { return t }
+        if let f = env["CODECK_TOKEN_FILE"], let t = try? String(contentsOfFile: f, encoding: .utf8) {
+            return t.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return ""
+    }
+    var bytes = [UInt8](repeating: 0, count: 32)
+    guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { fatalError("sem gerador aleatório") }
+    return bytes.map { String(format: "%02x", $0) }.joined()
+}()
 let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
 let appBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
 let updateURL = Bundle.main.object(forInfoDictionaryKey: "CodeckUpdateURL") as? String ?? ""
@@ -141,7 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: python)
-        p.arguments = [script]
+        p.arguments = ["-I", "-B", "-u", script]   // -I: PYTHONPATH/PYTHONHOME e site do usuário não entram no backend
         var e = env
         e["CODECK_PORT"] = String(port)
         e["CODECK_TOKEN"] = token
@@ -185,7 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
             if #available(macOS 14.0, *) { config.preferences.inactiveSchedulingPolicy = .none }
             selfTestActivity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleDisplaySleepDisabled], reason: "autoteste")
         }
-        let js = "window.CODECK_TOKEN = \(jsString(token)); window.CODECK_PLATFORM = 'macos';"
+        let js = tokenScript()
         config.userContentController.addUserScript(WKUserScript(source: js, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         config.userContentController.add(self, name: "codeck")
         web = WKWebView(frame: .zero, configuration: config)
@@ -218,7 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
     func openProjectWindow(hash: String, title: String) {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
-        let js = "window.CODECK_TOKEN = \(jsString(token)); window.CODECK_PLATFORM = 'macos';"
+        let js = tokenScript()
         config.userContentController.addUserScript(WKUserScript(source: js, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         config.userContentController.add(self, name: "codeck")
         let wv = WKWebView(frame: .zero, configuration: config)
@@ -441,7 +455,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
     // MARK: atualização — o backend baixou e conferiu o SHA-256; aqui o .app é trocado
 
     func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any] else { return }
+        // só a nossa tela (quadro principal, nossa origem) fala com o app
+        let origin = message.frameInfo.securityOrigin
+        guard message.frameInfo.isMainFrame, origin.protocol == "http", origin.host == "127.0.0.1", origin.port == port,
+              let body = message.body as? [String: Any] else { return }
         if body["type"] as? String == "pickFolder", let id = body["id"] as? String {
             return pickFolder(id: id, title: body["title"] as? String ?? "Escolha uma pasta")
         }
@@ -479,7 +496,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         }
     }
 
-    func installUpdate(dmg: String) throws {
+    func installUpdate(dmg raw: String) throws {
+        let dmg = (raw as NSString).standardizingPath   // "updates/../../x.dmg" não passa pelo prefixo
         let updates = supportDir.appendingPathComponent("updates").path
         guard dmg.hasPrefix(updates + "/"), dmg.hasSuffix(".dmg"), FileManager.default.fileExists(atPath: dmg) else {
             throw NSError(domain: "Codeck", code: 1, userInfo: [NSLocalizedDescriptionKey: "Instalador fora da pasta de atualizações."])
@@ -585,19 +603,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         a.beginSheetModal(for: window) { completionHandler($0 == .alertFirstButtonReturn ? field.stringValue : nil) }
     }
 
+    // MARK: segurança da janela — ela guarda a chave da API (que abre terminais): só a nossa tela roda aqui dentro
+
+    /// A chave só entra na página do nosso servidor (nunca em outra origem que a janela venha a carregar).
+    func tokenScript() -> String {
+        "if (location.origin === \(jsString(baseOrigin))) { window.CODECK_TOKEN = \(jsString(token)); window.CODECK_PLATFORM = 'macos'; }"
+    }
+
+    var baseOrigin: String { "http://127.0.0.1:\(port)" }
+
+    func isOurPage(_ url: URL) -> Bool { url.scheme == "http" && url.host == "127.0.0.1" && url.port == port }
+
+    /// Para fora só vai http(s) e e-mail: file://, smb://, esquemas de outros apps etc. nunca são abertos.
+    func openExternal(_ url: URL) {
+        if ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") { NSWorkspace.shared.open(url) }
+    }
+
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if let url = navigationAction.request.url { NSWorkspace.shared.open(url) } // target=_blank → navegador
+        if let url = navigationAction.request.url { openExternal(url) } // target=_blank → navegador
         return nil
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if let url = navigationAction.request.url, let host = url.host, host != "127.0.0.1", url.scheme?.hasPrefix("http") == true {
-            NSWorkspace.shared.open(url)
-            return decisionHandler(.cancel)
+        guard let url = navigationAction.request.url else { return decisionHandler(.cancel) }
+        let scheme = url.scheme?.lowercased() ?? ""
+        if scheme == "about" || scheme == "blob" || isOurPage(url) { return decisionHandler(.allow) }
+        if navigationAction.targetFrame?.isMainFrame == false {
+            // iframe (DevTools do Flutter): só servidores locais
+            let local = (scheme == "http" || scheme == "https") && (url.host == "127.0.0.1" || url.host == "localhost")
+            return decisionHandler(local ? .allow : .cancel)
         }
-        decisionHandler(.allow)
+        openExternal(url)
+        decisionHandler(.cancel)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

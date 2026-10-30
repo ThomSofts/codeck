@@ -325,6 +325,9 @@ def create_task(repo_id, body):
     repo = git.get_repo(repo_id)
     d = _load()
     p = _proj(d, repo_id)
+    if (p["settings"].get("setup") or "").strip():
+        from . import trust
+        trust.require(repo_id, "o comando de preparação da tarefa, que roda no código do repositório (ex.: npm install)")
     title = (body.get("title") or "").strip()
     if not title:
         raise ValueError("Diga o que é a tarefa")

@@ -66,7 +66,7 @@
   // ------------------------------------------------------------ linhas de ajuste (também o índice da busca)
   type Opt = { value: string; label: string; icon?: any };
   type Row = { sec: SecId; id: string; label: string; desc?: string; kw?: string;
-    kind: "pref-switch" | "pref-select" | "pref-seg" | "pref-text" | "rule-switch" | "auto" | "theme" | "ext-theme" | "ext-icons" | "vscode-import" | "vscode-sync" | "ext-editor" | "poll" | "poll-adaptive" | "live" | "note" | "data-dir" | "diag" | "security" | "link";
+    kind: "pref-switch" | "pref-select" | "pref-seg" | "pref-text" | "rule-switch" | "auto" | "theme" | "ext-theme" | "ext-icons" | "vscode-import" | "vscode-sync" | "ext-editor" | "poll" | "poll-adaptive" | "live" | "note" | "data-dir" | "diag" | "security" | "link" | "trust-all" | "trust-list";
     key?: string; options?: Opt[]; when?: () => boolean };
   const sizes = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => ({ value: String(a + i), label: `${a + i} px` }));
   const ROWS: Row[] = [
@@ -148,6 +148,9 @@
     { sec: "data", id: "dataDir", kind: "data-dir", label: "Pasta de dados", kw: "config json pasta" },
     { sec: "data", id: "security", kind: "security", label: "Segurança",
       desc: `O servidor local só escuta em 127.0.0.1 e exige um token por execução. PATs e tokens ficam no ${isMac() ? "Keychain do macOS" : "cofre do Windows (DPAPI)"}; a tela nunca os recebe de volta. Terminais e agentes não herdam a chave do app.`, kw: "pat token cofre keychain" },
+    { sec: "data", id: "trustAll", kind: "trust-all", label: "Confiar em todos os projetos (não perguntar)",
+      desc: "Desligado, o que vem do repositório (launch.json, tasks.json, scripts do package.json, compilação .NET, preparação das tarefas, servidores de linguagem de C# e Rust) só roda depois que você confia no projeto — um clone novo ou a PR de um fork não executam nada sozinhos.", kw: "confiança workspace trust confiável segurança executar" },
+    { sec: "data", id: "trustList", kind: "trust-list", label: "Projetos confiáveis", desc: "Revogue para voltar a perguntar antes de executar algo do repositório.", kw: "confiança workspace trust confiável revogar" },
     { sec: "data", id: "diag", kind: "diag", label: "Diagnóstico", desc: "Versão, plataforma e contagens — sem nomes, tokens ou conteúdo. Útil para relatar um problema.", kw: "suporte bug versão" },
     // atalhos para as seções de contas (a busca leva até elas)
     { sec: "accounts", id: "azLink", kind: "link", key: "accounts", label: "Organizações do Azure DevOps", desc: "PAT por organização, com teste de cada permissão.", kw: "azure pat organização" },
@@ -280,6 +283,16 @@
   }
   async function copy(t: string, msg = "Código copiado") { await navigator.clipboard.writeText(t); ui.toast(msg); }
 
+  // confiança por projeto: o que vem do repositório só roda depois que você confia (backend/pilot/trust.py)
+  let trust = $state<{ all: boolean; repos: { id: string; name: string }[] } | null>(null);
+  get("trust").then(t => (trust = t)).catch(() => {});
+  async function setTrustAll(v: boolean) {
+    try { trust = await post("trust/all", { all: v }); flashSaved(); } catch (e) { ui.error(e); }
+  }
+  async function revoke(id: string) {
+    try { trust = await post("trust", { repoId: id, trusted: false }); flashSaved(); } catch (e) { ui.error(e); }
+  }
+
   async function openData() {
     try { await post("open", { path: cfg.dataDir, target: "files" }); } catch (e) { ui.error(e); }
   }
@@ -379,6 +392,8 @@
     <button class="btn sm" onclick={diagnostic}><ClipboardCopy size={14} /> Copiar diagnóstico</button>
   {:else if r.kind === "security"}
     <Shield size={18} class="shield" />
+  {:else if r.kind === "trust-all"}
+    <Switch checked={!!trust?.all} disabled={!trust} onchange={setTrustAll} />
   {:else if r.kind === "link"}
     <button class="btn sm ghost" onclick={() => { query = ""; go(`/settings/${r.key}`, "soft"); }}>Abrir →</button>
   {/if}
@@ -390,8 +405,15 @@
       <b>{r.label}</b>
       {#if r.kind === "data-dir"}<div class="small muted mono sel">{cfg?.dataDir || "…"}</div>{/if}
       {#if r.desc}<div class="small muted">{r.desc}</div>{/if}
+      {#if r.kind === "trust-list"}
+        <div class="trusted">
+          {#each trust?.repos || [] as x (x.id)}
+            <span class="tchip">{x.name}<button class="clr" title="Revogar a confiança" aria-label={`Revogar ${x.name}`} onclick={() => revoke(x.id)}><X size={11} /></button></span>
+          {:else}<span class="small muted">{trust?.all ? "Todos (ajuste acima)" : "Nenhum ainda — o app pergunta na primeira vez."}</span>{/each}
+        </div>
+      {/if}
     </div>
-    {#if r.kind !== "note"}<div class="pc">{@render control(r)}</div>{/if}
+    {#if r.kind !== "note" && r.kind !== "trust-list"}<div class="pc">{@render control(r)}</div>{/if}
   </div>
 {/snippet}
 
@@ -601,6 +623,10 @@
   .pc select { width: 220px; }
   .pref select { width: 220px; }
   .pref select.sm-sel { width: 130px; }
+  .trusted { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .tchip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 9px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); font-size: 12px; }
+  .tchip .clr { border: 0; background: none; color: var(--muted); display: grid; place-items: center; padding: 3px; border-radius: 999px; cursor: pointer; }
+  .tchip .clr:hover { color: var(--bad); background: var(--bad-soft); }
   .polls { display: grid; grid-template-columns: repeat(2, minmax(150px, 1fr)); gap: 8px 10px; }
   .polls label { display: grid; gap: 3px; font-size: 11.5px; color: var(--muted); }
   .polls select { width: 100%; }

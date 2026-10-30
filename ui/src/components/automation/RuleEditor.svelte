@@ -96,7 +96,7 @@
         <div class="simlist">{#each sim.open as p (p.key)}
           <div class="simrow"><div class="ell"><span class="muted">#{p.prId}</span> {p.title}<div class="small muted">{p.creatorName} → {p.target} · {p.org}</div></div>
             {#if p.shadowedBy}<span class="pill warn" title="Uma regra acima decide antes">decide: {p.shadowedBy}</span>{:else if p.myVote}<span class="pill neutral">você já votou</span>{:else}<span class="pill accent">{ACTIONS[r.action].verb}</span>{/if}</div>{/each}</div>
-      {:else if sim.history.count}<p class="small muted">Nenhuma aberta agora. Últimas que teria pego: {@html sim.history.sample.slice(0, 4).map((p: any) => `#${p.prId} (${esc(p.creatorName.split(" ")[0])} → ${esc(p.target)})`).join(", ")}</p>
+      {:else if sim.history.count}<p class="small muted">Nenhuma aberta agora. Últimas que teria pego: {@html sim.history.sample.slice(0, 4).map((p: any) => `#${esc(p.prId)} (${esc(p.creatorName.split(" ")[0])} → ${esc(p.target)})`).join(", ")}</p>
       {:else}<div class="warnbox">Nenhuma PR recente se encaixa — confira o nome do criador e a branch.</div>{/if}
     {/if}
   </section>

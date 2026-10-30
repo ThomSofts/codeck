@@ -16,7 +16,7 @@ import time
 import xml.etree.ElementTree as ET
 
 from . import terminals
-from .workspace import _root, _safe, _settings, glob_one
+from .workspace import _q, _root, _safe, _settings, glob_one   # _q: aspas do PowerShell no Windows (nada de $(…) expandindo)
 
 IS_WIN = os.name == "nt"
 WEB_GUIDS = {"349c5851-65df-11da-9384-00065b846f21", "e24c65dc-7377-472b-9aba-bc803b73c61a", "603c0e0b-db56-11dc-be95-000d561079b0",
@@ -235,10 +235,6 @@ def _public(info, rel):
 
 
 # ---------------------------------------------------------------- compilar / executar
-def _q(x):
-    return subprocess.list2cmdline([x]) if IS_WIN else shlex.quote(x)
-
-
 def _call(exe):
     """Chamar um executável pelo caminho: no PowerShell precisa do "&"."""
     return f"& {_q(exe)}" if IS_WIN else _q(exe)

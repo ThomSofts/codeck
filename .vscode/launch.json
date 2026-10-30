@@ -14,6 +14,7 @@
       "env": {
         "CODECK_PORT": "47822",
         "CODECK_DATA": "${workspaceFolder}/data-sandbox",
+        "CODECK_TOKEN_FILE": "${workspaceFolder}/data-sandbox/dev-token",
         "CODECK_NATIVE_NOTIFY": "1"
       }
     },
@@ -22,7 +23,7 @@
       "type": "node-terminal",
       "request": "launch",
       "preLaunchTask": "Compilar app macOS",
-      "command": "CODECK_ATTACH=1 CODECK_PORT=47822 \"${workspaceFolder}/dist/Codeck.app/Contents/MacOS/Codeck\""
+      "command": "CODECK_ATTACH=1 CODECK_PORT=47822 CODECK_TOKEN_FILE=\"${workspaceFolder}/data-sandbox/dev-token\" \"${workspaceFolder}/dist/Codeck.app/Contents/MacOS/Codeck\""
     },
     {
       "name": "App Windows (conecta no backend em depuração)",
@@ -31,7 +32,7 @@
       "preLaunchTask": "Compilar app Windows",
       "program": "${workspaceFolder}/windows/Codeck/bin/Debug/net8.0-windows/win-x64/Codeck.exe",
       "cwd": "${workspaceFolder}",
-      "env": { "CODECK_ATTACH": "1", "CODECK_PORT": "47822" }
+      "env": { "CODECK_ATTACH": "1", "CODECK_PORT": "47822", "CODECK_TOKEN_FILE": "${workspaceFolder}/data-sandbox/dev-token" }
     },
     {
       "name": "Instalar o app no meu Mac",

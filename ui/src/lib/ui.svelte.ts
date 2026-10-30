@@ -5,6 +5,8 @@ export interface Dialog {
   /** terceiro botão (ex.: "Minimizar"): o diálogo devolve "alt" */
   alt?: string;
   input?: { label: string; value?: string; placeholder?: string; multiline?: boolean; required?: boolean };
+  /** caixa de marcar junto da confirmação: confirmado com ela marcada, o diálogo devolve "check" */
+  check?: string;
   blocked?: string[]; resolve: (v: string | boolean | null) => void;
 }
 /** Menu aberto: um só por vez, desenhado pelo MenuHost por cima de tudo (nunca recortado por painel com rolagem). */

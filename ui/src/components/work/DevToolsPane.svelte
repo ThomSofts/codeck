@@ -38,7 +38,7 @@
     <button class="ib" title="Abrir no navegador" disabled={!vm || !s} onclick={() => s && openInBrowser(s, page)}><ExternalLink size={12} /></button>
   </div>
   {#if url}
-    {#key `${url}#${n}`}<iframe src={url} title="Flutter DevTools" allow="clipboard-read; clipboard-write"></iframe>{/key}
+    {#key `${url}#${n}`}<iframe src={url} title="Flutter DevTools" allow="clipboard-read; clipboard-write" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-downloads"></iframe>{/key}
   {:else}
     <div class="empty">
       <Gauge size={28} />

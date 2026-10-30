@@ -2,11 +2,13 @@
   import { AlertTriangle, Lock } from "@lucide/svelte";
   import { ui } from "../lib/ui.svelte";
   let value = $state("");
+  let checked = $state(false);
   let inputEl: HTMLInputElement | HTMLTextAreaElement | undefined = $state();
 
   $effect(() => {
     if (ui.dialog) {
       value = ui.dialog.input?.value || "";
+      checked = false;
       setTimeout(() => (inputEl || document.querySelector<HTMLButtonElement>(".dlg .confirm"))?.focus(), 30);
     }
   });
@@ -17,7 +19,7 @@
       if (d.input.required && !value.trim()) return;
       return ui.close(value);
     }
-    ui.close(true);
+    ui.close(d.check && checked ? "check" : true);
   }
   function onkey(e: KeyboardEvent) {
     if (!ui.dialog) return;
@@ -49,6 +51,7 @@
           {/if}
         </label>
       {/if}
+      {#if d.check}<label class="check"><input type="checkbox" bind:checked /> {d.check}</label>{/if}
       <div class="foot">
         {#if d.blocked?.length}
           <button class="btn confirm" onclick={() => ui.close(false)}>Entendi</button>
@@ -77,5 +80,6 @@
   .detail, .blocked { margin: 12px 0 0; padding-left: 18px; color: var(--text-2); display: grid; gap: 4px; }
   .blocked li::marker { color: var(--warn); }
   .label { margin-top: 14px; }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--text-2); font-size: 13px; cursor: pointer; }
   .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 </style>

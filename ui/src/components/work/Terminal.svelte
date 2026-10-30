@@ -156,7 +156,9 @@
     const el = document.createElement("div");
     el.className = "xterm-host";
     const term = new XTerm({ fontFamily: '"JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace', fontSize: prefs.get("terminal.fontSize"), lineHeight: 1.25,
-      cursorBlink: prefs.get("terminal.cursorBlink"), allowProposedApi: true, scrollback: prefs.get("terminal.scrollback"), macOptionIsMeta: true, theme: theme(), smoothScrollDuration: 80 });
+      cursorBlink: prefs.get("terminal.cursorBlink"), allowProposedApi: true, scrollback: prefs.get("terminal.scrollback"), macOptionIsMeta: true, theme: theme(), smoothScrollDuration: 80,
+      // links OSC 8 que o programa escreve no terminal: só http(s) sai para o navegador
+      linkHandler: { activate: (_e, uri) => { if (/^https?:\/\//i.test(uri)) window.open(uri, "_blank"); } } });
     const fit = new FitAddon(), search = new SearchAddon();
     term.loadAddon(fit); term.loadAddon(search); term.loadAddon(new WebLinksAddon((_e, uri) => window.open(uri, "_blank")));
     term.open(el);
