@@ -44,15 +44,26 @@ fi
 cp "$ROOT/macos/MenuIcon.png" "$ROOT/macos/MenuIcon@2x.png" "$ROOT/brand/splash.html" "$APP/Contents/Resources/"
 # Sempre o mesmo certificado (scripts/macos-signing-cert.sh): o macOS prende as permissões (acesso a Documentos,
 # modificar apps…) à identidade do app; com ad-hoc ela é o hash do binário e cada atualização perguntaria tudo de novo.
+# O .p12 vem do Keychain para um keychain temporário já liberado para o codesign (sem a pergunta "quer usar a chave").
 # Sem o certificado (build de outra pessoa), sai ad-hoc. O app não é notarizado de nenhum jeito.
-SIGN_ID="${CODECK_CODESIGN_IDENTITY:-Codeck Code Signing}"
-if security find-certificate -c "$SIGN_ID" >/dev/null 2>&1; then
-  codesign --force --deep --timestamp=none --sign "$SIGN_ID" "$APP"
-  echo "Assinado com \"$SIGN_ID\""
+P12="$(security find-generic-password -s codeck-codesign -a codeck -w 2>/dev/null || true)"
+if [ -n "$P12" ]; then
+  SKC="$(mktemp -d)/codeck-sign.keychain-db"; SKP="$(openssl rand -hex 16)"
+  trap 'security delete-keychain "$SKC" 2>/dev/null; rm -rf "$(dirname "$SKC")"' EXIT
+  security create-keychain -p "$SKP" "$SKC"
+  security set-keychain-settings "$SKC"   # sem trancar sozinho no meio
+  security unlock-keychain -p "$SKP" "$SKC"
+  printf '%s' "$P12" | base64 -D > "$(dirname "$SKC")/c.p12"
+  security import "$(dirname "$SKC")/c.p12" -k "$SKC" -P codeck -T /usr/bin/codesign >/dev/null
+  rm -f "$(dirname "$SKC")/c.p12"
+  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$SKP" "$SKC" >/dev/null
+  SIGN_SHA="$(security find-certificate -c "Codeck Code Signing" -Z "$SKC" | awk '/SHA-1/ {print $3; exit}')"
+  codesign --force --deep --timestamp=none --keychain "$SKC" --sign "$SIGN_SHA" "$APP"
+  echo "Assinado com o certificado Codeck Code Signing ($SIGN_SHA)"
 else
-  [ "${CODECK_REQUIRE_SIGNING:-}" = 1 ] && { echo "Sem o certificado \"$SIGN_ID\" — rode scripts/macos-signing-cert.sh" >&2; exit 1; }
+  [ "${CODECK_REQUIRE_SIGNING:-}" = 1 ] && { echo "Sem o certificado que assina o app — rode scripts/macos-signing-cert.sh" >&2; exit 1; }
   codesign --force --deep --sign - "$APP" >/dev/null 2>&1
-  echo "Assinatura ad-hoc (sem o certificado \"$SIGN_ID\"): o macOS pede as permissões de novo a cada build"
+  echo "Assinatura ad-hoc (sem o certificado de scripts/macos-signing-cert.sh): o macOS pede as permissões de novo a cada build"
 fi
 codesign --verify --deep --strict "$APP"
 echo "Gerado: $APP"
