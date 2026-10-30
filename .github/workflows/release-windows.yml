@@ -192,16 +192,21 @@ jobs:
           Copy-Item -Recurse backend/pilot, backend/static build/app/backend/
           Get-ChildItem build/app/backend -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
           if (-not (Test-Path build/app/backend/static/index.html)) { throw 'interface não compilada' }
-          # o backend sobe e responde com o Python embutido (sem token: só nesta conferência)
+          # o backend sobe e responde com o Python embutido — com chave, como o app faz (sem ela a API não abre)
+          $key = [guid]::NewGuid().ToString('N')
           $p = Start-Process build/app/python/python.exe -ArgumentList 'build/app/backend/server.py' -PassThru -NoNewWindow `
-            -Environment @{ CODECK_PORT = '47899'; CODECK_DATA = "$env:RUNNER_TEMP\codeck-data" }
+            -Environment @{ CODECK_PORT = '47899'; CODECK_DATA = "$env:RUNNER_TEMP\codeck-data"; CODECK_TOKEN = $key }
           $ok = $false
           for ($i = 0; $i -lt 30 -and -not $ok; $i++) {
             Start-Sleep -Seconds 1
-            try { $ok = (Invoke-WebRequest http://127.0.0.1:47899/api/summary -UseBasicParsing).StatusCode -eq 200 } catch { }
+            try { $ok = (Invoke-WebRequest http://127.0.0.1:47899/api/summary -Headers @{ 'X-Codeck-Token' = $key } -UseBasicParsing).StatusCode -eq 200 } catch { }
           }
+          # e sem a chave recusa
+          $denied = $false
+          try { Invoke-WebRequest http://127.0.0.1:47899/api/summary -UseBasicParsing | Out-Null } catch { $denied = $_.Exception.Response.StatusCode.value__ -eq 401 }
           Stop-Process -Id $p.Id -Force
           if (-not $ok) { throw 'o backend não respondeu com o Python embutido' }
+          if (-not $denied) { throw 'o backend respondeu sem a chave da execução' }
           Write-Host '✓ backend responde com o Python embutido'
           # terminal de verdade (ConPTY via ctypes): abre um PowerShell, roda um comando e lê a saída
           $env:CODECK_DATA = "$env:RUNNER_TEMP\codeck-pty"
