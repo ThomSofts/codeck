@@ -1,5 +1,6 @@
 """Atualização do app: lê o latest.json do canal (site da ThomSoft), confere a assinatura dele (latest.json.sig, ECDSA
-P-256 da ThomSoft) e baixa o instalador do site, retomando quando a conexão cai e conferindo o SHA-256 assinado.
+P-256 da ThomSoft) e baixa o instalador do GitHub Releases da ThomSoft (o site de espelho), retomando quando a conexão
+cai e conferindo o SHA-256 assinado.
 
 Sem assinatura válida não há atualização: quem conseguisse trocar o latest.json no servidor (ou no caminho) não
 consegue apontar para outro instalador."""
@@ -58,7 +59,7 @@ def check_update():
 
 
 # De onde um instalador pode vir (o latest.json só aponta; o resto é recusado) e o tamanho máximo
-DOWNLOAD_PREFIXES = ("https://thomsoft.com.br/downloads/codeck/",)
+DOWNLOAD_PREFIXES = ("https://github.com/ThomSofts/codeck/releases/download/", "https://thomsoft.com.br/downloads/codeck/")
 MAX_INSTALLER = 1 << 30
 
 
@@ -123,7 +124,7 @@ def download_update():
     if not u.get("sha256") or not str(u.get("url", "")).startswith("https://"):
         raise ValueError("A versão publicada não traz a assinatura do instalador — nada foi baixado")
     os.makedirs(UPDATES_DIR, exist_ok=True)
-    # o endereço principal e os espelhos: sempre no site da ThomSoft, o mesmo arquivo, o mesmo SHA-256 (assinado)
+    # o endereço principal (GitHub Releases) e o espelho (site da ThomSoft): o mesmo arquivo, o mesmo SHA-256 (assinado)
     urls = [x for x in [u["url"], *(u.get("mirrors") or [])] if str(x).startswith(DOWNLOAD_PREFIXES)]
     if not urls:
         raise ValueError("O latest.json aponta para um endereço que não é da ThomSoft — nada foi baixado")

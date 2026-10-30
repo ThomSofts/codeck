@@ -22,12 +22,16 @@ confere a assinatura da versão e o SHA-256 do instalador no seu navegador antes
 | **Windows** | baixe o instalador (`.exe`) na página e rode. Instala no seu perfil, sem administrador. |
 | **macOS** | baixe o `.dmg` na página e arraste o Codeck para Aplicativos. |
 
+Os mesmos instaladores ficam em [Releases](https://github.com/ThomSofts/codeck/releases/latest); o SHA-256 de cada um
+está no `latest.json` assinado.
+
 Depois de instalado, o app **se atualiza sozinho**:
 - Ele consulta o `latest.json`, mostra um aviso e o botão **Atualizar agora**.
 - Antes de instalar, confere o que se perderia ao reabrir — arquivos sem salvar (com "Salvar tudo" ali mesmo), agentes
   trabalhando, processos rodando e projetos abertos — e só então baixa, mostrando o progresso.
 - Só aceita uma versão nova se o `latest.json` vier com a **assinatura da ThomSoft** (`latest.json.sig`, ECDSA P-256),
-  e só baixa do site da ThomSoft. Antes de instalar, confere o SHA-256 do instalador, que também está assinado.
+  e só baixa do GitHub Releases da ThomSoft (com o site de espelho). Antes de instalar, confere o SHA-256 do
+  instalador, que também está assinado.
 - Na primeira abertura de cada versão nova, copia os dados locais (contas, quadro, projetos, regras, histórico) para
   `backups/` dentro da pasta de dados, antes de qualquer migração — guarda as 5 últimas cópias.
 - Quando há uma versão obrigatória (`required`), ele bloqueia o uso até atualizar.
@@ -326,9 +330,9 @@ linguagem, tarefas em worktree, revisão, tela dividida, quadro, ajustes, janela
 ## Publicar uma versão
 
 1. Suba o `+N` do arquivo `VERSION`, faça commit e push na `main`.
-2. **Windows:** o GitHub Actions gera o instalador e testa: instala sem janela, abre o app, atualiza por cima e desinstala. Depois publica no site da ThomSoft (`downloads/codeck/`), com o `latest.json` assinado, e guarda uma cópia no GitHub Releases (repositório privado, só histórico). Ele só roda quando o `VERSION` muda, para não gastar a cota.
+2. **Windows:** o GitHub Actions gera o instalador e testa: instala sem janela, abre o app, atualiza por cima e desinstala. Depois publica no GitHub Releases e no site da ThomSoft (`downloads/codeck/`), com o `latest.json` assinado. Ele só roda quando o `VERSION` muda, para não gastar a cota.
 3. **macOS:** no Mac, rode `scripts/release-macos.sh`. Ele gera o `.dmg`, publica no mesmo lugar e confere a assinatura servida, como o app confere.
-4. Tudo é baixado do site da ThomSoft. O site corta conexões longas por volta de 4 MB; o app e a página de download pedem o instalador por partes e retomam de onde pararam.
+4. O app baixa do GitHub Releases, com o site de espelho: o site corta conexões longas por volta de 4 MB. A página do Codeck baixa do site, por partes, e confere a assinatura no navegador.
 5. Cada plataforma atualiza só a própria parte do `latest.json` e o assina de novo. Para obrigar quem está abaixo do build N a atualizar, rode `scripts/set-required.sh N`, só depois de N estar publicado nas duas plataformas.
 
 **A chave que assina o `latest.json`** (ECDSA P-256; a pública está em `backend/pilot/update.py` e na página do site):
