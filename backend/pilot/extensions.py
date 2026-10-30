@@ -350,7 +350,9 @@ def install(namespace, name, version=None):
         data = resp.read(MAX_VSIX + 1)
     if len(data) > MAX_VSIX:
         raise ValueError("Pacote grande demais")
-    ver = meta.get("version") or "0"
+    ver = str(meta.get("version") or "0")
+    if not re.fullmatch(r"[\w.+-]{1,64}", ver) or ".." in ver:
+        raise ValueError("Versão inválida no Open VSX")   # vira nome de pasta: nada de ../
     dest = os.path.join(EXT_DIR, f"{namespace}.{name}-{ver}".lower())
     tmp = dest + ".tmp"
     shutil.rmtree(tmp, ignore_errors=True)

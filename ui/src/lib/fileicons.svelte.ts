@@ -142,7 +142,7 @@ class IconTheme {
       const fam = this.fontFamily[fid];
       if (!fam) return null;
       const ch = d.fontCharacter.startsWith("\\") ? String.fromCodePoint(parseInt(d.fontCharacter.slice(1), 16)) : d.fontCharacter;
-      return { kind: "glyph", char: ch, color: d.fontColor, font: fam, size: d.fontSize || this.json.fonts?.find(f => f.id === fid)?.size };
+      return { kind: "glyph", char: ch, color: /^#[0-9a-f]{3,8}$/i.test(d.fontColor || "") ? d.fontColor : undefined, font: fam, size: d.fontSize || this.json.fonts?.find(f => f.id === fid)?.size };
     }
     return null;
   }

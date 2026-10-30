@@ -28,6 +28,8 @@ SERVERS = {
     # Dart/Flutter: o analysis server do próprio SDK (no PATH, ou o `dart` que vem dentro do Flutter)
     "dart": [["dart", "language-server", "--protocol=lsp", "--client-id=codeck"]],
 }
+# servidores que executam código do projeto ao abrir um arquivo (MSBuild, build.rs/proc-macros): só em projeto confiável
+RUNS_PROJECT_CODE = {"csharp", "rust"}
 _found = {"at": 0, "map": {}}
 
 
@@ -70,7 +72,12 @@ def _sdk_dart(sdk):
     return None
 
 
-def _project_dart(root):
+def _inside(path, root):
+    path, root = os.path.realpath(path), os.path.realpath(root)
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _project_dart(root, trusted=False):
     """Flutter fixado pelo projeto (FVM, dart.flutterSdkPath): o servidor de Dart tem de ser o desse SDK — o do PATH
     pode ser de outra versão e acusar erros falsos. O app pode estar numa subpasta (monorepo): procura o pubspec."""
     from . import launch
@@ -84,6 +91,8 @@ def _project_dart(root):
             sdk, _ = launch.flutter_sdk(d, root)
         except Exception:  # noqa: BLE001
             sdk = None
+        if sdk and not trusted and _inside(sdk, root):
+            sdk = None   # SDK versionado dentro do repositório = binário escolhido pelo repo: só em projeto confiável
         exe = sdk and _sdk_dart(sdk)
         if exe:
             return [exe] + SERVERS["dart"][0][1:]
@@ -93,10 +102,13 @@ def _project_dart(root):
 class Bridge:
     """Um servidor de linguagem ligado a um WebSocket."""
 
-    def __init__(self, lang, root, sock):
+    def __init__(self, lang, root, sock, trusted=False):
+        if lang in RUNS_PROJECT_CODE and not trusted:
+            raise LookupError("Este servidor de linguagem executa código do projeto ao abrir os arquivos — confie no projeto "
+                              "(Ajustes do projeto → Projeto confiável) e reabra o arquivo")
         spec = available().get(lang)
         if lang == "dart":
-            cmd = _project_dart(root)
+            cmd = _project_dart(root, trusted)
             spec = {"cmd": cmd, "name": "dart"} if cmd else spec
         if not spec:
             raise LookupError(f"Nenhum servidor de linguagem instalado para {lang}")

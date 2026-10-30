@@ -9,8 +9,11 @@
 #
 # Publica o que está na main (árvore limpa, commit já no origin/main), na versão do arquivo VERSION (x.y.z+N),
 # a mesma do Windows. Destinos:
-#   · site da ThomSoft: downloads/codeck/<dmg> + latest.json (o canal público que o app consulta)
-#   · GitHub Releases (privado): tag v<x.y.z>-<N>, como histórico
+#   · site da ThomSoft: downloads/codeck/<dmg> + latest.json + latest.json.sig (o canal público que o app consulta —
+#     o único lugar de onde o app baixa; o latest.json vai assinado e o app recusa o que não confere)
+#   · GitHub Releases (repositório privado): tag v<x.y.z>-<N>, só como histórico
+# Chave que assina o latest.json (ECDSA P-256; a pública está em backend/pilot/update.py): no Keychain, serviço
+# codeck-update-signing (o PEM em base64), ou na variável CODECK_SIGNING_KEY.
 # Credenciais do FTP do site — as mesmas do Chefinho/LuriSystem:
 #   · servidor e usuário em ~/.config/thomsoft/downloads.env (DOWNLOADS_FTP_SERVER, DOWNLOADS_FTP_USER)
 #   · a senha no Keychain (serviço thomsoft-downloads-ftp); nunca em arquivo nem na linha de comando.
@@ -28,8 +31,6 @@ done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE_URL="${DOWNLOADS_BASE_URL:-https://thomsoft.com.br/downloads}"
-# o app baixa do GitHub Releases (o site corta downloads rápidos por volta de 4 MB); o site fica como espelho
-RELEASES="https://github.com/ThomSofts/codeck/releases/download"
 CHANNEL=codeck
 KEYCHAIN_SERVICE=thomsoft-downloads-ftp
 CONFIG="$HOME/.config/thomsoft/downloads.env"
@@ -66,6 +67,8 @@ if [ "$DRY_RUN" = false ]; then
     LFTP_PASSWORD="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$DOWNLOADS_FTP_USER" -w)"
   fi
   export LFTP_PASSWORD
+  SIGNING_KEY="${CODECK_SIGNING_KEY:-$(security find-generic-password -s codeck-update-signing -a codeck -w 2>/dev/null || true)}"
+  [ -n "$SIGNING_KEY" ] || fail "Sem a chave que assina o latest.json (Keychain codeck-update-signing ou CODECK_SIGNING_KEY)."
   # O servidor é um IP com certificado *.hstgr.io: a cadeia é conferida aqui e o lftp dispensa só o hostname.
   cert="$(mktemp)"
   openssl s_client -starttls ftp -connect "$DOWNLOADS_FTP_SERVER:21" -verify_return_error -verify 5 \
@@ -73,6 +76,16 @@ if [ "$DRY_RUN" = false ]; then
   openssl x509 -in "$cert" -noout -checkend 0 >/dev/null || fail "Certificado do FTP vencido."
   openssl x509 -in "$cert" -noout -ext subjectAltName | grep -q 'DNS:\*\.hstgr\.io' || fail "Certificado do FTP não é da Hostinger."
 fi
+
+# Assina um latest.json: grava <arquivo>.sig (DER em base64). A chave só existe num arquivo temporário privado.
+sign_json() {
+  local key sig
+  key="$(mktemp)"; chmod 600 "$key"
+  printf '%s' "$SIGNING_KEY" | base64 -D > "$key"
+  sig="$(openssl dgst -sha256 -sign "$key" "$1" | base64)" || { rm -f "$key"; fail "Não consegui assinar $1."; }
+  rm -f "$key"
+  printf '%s' "$sig" | tr -d '\n' > "$1.sig"
+}
 
 lftp_run() {
   lftp -u "$DOWNLOADS_FTP_USER" --env-password "ftp://$DOWNLOADS_FTP_SERVER" -e "
@@ -104,18 +117,19 @@ publish_json() {
   else
     echo '{}' > "$cur"   # primeira publicação
   fi
-  jq --arg url "$RELEASES/$TAG/$file" --arg mirror "$BASE_URL/$ch/$file" \
+  jq --arg url "$BASE_URL/$ch/$file" \
      --arg sha "$(shasum -a 256 "$dmg" | cut -d' ' -f1)" \
      --argjson size "$(stat -f %z "$dmg")" \
      --arg version "$VERSION" --argjson build "$BUILD" \
      --arg pid "$pid" --arg notes "$notes" \
      --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
      '.productId = $pid
-      | .macos = {url: $url, mirrors: [$mirror], sha256: $sha, size: $size, version: $version, build: $build}
+      | .macos = {url: $url, mirrors: [], sha256: $sha, size: $size, version: $version, build: $build}
       | .notes = $notes | .publishedAt = $date
       | ([.windows, .macos] | map(select(. != null)) | max_by(.build)) as $n
       | .version = $n.version | .build = $n.build' "$cur" > "$next"
-  lftp_run "cd /$ch; lcd $out; put $(basename "$next") -o latest.json;"
+  sign_json "$next"
+  lftp_run "cd /$ch; lcd $out; put $(basename "$next") -o latest.json; put $(basename "$next").sig -o latest.json.sig;"
 }
 
 # Pontes para quem ainda tem o app com um nome antigo: cada um lê o latest.json do próprio canal e só aceita
@@ -134,12 +148,26 @@ channel_file() {   # channel_file <canal> → nome do .dmg deste build naquele c
 all_channels() { echo "$CHANNEL"; for pair in $LEGACY_CHANNELS; do echo "${pair%%:*}"; done; }
 channel_notes() { [ "$1" = "$CHANNEL" ] || printf 'Agora se chama Codeck. '; git log -1 --format=%s; }
 
-# Confere os canais e regrava a parte do Mac onde ela não for a deste build.
+# O latest.json servido confere com a assinatura servida, verificado como o app verifica (backend/pilot/update.py)?
+channel_signed() {
+  local tmp; tmp="$(mktemp -d)"
+  curl -fsS -o "$tmp/l.json" "$BASE_URL/$1/latest.json?t=$(date +%s)" && curl -fsS -o "$tmp/l.sig" "$BASE_URL/$1/latest.json.sig?t=$(date +%s)" \
+    && python3 -I -c 'import base64,re,sys; sys.path.insert(0, sys.argv[1]); from pilot import signature
+src = open(sys.argv[1] + "/pilot/update.py").read()   # a chave pública como o app a tem (sem importar o app)
+pub = "".join(re.findall(r"\"([0-9a-f]+)\"", re.search(r"UPDATE_PUBKEY = \(([^)]*)\)", src).group(1)))
+sys.exit(0 if signature.verify(pub, open(sys.argv[2], "rb").read(), base64.b64decode(open(sys.argv[3], "rb").read())) else 1)' \
+       "$ROOT/backend" "$tmp/l.json" "$tmp/l.sig"
+  local rc=$?; rm -rf "$tmp"
+  [ $rc = 0 ] || say "$1: latest.json sem assinatura válida"
+  return $rc
+}
+
+# Confere os canais e regrava a parte do Mac onde ela não for a deste build (ou não estiver assinada).
 verify_channels() {
   local ok=true ch file got
   for ch in $(all_channels); do
     got="$(curl -fsS "$BASE_URL/$ch/latest.json?t=$(date +%s)" | jq -r '.macos.build // empty')"
-    [ "$got" = "$BUILD" ] && continue
+    [ "$got" = "$BUILD" ] && channel_signed "$ch" && continue
     ok=false
     file="$(channel_file "$ch")"
     curl -fsSI "$BASE_URL/$ch/$file" >/dev/null || fail "$ch: o $file não está no servidor — publique de novo."
@@ -169,7 +197,7 @@ echo "✓ $dmg ($(du -h "$dmg" | cut -f1))"
 
 if [ "$DRY_RUN" = true ]; then say "Ensaio: o .dmg está em $out — nada foi publicado."; exit 0; fi
 
-# O .dmg primeiro (GitHub Releases, com o nome de cada canal, e o site), o latest.json por último — só a parte do
+# O .dmg primeiro (o site e, como histórico privado, o GitHub Releases), o latest.json assinado por último — só a parte do
 # Mac; a do Windows fica como o CI a deixou.
 say "GitHub Releases ($TAG)"
 gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Codeck $VERSION (build $BUILD)" \

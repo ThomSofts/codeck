@@ -3,7 +3,7 @@
   // worktree (arquivos locais que o Git não leva), a preparação, os repositórios relacionados e o shell.
   import { Plus, ShieldOff, X } from "@lucide/svelte";
   import { untrack } from "svelte";
-  import { post } from "../../lib/api";
+  import { get, post } from "../../lib/api";
   import { ui } from "../../lib/ui.svelte";
   import type { Project } from "../../lib/work.svelte";
   import { work } from "../../lib/work.svelte";
@@ -42,11 +42,25 @@
     } catch (e) { ui.error(e); }
     busy = false;
   }
+  // confiança: launch.json, tasks.json, build .NET, preparação e servidores de C#/Rust só rodam em projeto confiável
+  let trust = $state<{ all: boolean; repos: { id: string }[] } | null>(null);
+  get("trust").then(t => (trust = t)).catch(() => {});
+  const trusted = $derived(!!trust && (trust.all || trust.repos.some(r => r.id === project.id)));
+  async function setTrusted(v: boolean) {
+    try { trust = await post("trust", { repoId: project.id, trusted: v }); ui.toast(v ? "Projeto confiável" : "Confiança revogada — o app volta a perguntar"); }
+    catch (e) { ui.error(e); }
+  }
   const add = (p: string) => { p = p.trim(); if (p && !copy.includes(p)) copy = [...copy, p]; novo = ""; };
 </script>
 
 <Drawer title={`Ajustes de ${project.name}`} subtitle="Valem para as próximas tarefas e terminais deste projeto" {onclose} width={560}>
   <div class="form">
+    <section>
+      <h4>Segurança</h4>
+      <Switch checked={trusted} disabled={!trust || trust.all} onchange={setTrusted} label="Projeto confiável"
+        hint={trust?.all ? "Todos os projetos são confiáveis (Configurações → Dados e privacidade)."
+          : "Libera o que vem do repositório: launch.json, tasks.json, scripts do package.json, compilação .NET, a preparação das tarefas e os servidores de linguagem de C# e Rust. Desligado, o app pergunta antes."} />
+    </section>
     <section>
       <h4>Agentes de IA</h4>
       <label class="acc"><span class="small muted">Conta deste projeto</span>

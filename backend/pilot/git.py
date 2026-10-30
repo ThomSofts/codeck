@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -34,13 +35,32 @@ class GitError(RuntimeError):
     pass
 
 
-def _env(auth_header=None):
+def _env(auth=None):
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_SSH_COMMAND": "ssh -o BatchMode=yes", "LC_ALL": "C.UTF-8",
            "GIT_OPTIONAL_LOCKS": "0"}
-    if auth_header:
-        # credencial pela configuração via ambiente: não aparece na linha de comando (ps)
-        env.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraHeader", "GIT_CONFIG_VALUE_0": auth_header})
+    env.pop("CODECK_TOKEN", None)
+    if isinstance(auth, tuple) and auth[0] and auth[1]:
+        # credencial pela configuração via ambiente (não aparece na linha de comando) e só para o host do provedor:
+        # outro remoto, submódulo do .gitmodules ou redirecionamento não recebem o PAT
+        header, scope = auth
+        env.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": f"http.{scope}.extraHeader", "GIT_CONFIG_VALUE_0": header})
     return env
+
+
+def auth_scope(url):
+    """Prefixo de URL a que a credencial do app se limita: o host do próprio provedor, só em https."""
+    u = urllib.parse.urlsplit((url or "").strip())
+    host = (u.hostname or "").lower()
+    if u.scheme != "https":
+        return None
+    if host == "github.com":
+        return "https://github.com/"
+    if host == "dev.azure.com":
+        org = u.path.strip("/").split("/", 1)[0]
+        return f"https://dev.azure.com/{org}/" if org else None
+    if host.endswith(".visualstudio.com"):
+        return f"https://{host}/"
+    return None
 
 
 def run(cwd, *args, input=None, timeout=60, check=True, auth=None, raw=False):
@@ -306,7 +326,7 @@ def graph(repo_id, limit=400, ref=None, all_refs=True, author=None, search=None,
     if search:
         args += ["-i", f"--grep={search}"]
     if ref:
-        args.append(ref)
+        args.append(_check_ref(ref))   # "--output=…" viraria opção do git log
     elif all_refs:
         args += ["--branches", "--remotes", "--tags", "HEAD"]
     out = run(r["path"], *args, timeout=60)
@@ -381,7 +401,10 @@ def diff(repo_id, path=None, sha=None, staged=False, context=3):
     if not text and rel and not sha and not staged:
         # arquivo novo (não rastreado): mostra o conteúdo inteiro como adição
         full = os.path.join(r["path"], rel)
-        if os.path.isfile(full) and os.path.getsize(full) < 600_000:
+        root = os.path.realpath(r["path"])
+        inside = os.path.realpath(full).startswith(root + os.sep)
+        # link versionado (docs/x -> ~/.aws/credentials) não é lido: o conteúdo de fora do repositório não aparece
+        if inside and not os.path.islink(full) and os.path.isfile(full) and os.path.getsize(full) < 600_000:
             with open(full, "rb") as fh:
                 data = fh.read()
             if b"\0" in data[:8000]:
@@ -705,11 +728,13 @@ _auth_lookup = {"fn": None}   # o engine registra uma função (provider, owner)
 
 
 def auth_for(repo):
-    info = parse_remote(repo.get("remoteUrl"))
+    """(header, escopo) para o remoto do repositório — None se o remoto não é https no host do GitHub/Azure."""
     url = repo.get("remoteUrl") or ""
-    if not url.startswith("https://") or not _auth_lookup["fn"] or not info.get("provider"):
+    info, scope = parse_remote(url), auth_scope(url)
+    if not scope or not _auth_lookup["fn"] or not info.get("provider"):
         return None
-    return _auth_lookup["fn"](info["provider"], info.get("owner"))
+    header = _auth_lookup["fn"](info["provider"], info.get("owner"))
+    return (header, scope) if header else None
 
 
 def basic_header(user, secret):
@@ -720,6 +745,8 @@ def basic_header(user, secret):
 def clone(url, dest, auth=None):
     if not re.match(r"^(https://|git@|ssh://)", url or ""):
         raise ValueError("URL de clone inválida")
+    scope = auth_scope(url)
+    auth = (auth, scope) if isinstance(auth, str) and scope else None   # o PAT só vai para o host do provedor
     dest = os.path.abspath(os.path.expanduser(dest))
     if os.path.exists(dest) and os.listdir(dest):
         raise ValueError(f"A pasta {dest} já existe e não está vazia")
@@ -1116,7 +1143,10 @@ def open_in(path, target, editor="vscode", file=None):
         if not cmd:
             raise ValueError("Nenhum editor encontrado (VS Code, Cursor, Rider…)")
         args = cmd + [path] + ([os.path.join(path, file)] if file else [])
-        if cmd[0].endswith(".cmd"):
+        if cmd[0].lower().endswith((".cmd", ".bat")):
+            # o cmd interpreta a linha inteira: & | < > ^ % ! " ( ) no nome da pasta virariam comando
+            if re.search(r'[&|<>^%!"()]', " ".join(args[len(cmd):])):
+                raise ValueError("O caminho tem caracteres especiais (& % ^ …) — abra a pasta pelo editor")
             args = ["cmd", "/c"] + args
         subprocess.Popen(args, **detached)
     elif target == "files":
@@ -1132,7 +1162,10 @@ def open_in(path, target, editor="vscode", file=None):
             subprocess.Popen(["open", "-a", app, path], **detached)
         elif os.name == "nt":
             wt = shutil.which("wt")
-            subprocess.Popen([wt, "-d", path] if wt else ["cmd", "/c", "start", "cmd", "/K", f'cd /d "{path}"'], **detached)
+            if wt:
+                subprocess.Popen([wt, "-d", path], **detached)
+            else:   # console novo já na pasta, sem montar linha de comando com o caminho
+                subprocess.Popen(["cmd.exe"], cwd=path, creationflags=0x00000010)   # CREATE_NEW_CONSOLE
         else:
             subprocess.Popen(["x-terminal-emulator"], cwd=path, **detached)
     else:

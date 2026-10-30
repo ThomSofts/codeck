@@ -15,8 +15,11 @@ function hook() {
   DOMPurify.addHook("afterSanitizeAttributes", node => {
     if (node.tagName === "A") {
       const href = node.getAttribute("href") || "";
-      if (/^\s*(javascript|vbscript|data):/i.test(href)) node.removeAttribute("href");
+      // com esquema, só http(s) e e-mail (file:, smb:, ms-*: e outros abririam programas); sem esquema = link relativo
+      const scheme = /^\s*([a-z][a-z0-9+.-]*):/i.exec(href)?.[1].toLowerCase();
+      if (scheme && !["http", "https", "mailto"].includes(scheme)) node.removeAttribute("href");
     }
+    if (node.tagName === "IMG") node.setAttribute("referrerpolicy", "no-referrer");   // imagem externa não sabe de onde veio
   });
 }
 

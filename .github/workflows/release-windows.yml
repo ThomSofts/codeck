@@ -50,7 +50,7 @@ jobs:
       build_number: ${{ steps.ver.outputs.build_number }}
       skip: ${{ steps.ver.outputs.skip }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: Compute version
         id: ver
         run: |
@@ -123,7 +123,7 @@ jobs:
           got="$(sha256sum kit/kit.zip | cut -d' ' -f1)"
           [ "$got" = "$(jq -r '.sha256' kit/kit.json)" ] || { echo "::error::kit com hash inesperado ($got)"; exit 1; }
           echo "✓ ThomSoft Setup $(jq -r '.version' kit/kit.json)+$(jq -r '.build' kit/kit.json)"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: thomsoft-setup-kit
           path: kit/
@@ -142,11 +142,11 @@ jobs:
       BUILD_NAME: ${{ needs.version.outputs.build_name }}
       BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9  # v4
         with:
           dotnet-version: "8.0.x"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: "22"
           cache: npm
@@ -160,7 +160,7 @@ jobs:
           npm run build
           if ($LASTEXITCODE -ne 0) { throw 'build da interface falhou' }
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: thomsoft-setup-kit
           path: kit-download
@@ -333,7 +333,7 @@ jobs:
 
       - name: Screenshots do autoteste
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: autoteste-windows
           path: ${{ runner.temp }}/selftest/out
@@ -381,7 +381,7 @@ jobs:
           $log = Join-Path $env:APPDATA 'Codeck\codeck.log'
           if (Test-Path $log) { "== codeck.log"; Get-Content $log -Tail 80 }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: codeck-windows
           path: dist/*
@@ -389,7 +389,7 @@ jobs:
           retention-days: 30
 
   publish:
-    name: Publicar (site da ThomSoft + GitHub Releases)
+    name: Publicar (site da ThomSoft; GitHub Releases privado como histórico)
     needs: [version, windows]
     if: ${{ github.ref == 'refs/heads/main' && !inputs.dry_run }}
     runs-on: ubuntu-latest
@@ -400,8 +400,8 @@ jobs:
       BUILD_NAME: ${{ needs.version.outputs.build_name }}
       BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: codeck-windows
           path: dist
@@ -432,9 +432,8 @@ jobs:
           openssl x509 -in "$CERT" -noout -checkend 0
           openssl x509 -in "$CERT" -noout -ext subjectAltName | grep -q 'DNS:\*\.hstgr\.io'
 
-      # O download do app vem do GitHub Releases: o site da ThomSoft (Hostinger) corta downloads rápidos por volta de
-      # 4 MB, e o instalador tem ~100 MB. O site fica como espelho (`mirrors` no latest.json). O .exe sobe aqui ANTES
-      # do latest.json — com o nome de cada canal (as pontes só aceitam o próprio prefixo).
+      # Histórico no GitHub Releases (repositório privado — ninguém de fora baixa daqui). O público baixa do site da
+      # ThomSoft, que corta conexões por volta de 4 MB: o app e a página de download retomam por partes (Range).
       - name: GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
@@ -458,10 +457,18 @@ jobs:
           FTP_SERVER: ${{ secrets.DOWNLOADS_FTP_SERVER }}
           FTP_ROOT: ${{ vars.DOWNLOADS_FTP_ROOT || '/' }}
           COMMIT_MSG: ${{ github.event.head_commit.message || 'Nova versão do Codeck.' }}
-          RELEASES: https://github.com/${{ github.repository }}/releases/download
+          SIGNING_KEY: ${{ secrets.CODECK_SIGNING_KEY }}
         run: |
           set -euo pipefail
+          [ -n "$SIGNING_KEY" ] || { echo "::error::Falta o segredo CODECK_SIGNING_KEY (chave que assina o latest.json)"; exit 1; }
           sudo apt-get install -y lftp >/dev/null
+          # latest.json assinado (ECDSA P-256; a pública está em backend/pilot/update.py): grava <arquivo>.sig
+          sign_json() {
+            local key; key="$(mktemp)"; chmod 600 "$key"
+            printf '%s' "$SIGNING_KEY" | base64 -d > "$key"
+            openssl dgst -sha256 -sign "$key" "$1" | base64 -w0 > "$1.sig"
+            rm -f "$key"
+          }
           lftp_run() {
             lftp -u "$FTP_USERNAME" --env-password "ftp://$FTP_SERVER" -e "
               set ssl:ca-file /etc/ssl/certs/ca-certificates.crt;
@@ -492,19 +499,20 @@ jobs:
           else
             echo '{}' > "$tmp/current.json"   # primeira publicação
           fi
-          jq --arg url "$RELEASES/v$BUILD_NAME-$BUILD_NUMBER/$exe" --arg mirror "$DOWNLOADS_BASE_URL/$CHANNEL/$exe" \
+          jq --arg url "$DOWNLOADS_BASE_URL/$CHANNEL/$exe" \
              --arg sha "$(sha256sum "dist/$exe" | cut -d' ' -f1)" \
              --argjson size "$(stat -c %s "dist/$exe")" \
              --arg version "$BUILD_NAME" --argjson build "$BUILD_NUMBER" \
              --arg notes "$(printf '%s' "$COMMIT_MSG" | head -n 1)" \
              --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
              '.productId = "codeck"
-              | .windows = {url: $url, mirrors: [$mirror], sha256: $sha, size: $size, version: $version, build: $build}
+              | .windows = {url: $url, mirrors: [], sha256: $sha, size: $size, version: $version, build: $build}
               | .notes = $notes | .publishedAt = $date
               | ([.windows, .macos] | map(select(. != null)) | max_by(.build)) as $n
               | .version = $n.version | .build = $n.build' "$tmp/current.json" > dist/latest.json
           cat dist/latest.json
-          lftp_run "cd $remote; put dist/latest.json;"
+          sign_json dist/latest.json
+          lftp_run "cd $remote; put dist/latest.json; put dist/latest.json.sig;"
           old="$(lftp_run "cd $remote; cls -1" | sed -nE 's/^Codeck-[0-9.]+-([0-9]+)-setup\.exe$/\1/p' | sort -un | head -n -2)"
           for b in $old; do lftp_run "cd $remote; glob -a rm -f Codeck-*-$b-setup.exe;" || true; done
           code="$(curl -sS -o "$tmp/served.json" -w '%{http_code}' "$DOWNLOADS_BASE_URL/$CHANNEL/latest.json?t=$(date +%s)" || true)"
@@ -530,7 +538,7 @@ jobs:
             else
               echo '{}' > "$tmp/legacy-current.json"
             fi
-            jq --arg url "$RELEASES/v$BUILD_NAME-$BUILD_NUMBER/$lexe" --arg mirror "$DOWNLOADS_BASE_URL/$ch/$lexe" \
+            jq --arg url "$DOWNLOADS_BASE_URL/$ch/$lexe" \
                --arg sha "$(sha256sum "$tmp/$lexe" | cut -d' ' -f1)" \
                --argjson size "$(stat -c %s "$tmp/$lexe")" \
                --arg version "$BUILD_NAME" --argjson build "$BUILD_NUMBER" \
@@ -538,11 +546,12 @@ jobs:
                --arg notes "Agora se chama Codeck. $(printf '%s' "$COMMIT_MSG" | head -n 1)" \
                --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                '.productId = $pid
-                | .windows = {url: $url, mirrors: [$mirror], sha256: $sha, size: $size, version: $version, build: $build}
+                | .windows = {url: $url, mirrors: [], sha256: $sha, size: $size, version: $version, build: $build}
                 | .notes = $notes | .publishedAt = $date
                 | ([.windows, .macos] | map(select(. != null)) | max_by(.build)) as $n
                 | .version = $n.version | .build = $n.build' "$tmp/legacy-current.json" > "$tmp/legacy-latest.json"
-            lftp_run "cd $legacy; lcd $tmp; put legacy-latest.json -o latest.json;"
+            sign_json "$tmp/legacy-latest.json"
+            lftp_run "cd $legacy; lcd $tmp; put legacy-latest.json -o latest.json; put legacy-latest.json.sig -o latest.json.sig;"
             old="$(lftp_run "cd $legacy; cls -1" | sed -nE "s/^$prefix-[0-9.]+-([0-9]+)-setup\.exe$/\1/p" | sort -un | head -n -2)"
             for b in $old; do lftp_run "cd $legacy; glob -a rm -f $prefix-*-$b-setup.exe;" || true; done
             echo "- ponte no canal antigo: $DOWNLOADS_BASE_URL/$ch/latest.json" >> "$GITHUB_STEP_SUMMARY"

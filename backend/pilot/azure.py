@@ -73,11 +73,22 @@ class Org:
                 raise RuntimeError("PAT não configurado (config.json)")
         return self._pat
 
+    def _own_host(self, url):
+        """URLs que recebem o PAT: as da organização configurada e as do Azure DevOps, sempre em https."""
+        u, own = urllib.parse.urlsplit(url), urllib.parse.urlsplit(self.url)
+        host = (u.hostname or "").lower()
+        if host == (own.hostname or "").lower() and u.scheme == own.scheme:
+            return True
+        return u.scheme == "https" and (host == "dev.azure.com" or host.endswith((".dev.azure.com", ".visualstudio.com")))
+
     def req(self, method, path, body=None, raw=False):
         url = path if path.startswith("http") else f"{self.url}/{path.lstrip('/')}"
+        if not self._own_host(url):
+            raise ValueError("Endereço fora do Azure DevOps — a credencial não é enviada")
         data = json.dumps(body).encode() if body is not None else None
         r = urllib.request.Request(url, data=data, method=method)
-        r.add_header("Authorization", "Basic " + base64.b64encode(f":{self.pat()}".encode()).decode())
+        # sem repassar em redirecionamento: o PAT não segue para outro host
+        r.add_unredirected_header("Authorization", "Basic " + base64.b64encode(f":{self.pat()}".encode()).decode())
         r.add_header("Accept", "application/json")
         if data is not None:
             r.add_header("Content-Type", "application/json")
@@ -880,6 +891,8 @@ def normalize_org_url(url):
     url = (url or "").strip().rstrip("/")
     if url and "://" not in url:
         url = "https://dev.azure.com/" + url  # aceita só o nome da organização
+    if url and not url.lower().startswith("https://"):
+        raise ValueError("A URL da organização precisa ser https:// — o PAT não trafega sem criptografia")
     return url
 
 

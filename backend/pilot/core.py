@@ -1,7 +1,8 @@
 """Núcleo: pastas e arquivos de dados, estado compartilhado, utilidades de tempo/JSON, histórico e notificações.
 
 Quem sobe o backend é o app nativo — macos/Codeck.swift ou windows/Codeck (C#). Ele passa:
-  CODECK_TOKEN            chave por execução — sem ela nenhuma rota /api responde
+  CODECK_TOKEN            chave por execução — sem ela nenhuma rota /api responde (sem a variável, o backend gera
+                          uma e grava em CODECK_TOKEN_FILE ou <dados>/dev-token, só para o usuário)
   CODECK_PARENT_PID       o processo encerra junto com o app
   CODECK_NATIVE_NOTIFY=1  notificações saem pelo app (clicáveis)
   CODECK_VERSION / _BUILD / _PLATFORM / _UPDATE_URL  versão instalada e canal de atualização
@@ -91,7 +92,17 @@ APP_VERSION = os.environ.get("CODECK_VERSION") or "dev"
 APP_BUILD = int(os.environ.get("CODECK_BUILD") or 0)
 APP_PLATFORM = os.environ.get("CODECK_PLATFORM") or ("macos" if sys.platform == "darwin" else "windows" if os.name == "nt" else "linux")
 UPDATE_URL = os.environ.get("CODECK_UPDATE_URL") or ""
-TOKEN = os.environ.get("CODECK_TOKEN") or ""
+TOKEN = os.environ.pop("CODECK_TOKEN", "") or ""   # fora do ambiente: git, editores e scripts do repo não herdam a chave
+if not TOKEN:
+    # sem chave (backend de pé sozinho, em depuração) a API não fica aberta: gera uma e grava só para este usuário,
+    # no arquivo que o app em modo attach lê (CODECK_TOKEN_FILE)
+    import secrets as _pysecrets
+    TOKEN = _pysecrets.token_urlsafe(32)
+    _token_file = os.environ.get("CODECK_TOKEN_FILE") or os.path.join(DATA, "dev-token")
+    _fd = os.open(_token_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(_fd, "w") as _f:
+        _f.write(TOKEN)
+    os.chmod(_token_file, 0o600)
 NATIVE_NOTIFY = os.environ.get("CODECK_NATIVE_NOTIFY") == "1"
 
 lock = threading.RLock()

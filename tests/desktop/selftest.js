@@ -241,6 +241,10 @@
     click(byText(".items .it", "Rodar demo"));
     await waitFor(() => txt($(".rb .gob")).includes("Rodar demo"), 3000);
     click($(".rb .nodbg"));
+    // o launch.json vem do repositório: a primeira execução pede confiança no projeto (com "não perguntar novamente")
+    const ask = await waitFor(() => byText("[role=alertdialog]", "Confiar no projeto"), 5000);
+    if (!ask.querySelector("label.check input[type=checkbox]")) throw new Error("o pedido de confiança não oferece 'não perguntar novamente'");
+    click(byText("[role=alertdialog] button", "Confiar e continuar"));
     await waitFor(() => byText(".tab.on", "Rodar demo"), 8000);
     await waitFor(() => termText().includes("launch-ok"), 15000);
     click($(".rb .caret")); click(await waitFor(() => byText(".items .it", "ola")));
@@ -248,8 +252,9 @@
     click($(".rb .nodbg"));
     await waitFor(() => termText().includes("script-ok"), 30000);
     if (!txt($(".rb .gob")).includes("ola")) throw new Error("não lembrou a última escolhida");
+    if ($("[role=alertdialog]")) throw new Error("pediu confiança de novo num projeto já confiável");
     await shot("05a-executar");
-    return "launch.json (com comentários) e npm run ola executaram";
+    return "confiança pedida uma vez; launch.json (com comentários) e npm run ola executaram";
   });
   await step("Layout: arquivos em cima, tarefas embaixo e painel redimensionável", async () => {
     const left = $(".work .left");
