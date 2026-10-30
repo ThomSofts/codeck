@@ -138,7 +138,7 @@ else:
     sys.exit("o backend não subiu")
 
 from pilot import agents, databases, dbimport, dbmcp, dbplugins, dbtunnel, flutterdb, secrets as sec, update  # noqa: E402
-from pilot.core import ctx  # noqa: E402
+from pilot.core import ctx, load_json  # noqa: E402
 ctx.port = PORT
 
 REPO = None   # um repositório git temporário, registrado no backend (consultas salvas, MCP, vínculos)
@@ -448,6 +448,23 @@ def instalacao_de_plugin():
         update.signed_manifest = lambda: man(sha)
         dbplugins.install("sqlite")   # reinstalar por cima (a atualização) com o plugin acabado de fechar
         ok(dbplugins.get("sqlite").call("hello")["protocol"] == 1, "plugin reinstalado não respondeu")
+        # versão nova publicada: ao iniciar, o app troca sozinho — menos o plugin já em uso (a troca derrubaria a conexão)
+        src2 = os.path.join(WORK, "codeck-db-sqlite-novo")
+        shutil.copyfile(src, src2)
+        with open(src2, "ab") as fh:
+            fh.write(b"\0" * 16)
+        sha2 = hashlib.sha256(open(src2, "rb").read()).hexdigest()
+        update._fetch = lambda u, part, size, progress=None: shutil.copyfile(src2, part)
+        update.signed_manifest = lambda: man(sha2)
+        dbplugins.auto_update()
+        ok(load_json(dbplugins.MANIFEST, {})["plugins"]["sqlite"]["sha256"] == sha, "trocou o plugin que estava em uso")
+        dbplugins.stop_all()
+        dbplugins.auto_update()
+        ok(load_json(dbplugins.MANIFEST, {})["plugins"]["sqlite"]["sha256"] == sha2 and dbplugins.locate("sqlite")[1] == "installed",
+           "a versão nova não foi instalada sozinha")
+        update._fetch = lambda u, part, size, progress=None: shutil.copyfile(src, part)
+        update.signed_manifest = lambda: man(sha)
+        dbplugins.install("sqlite")
         dbplugins.stop_all()
         with open(path, "ab") as fh:
             fh.write(b"x")

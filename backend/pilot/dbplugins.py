@@ -163,6 +163,26 @@ def install(engine):
     return status()
 
 
+def auto_update():
+    """Ao iniciar o app: os plugins instalados que têm versão nova publicada (e assinada) são trocados sozinhos — a
+    correção de um banco chega junto com a atualização do app, sem depender de achar o botão nos ajustes. Roda antes
+    de qualquer conexão abrir; se você já abriu uma, aquele plugin fica para a próxima vez (a troca o encerraria).
+    Falha de rede também só deixa para a próxima vez."""
+    try:
+        engines = published()["engines"]
+    except Exception:  # noqa: BLE001 — sem rede/assinatura: fica o que está instalado
+        return
+    for engine, p in engines.items():
+        with _lock:
+            busy = engine in _plugins and _plugins[engine].alive()
+        if p.get("update") and not busy and locate(engine)[1] == "installed":
+            try:
+                install(engine)
+                print(f"plugin de banco atualizado: {engine} {p.get('version')}", flush=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"plugin de banco {engine}: não atualizou ({e})", flush=True)
+
+
 def uninstall(engine):
     stop(engine)
     name = f"codeck-db-{ENGINES[engine]['bin']}{EXE}" if engine in ENGINES else None

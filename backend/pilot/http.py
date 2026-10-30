@@ -2054,6 +2054,7 @@ def main():
     threading.Thread(target=agents.auto_limits_loop, daemon=True).start()   # limite das contas sem abrir sessão (opcional)
     threading.Thread(target=agents.limit_watch_loop, daemon=True).start()   # agente parado pelo limite → oferecer outra conta
     threading.Thread(target=update.update_loop, daemon=True).start()
+    threading.Thread(target=dbplugins.auto_update, daemon=True).start()   # a correção do plugin chega com o app
     aiusage.start()   # consumo das IAs: lê os registros das CLIs (o que é novo) a cada 10 min
     print(f"{PRODUCT} {APP_VERSION} ({APP_BUILD}, {APP_PLATFORM}) em http://127.0.0.1:{port} — Azure: {', '.join(ctx.orgs) or '-'}"
           f" — GitHub: {', '.join(a.login for a in ctx.gh.values()) or '-'} — dados em {DATA}{' — token ativo' if TOKEN else ''}", flush=True)
