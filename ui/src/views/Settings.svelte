@@ -565,8 +565,8 @@
         <div class="card org">
           <div class="pref"><div><b>Desenvolvido pela ThomSoft</b><div class="small muted">
             <a href="https://thomsoft.com.br" target="_blank" rel="noopener">thomsoft.com.br <ExternalLink size={11} /></a></div></div></div>
-          <div class="pref"><div><b>Código aberto</b><div class="small muted">Projeto open-source da ThomSoft, de uso gratuito sob a licença MIT.
-            <a href="https://github.com/ThomSofts/codeck" target="_blank" rel="noopener">github.com/ThomSofts/codeck <ExternalLink size={11} /></a></div></div></div>
+          <div class="pref"><div><b>Gratuito</b><div class="small muted">Produto da ThomSoft, de uso gratuito. Versões novas e instalação oficial:
+            <a href="https://thomsoft.com.br/codeck/" target="_blank" rel="noopener">thomsoft.com.br/codeck <ExternalLink size={11} /></a></div></div></div>
         </div>
 
       {:else}
