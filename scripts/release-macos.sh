@@ -204,7 +204,7 @@ bash scripts/build-db-plugins.sh macos "$out/plugins" "macos-$VERSION-$BUILD"
 # {version, build, engines: {sqlserver: {url, mirrors, sha256, size}, …}} — vai assinado no latest.json
 PLUGINS_JSON="$(for f in "$out"/plugins/codeck-db-*; do
   n="$(basename "$f")"; bin="${n#codeck-db-}"; bin="${bin%%-macos-*}"
-  case "$bin" in mssql) e=sqlserver ;; *) e="$bin" ;; esac
+  if [ "$bin" = mssql ]; then e=sqlserver; else e="$bin"; fi   # sem case: o bash 3.2 do macOS erra o ")" dentro de $( )
   jq -n --arg e "$e" --arg url "$RELEASES/$TAG/$n" --arg mirror "$BASE_URL/$CHANNEL/plugins/$n" \
     --arg sha "$(shasum -a 256 "$f" | cut -d' ' -f1)" --argjson size "$(stat -f %z "$f")" \
     '{($e): {url: $url, mirrors: [$mirror], sha256: $sha, size: $size}}'

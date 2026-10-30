@@ -510,7 +510,7 @@ jobs:
           lftp_run "mkdir -p -f $remote/plugins; cd $remote/plugins; mput dist/plugins/codeck-db-*;"
           plugins="$(for f in dist/plugins/codeck-db-*; do
             n="$(basename "$f")"; bin="${n#codeck-db-}"; bin="${bin%%-windows-*}"
-            case "$bin" in mssql) e=sqlserver ;; *) e="$bin" ;; esac
+            if [ "$bin" = mssql ]; then e=sqlserver; else e="$bin"; fi   # sem case: o bash 3.2 do macOS erra o ")" dentro de $( )
             jq -n --arg e "$e" --arg url "$RELEASES/v$BUILD_NAME-$BUILD_NUMBER/$n" --arg mirror "$DOWNLOADS_BASE_URL/$CHANNEL/plugins/$n" \
               --arg sha "$(sha256sum "$f" | cut -d' ' -f1)" --argjson size "$(stat -c %s "$f")" \
               '{($e): {url: $url, mirrors: [$mirror], sha256: $sha, size: $size}}'
