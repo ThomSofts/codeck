@@ -13,8 +13,9 @@
 # identidade e cada pessoa autoriza tudo uma última vez.
 #
 #   scripts/macos-signing-cert.sh                      cria (se ainda não existe) e mostra a impressão digital
-#   scripts/macos-signing-cert.sh --export x.p12       backup (senha do .p12: codeck)
-#   scripts/macos-signing-cert.sh --import x.p12       restaura de um backup
+#   scripts/macos-signing-cert.sh --export x.p12       backup, cifrado (AES-256) com uma senha forte gerada na hora —
+#                                                      mostrada uma vez: guarde no gerenciador de senhas
+#   scripts/macos-signing-cert.sh --import x.p12       restaura de um backup (pede a senha)
 set -euo pipefail
 SERVICE=codeck-codesign
 P12_PASS=codeck   # o .p12 fica protegido pelo Keychain; a senha dele é só formalidade do formato
@@ -32,12 +33,22 @@ show() {
 case "${1:-}" in
   --export)
     [ -n "${2:-}" ] || fail "Uso: $0 --export arquivo.p12"
-    stored | base64 -D > "$2" || fail "Ainda não há certificado."
-    chmod 600 "$2"; echo "Backup em $2 (senha do .p12: $P12_PASS). Guarde fora deste Mac."; exit 0 ;;
+    B="$(stored)" || fail "Ainda não há certificado."
+    T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+    printf '%s' "$B" | base64 -D | openssl pkcs12 -passin "pass:$P12_PASS" -legacy -nodes -out "$T/all.pem" 2>/dev/null
+    PW="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-28)"
+    umask 077
+    openssl pkcs12 -export -in "$T/all.pem" -name "Codeck Code Signing" -keypbe AES-256-CBC -certpbe AES-256-CBC -macalg sha256 \
+      -iter 600000 -out "$2" -passout "pass:$PW"
+    echo "Backup em $2"
+    echo "Senha (aparece só agora — guarde no gerenciador de senhas): $PW"; exit 0 ;;
   --import)
     [ -f "${2:-}" ] || fail "Uso: $0 --import arquivo.p12"
-    openssl pkcs12 -in "$2" -nokeys -passin "pass:$P12_PASS" -legacy >/dev/null 2>&1 || fail "Não abri o .p12 (a senha tem de ser $P12_PASS)."
-    store "$2"; show; exit 0 ;;
+    read -rsp "Senha do backup: " PW; echo
+    T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+    openssl pkcs12 -in "$2" -passin "pass:$PW" -nodes -out "$T/all.pem" 2>/dev/null || fail "Senha errada ou arquivo inválido."
+    openssl pkcs12 -export -legacy -in "$T/all.pem" -name "Codeck Code Signing" -out "$T/c.p12" -passout "pass:$P12_PASS"
+    store "$T/c.p12"; show; exit 0 ;;
   "") ;;
   *) fail "opção desconhecida: $1" ;;
 esac
