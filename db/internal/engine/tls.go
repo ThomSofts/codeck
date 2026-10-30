@@ -137,6 +137,24 @@ func LegacyCBCError(cap *Capture, err error, p TLSParams) error {
 			"divisão de registros do TLS 1.0 com CBC. Ligue a compatibilidade RC4 nesta conexão (ou atualize o servidor para o SP3 com TLS 1.2)"}
 }
 
+// NoTLSError: o servidor não fala TLS — disse que não suporta (PostgreSQL, MySQL, SQL Server) ou respondeu em texto
+// puro (Redis, MongoDB). O Codeck nunca cai para texto puro sozinho (como o "prefer" de outras ferramentas): a tela
+// explica e pergunta se conecta sem criptografia nesta conexão.
+func NoTLSError(err error, p TLSParams) error {
+	if err == nil || p.Mode == "off" {
+		return nil
+	}
+	m := strings.ToLower(err.Error())
+	for _, s := range []string{"server refused tls connection", "server does not support tls", "server does not support encryption",
+		"does not look like a tls handshake"} {
+		if strings.Contains(m, s) {
+			return &proto.Error{Code: "tls-unsupported", Message: "O servidor não oferece criptografia (TLS) — usuário, senha e dados só " +
+				"passam legíveis. Conecte sem criptografia (só em rede local/VPN) ou ligue o TLS no servidor"}
+		}
+	}
+	return nil
+}
+
 // CertError: o motivo da recusa do certificado como erro para a tela (nil se não houve problema de certificado).
 func CertError(cap *Capture) error {
 	info := cap.Get()

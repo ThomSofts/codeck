@@ -175,7 +175,7 @@ def _tabularis(with_secrets):
         item = {"source": "tabularis", "id": c["id"], "name": c.get("name") or c["id"], "engine": eng, "folder": groups.get(c.get("group_id"), ""),
                 "kind": "dev", "host": p.get("host") or "", "port": p.get("port"), "database": p.get("database") or "", "file": "",
                 "user": p.get("username") or "", "hasPassword": bool(p.get("password") or p.get("save_in_keychain")), "driver": p.get("driver"),
-                "tls": {"mode": "off" if (p.get("ssl_mode") or "").lower() == "disable" else ("pin" if eng == "sqlserver" else "verify"), "legacy": False}}
+                "tls": {"mode": "off" if (p.get("ssl_mode") or "").lower() in ("disable", "disabled") else ("pin" if eng == "sqlserver" else "verify"), "legacy": False}}
         if eng == "sqlite":
             item["file"] = p.get("database") or ""
         if with_secrets:

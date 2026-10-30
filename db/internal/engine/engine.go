@@ -292,6 +292,9 @@ func (e *Engine) open(ctx context.Context, p ConnParams) (any, error) {
 		if le := LegacyCBCError(cap, err, p.TLS); le != nil {
 			return nil, le
 		}
+		if ne := NoTLSError(err, p.TLS); ne != nil {
+			return nil, ne
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, proto.Fail("timeout", "O servidor não respondeu em %s (firewall, VPN desligada ou porta errada?)", timeout)
 		}

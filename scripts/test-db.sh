@@ -30,7 +30,7 @@ for a in "$@"; do
 done
 say() { printf '\n\033[1;36m▸ %s\033[0m\n' "$*"; }
 warn() { printf '\033[33m  – %s\033[0m\n' "$*"; }
-C=(codeck-test-pg codeck-test-mysql codeck-test-maria codeck-test-mssql codeck-test-mongo codeck-test-redis codeck-test-libsql codeck-test-sshd)
+C=(codeck-test-pg codeck-test-pgnotls codeck-test-mysql codeck-test-maria codeck-test-mssql codeck-test-mongo codeck-test-redis codeck-test-libsql codeck-test-sshd)
 EMU_PID="" FB_PID="" DESK_APP=""
 cleanup() {
   say "Limpando"
@@ -70,6 +70,7 @@ if $FULL && command -v docker >/dev/null && docker info >/dev/null 2>&1; then
   docker network create codeck-test-net >/dev/null 2>&1
   docker run -d --name codeck-test-pg --network codeck-test-net --network-alias pgnet -e POSTGRES_PASSWORD='Pg!pass1' -p 65432:5432 postgres:17 \
     -c ssl=on -c ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem -c ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key >/dev/null
+  docker run -d --name codeck-test-pgnotls -e POSTGRES_PASSWORD='Pg!pass1' -p 65433:5432 postgres:17 >/dev/null   # ssl = off (o padrão)
   docker run -d --name codeck-test-mysql -e MYSQL_ROOT_PASSWORD='My!pass1' -e MYSQL_DATABASE=loja -p 63306:3306 mysql:8.4 >/dev/null
   docker run -d --name codeck-test-maria -e MARIADB_ROOT_PASSWORD='Ma!pass1' -e MARIADB_DATABASE=loja -p 63307:3306 mariadb:11 >/dev/null
   if [ "$(uname -m)" = arm64 ]; then MSSQL_IMG=mcr.microsoft.com/azure-sql-edge:latest; else MSSQL_IMG=mcr.microsoft.com/mssql/server:2022-latest; fi
@@ -87,6 +88,8 @@ if $FULL && command -v docker >/dev/null && docker info >/dev/null 2>&1; then
 
   wait_for Postgres 90 docker exec codeck-test-pg pg_isready -U postgres && sleep 2 && \
     add postgres '{"engine":"postgres","env":{"host":"127.0.0.1","port":65432,"database":"postgres","user":"postgres","password":"Pg!pass1","tls":{"mode":"pin"}}}'
+  wait_for "Postgres sem TLS" 90 docker exec codeck-test-pgnotls pg_isready -U postgres && sleep 2 && \
+    add pg-sem-tls '{"kind":"notls","engine":"postgres","env":{"host":"127.0.0.1","port":65433,"database":"postgres","user":"postgres","password":"Pg!pass1"}}'
   wait_for MySQL 120 docker exec codeck-test-mysql mysql -uroot -pMy!pass1 -e "select 1" && sleep 3 && \
     add mysql '{"engine":"mysql","env":{"host":"127.0.0.1","port":63306,"database":"loja","user":"root","password":"My!pass1","tls":{"mode":"pin"}}}'
   wait_for MariaDB 120 docker exec codeck-test-maria mariadb -uroot -pMa!pass1 -e "select 1" && \

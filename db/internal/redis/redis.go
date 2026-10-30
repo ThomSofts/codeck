@@ -124,7 +124,10 @@ func (Driver) Open(ctx context.Context, p engine.ConnParams) (docs.Conn, string,
 		if ce := engine.CertError(cap); ce != nil {
 			return nil, "", nil, ce
 		}
-		if strings.Contains(err.Error(), "first record does not look like a TLS handshake") || strings.Contains(err.Error(), "EOF") && !off {
+		if ne := engine.NoTLSError(err, p.TLS); ne != nil {
+			return nil, "", nil, ne
+		}
+		if strings.Contains(err.Error(), "EOF") && !off {
 			return nil, "", nil, proto.Fail("tls", "O servidor não respondeu em TLS — se ele não usa criptografia, escolha \"Sem criptografia\" (só em rede local/VPN)")
 		}
 		return nil, "", nil, err

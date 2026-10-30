@@ -1349,6 +1349,11 @@ def post_db_rc4(qs, body):
     return databases.set_rc4(body.get("bank"), body.get("env"), body.get("on", True))
 
 
+@route("POST", "/api/db/tls-off")
+def post_db_tls_off(qs, body):
+    return databases.set_tls_off(body.get("bank"), body.get("env"))
+
+
 @route("POST", "/api/db/test")
 def post_db_test(qs, body):
     return databases.test(body)

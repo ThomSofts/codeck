@@ -259,6 +259,17 @@ def set_rc4(bank_id, env_id, on=True):
     return public()
 
 
+def set_tls_off(bank_id, env_id):
+    """Servidor sem TLS e você aceitou conectar assim (a tela já disse se o endereço é público): grava os dois aceites."""
+    with lock:
+        d = _load()
+        e = _env(_bank(d, bank_id), env_id)
+        e["tls"] = {**e.get("tls", {}), "mode": "off", "pin": "", "offAck": True, "offPublicAck": not _is_private(e["host"])}
+        e["tls"].pop("rc4", None)
+        _save(d)
+    return public()
+
+
 def pin_certificate(bank_id, env_id, sha256):
     if not re.fullmatch(r"[0-9a-f]{64}", sha256 or ""):
         raise ValueError("Impressão digital inválida")
@@ -291,11 +302,12 @@ def _is_private(host):
 def _conn_params(b, e, database=None, password=None):
     tls = dict(e.get("tls") or {})
     if tls.get("mode") == "off" and b["engine"] != "sqlite":
+        pub = not _is_private(e["host"])
         if not tls.get("offAck"):
-            raise PluginError("tls-off-denied", "Conexão sem criptografia precisa do seu aceite nas configurações do ambiente")
-        if not _is_private(e["host"]) and not tls.get("offPublicAck"):
+            raise PluginError("tls-off-denied", "Conexão sem criptografia precisa do seu aceite nas configurações do ambiente", {"public": pub})
+        if pub and not tls.get("offPublicAck"):
             raise PluginError("tls-off-public", f"{e['host']} é um endereço público: sem criptografia, a senha iria legível pela "
-                              "internet. Use TLS (fixando o certificado) ou confirme o risco nas configurações do ambiente")
+                              "internet. Use TLS (fixando o certificado) ou confirme o risco nas configurações do ambiente", {"public": True})
         tls["allowOff"] = True
     if password is None and e.get("secret"):
         password = secrets.get_text(e["id"], e["secret"])
@@ -307,6 +319,13 @@ def _conn_params(b, e, database=None, password=None):
         p["options"] = {"tlsHost": e["host"]}
         p["_tunnel"] = e.get("id") or "test"
     return p
+
+
+def _no_tls(err, e):
+    """Servidor sem TLS: a tela pergunta se conecta sem criptografia — e avisa mais alto se o endereço é público."""
+    if isinstance(err, PluginError) and err.code == "tls-unsupported":
+        err.data = {**(err.data or {}), "public": not _is_private(e.get("host"))}
+    return err
 
 
 def test(body):
@@ -326,6 +345,8 @@ def test(body):
         plug = dbplugins.get(engine)
         res = plug.call("open", p, timeout=60)
         plug.call("close", {"session": res["session"]}, timeout=10)
+    except PluginError as err:
+        raise _no_tls(err, e)
     finally:
         if tunnel:
             dbtunnel.release(tunnel)
@@ -347,10 +368,10 @@ def open_session(bank_id, env_id, repo_id=None, database=None):
     tunnel = params.pop("_tunnel", None)
     try:
         res = plug.call("open", params, timeout=60)
-    except Exception:
+    except Exception as err:
         if tunnel:
             dbtunnel.release(tunnel)
-        raise
+        raise _no_tls(err, e)
     sid = "s_" + uuid.uuid4().hex
     prod = e["kind"] == "prod"
     s = {"id": sid, "bank": bank_id, "env": env_id, "engine": b["engine"], "kind": e["kind"], "plugin": res["session"], "repo": repo_id,

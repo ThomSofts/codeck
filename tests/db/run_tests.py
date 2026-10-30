@@ -373,6 +373,16 @@ def importar_conexoes():
     key = bytes.fromhex("babb4a9f774ab853c96c2d653dfe544a")
     plain = json.dumps({"x": {"#connection": {"user": "sa", "password": "Ç!@#\"' longa para vários blocos"}}}).encode()
     ok(dbimport.aes128_cbc_decrypt(key, b"\x00" * 16, _aes_encrypt(key, b"\x00" * 16, plain)) == plain, "AES do DBeaver")
+    tab = os.path.join(WORK, "tabularis.json")   # ssl_mode vazio é o "prefer" do Tabularis: o Codeck pede TLS (e pergunta se o servidor não tiver)
+    with open(tab, "w") as f:
+        json.dump({"connections": [{"id": "a", "name": "A", "params": {"driver": "postgresql", "host": "db.x.com", "ssl_mode": ""}},
+                                   {"id": "b", "name": "B", "params": {"driver": "sqlserver", "host": "db.x.com", "ssl_mode": "disabled"}}]}, f)
+    old, dbimport.TABULARIS = dbimport.TABULARIS, tab
+    try:
+        modes = {x["id"]: x["tls"]["mode"] for x in dbimport._tabularis(False)}
+    finally:
+        dbimport.TABULARIS = old
+    ok(modes == {"a": "verify", "b": "off"}, f"TLS do Tabularis: {modes}")
 
 
 def _aes_encrypt(key, iv, data):
@@ -819,10 +829,26 @@ def engine_ssh(name, t):
     api("db/bank/delete", {"id": b["id"]})
 
 
+def engine_notls(name, t):
+    """Servidor sem TLS (como um PostgreSQL com ssl = off): o Codeck não cai para texto puro sozinho — recusa com um código
+    que a tela transforma em pergunta; com o aceite gravado (db/tls-off), conecta e consulta."""
+    b = bank("Teste sem TLS", t["engine"], [{**t["env"], "kind": "dev", "tls": {"mode": "verify"}}])
+    bid, eid = b["id"], b["envs"][0]["id"]
+    e = expect_error("tls-unsupported", lambda: api("db/open", {"bank": bid, "env": eid}))
+    ok(e.data["data"] == {"public": False}, f"endereço local deveria vir como privado: {e.data}")
+    expect_error("tls-unsupported", lambda: api("db/test", {"engine": t["engine"], "env": {**t["env"], "tls": {"mode": "pin"}}}))
+    tls = next(x for x in api("db/tls-off", {"bank": bid, "env": eid})["banks"] if x["id"] == bid)["envs"][0]["tls"]
+    ok(tls["mode"] == "off" and tls["offAck"] and not tls["offPublicAck"], f"aceite gravado: {tls}")
+    s = api("db/open", {"bank": bid, "env": eid})
+    ok(not s.get("tls") and rows(q(s["id"], "SELECT 1"))[0][0] == 1, f"consulta sem TLS: {s.get('tls')}")
+    api("db/close", {"session": s["id"]})
+    api("db/bank/delete", {"id": bid})
+
+
 def target_tests():
     for name, t in TARGETS.items():
         kind = t.get("kind") or ("sql" if t.get("engine") in SQL_ENGINES else "doc")
-        fn = {"sql": engine_sql, "doc": engine_doc, "android": engine_android, "desktop": engine_desktop, "ssh": engine_ssh}[kind]
+        fn = {"sql": engine_sql, "doc": engine_doc, "android": engine_android, "desktop": engine_desktop, "ssh": engine_ssh, "notls": engine_notls}[kind]
 
         def run(name=name, t=t, fn=fn):
             fn(name, t)

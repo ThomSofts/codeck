@@ -4,7 +4,7 @@
   import { CheckCircle2, KeyRound, Plus, Search, ShieldAlert, ShieldCheck, Trash2, Zap } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { ApiError, post } from "../../lib/api";
-  import { db, ENGINE_LABEL, type DbBank, type DbEnv, type Engine, type EnvKind } from "../../lib/db.svelte";
+  import { db, ENGINE_LABEL, TLS_OFF_CODES, type DbBank, type DbEnv, type Engine, type EnvKind } from "../../lib/db.svelte";
   import { repos } from "../../lib/repos.svelte";
   import { ui } from "../../lib/ui.svelte";
   import Drawer from "../Drawer.svelte";
@@ -16,10 +16,11 @@
   type FormEnv = Omit<DbEnv, "port" | "timeoutSec" | "ssh"> & { port: string; password: string; clearPassword: boolean; test?: { ok: boolean; text: string } | null; testing?: boolean;
     ssh: { on: boolean; host: string; port: string; user: string; key: string } };
   const COLORS = ["#6F8CFF", "#3CCF91", "#F5B84F", "#FF6B7D", "#B07CFF", "#4FC3F7", "#FF8A50", "#9AA4B2"];
-  const toForm = (e: DbEnv): FormEnv => ({ ...e, tls: { ...e.tls }, port: e.port ? String(e.port) : "", password: "", clearPassword: false, test: null,
+  // rc4 e os aceites só vêm gravados quando ligados: sem o padrão, o Switch recebe undefined e a tela nem abre
+  const toForm = (e: DbEnv): FormEnv => ({ ...e, tls: { rc4: false, offAck: false, offPublicAck: false, ...e.tls }, port: e.port ? String(e.port) : "", password: "", clearPassword: false, test: null,
     ssh: { on: !!e.ssh?.host, host: e.ssh?.host || "", port: e.ssh?.port ? String(e.ssh.port) : "", user: e.ssh?.user || "", key: e.ssh?.key || "" } });
   const blankEnv = (kind: EnvKind): FormEnv => ({ id: "", kind, label: "", host: "", port: "", database: "", user: "", file: "", password: "", clearPassword: false,
-    tls: { mode: "verify", pin: "", legacy: false }, readOnly: kind === "prod", hasPassword: false, test: null,
+    tls: { mode: "verify", pin: "", legacy: false, rc4: false, offAck: false, offPublicAck: false }, readOnly: kind === "prod", hasPassword: false, test: null,
     ssh: { on: false, host: "", port: "", user: "", key: "" } });
 
   const init = untrack(() => bank);
@@ -52,6 +53,10 @@
       const code = err instanceof ApiError ? err.data?.code : null;
       if (code === "legacy-cbc" && !e.tls.rc4) {
         if (await db.askRc4()) { e.tls = { ...e.tls, legacy: true, rc4: true }; return test(e); }
+      }
+      if (code && TLS_OFF_CODES.includes(code) && !(e.tls.mode === "off" && e.tls.offAck && e.tls.offPublicAck)) {
+        const pub = !!(err as ApiError).data.data?.public;
+        if (await db.askTlsOff(code, pub)) { e.tls = { ...e.tls, mode: "off", pin: "", rc4: false, offAck: true, offPublicAck: pub }; return test(e); }
       }
       if (code && String(code).startsWith("cert-")) {
         const c = err instanceof ApiError ? err.data.data : null;

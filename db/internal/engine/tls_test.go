@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"codeck/db/internal/proto"
 	"crypto/tls"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -90,5 +92,19 @@ func TestLegacyTLS10(t *testing.T) {
 	_, cap, err = dial(addr, TLSParams{Mode: "verify", Legacy: true})
 	if err == nil || cap.Get().Problem != "invalid" {
 		t.Fatalf("esperava certificado inválido: %v %+v", err, cap.Get())
+	}
+}
+
+// Servidor sem TLS: as mensagens de cada driver viram "tls-unsupported" (a tela pergunta se conecta sem criptografia).
+func TestNoTLSError(t *testing.T) {
+	for _, m := range []string{"failed to connect to `user=postgres database=citus`: 138.99.96.130:5433 (db.glorysoft.com.br): tls error: server refused TLS connection",
+		"TLS requested but server does not support TLS", "server does not support encryption", "tls: first record does not look like a TLS handshake"} {
+		e, ok := NoTLSError(errors.New(m), TLSParams{Mode: "verify"}).(*proto.Error)
+		if !ok || e.Code != "tls-unsupported" {
+			t.Fatalf("%q: %v", m, e)
+		}
+	}
+	if NoTLSError(errors.New("server refused TLS connection"), TLSParams{Mode: "off"}) != nil || NoTLSError(errors.New("password authentication failed"), TLSParams{}) != nil {
+		t.Fatal("só o servidor sem TLS, e só quando o TLS foi pedido")
 	}
 }

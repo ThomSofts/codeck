@@ -62,6 +62,8 @@ export const ENGINE_LABEL: Record<Engine, string> = { sqlserver: "SQL Server", p
 export const ENGINE_SHORT: Record<Engine, string> = { sqlserver: "MSSQL", postgres: "PG", mysql: "MySQL", sqlite: "SQLite", mongodb: "Mongo", firebase: "Firebase", libsql: "Turso", redis: "Redis" };
 export const KIND_LABEL: Record<EnvKind, string> = { dev: "dev", hml: "hml", prod: "PROD" };
 export const envName = (e: DbEnv) => e.label || KIND_LABEL[e.kind];
+/** Códigos de "sem criptografia": o servidor não tem TLS, ou a conexão já está sem e falta o seu aceite. */
+export const TLS_OFF_CODES = ["tls-unsupported", "tls-off-denied", "tls-off-public"];
 export const quoteFor = (engine: Engine) => (id: string) =>
   engine === "sqlserver" ? `[${id.replace(/]/g, "]]")}]` : engine === "mysql" ? "`" + id.replace(/`/g, "``") + "`" : `"${id.replace(/"/g, '""')}"`;
 
@@ -192,10 +194,26 @@ class Db {
       confirm: "Ligar RC4 nesta conexão", danger: true,
     }));
   }
+  /** Servidor sem TLS (ou conexão sem criptografia ainda sem o seu aceite): explica e pergunta — nunca cai para texto puro sozinho. */
+  async askTlsOff(code: string, pub: boolean): Promise<boolean> {
+    return !!(await ui.ask({
+      title: code === "tls-unsupported" ? "O servidor não tem criptografia" : "Conectar sem criptografia?",
+      message: (code === "tls-unsupported" ? "Este servidor não aceita TLS. " : "Esta conexão está configurada sem criptografia. ") +
+        "Sem TLS, usuário, senha e dados passam legíveis por qualquer rede no caminho." +
+        (pub ? " E o endereço é público: a senha iria legível pela internet." : " O endereço é de rede local/VPN."),
+      detail: ["O certo é ligar o TLS no servidor (ssl = on no PostgreSQL, por exemplo) — aí o Codeck volta a usar criptografia."],
+      confirm: pub ? "Conectar sem criptografia pela internet" : "Conectar sem criptografia", danger: true,
+    }));
+  }
   private async openWithCert(bank: string, env: string, repo: string | null, tries = 0): Promise<DbSession> {
     try {
       return await post("db/open", { bank, env, repoId: repo });
     } catch (e) {
+      if (e instanceof ApiError && TLS_OFF_CODES.includes(e.data?.code) && tries < 2) {
+        if (!(await this.askTlsOff(e.data.code, !!e.data.data?.public))) throw new Error("Conexão cancelada: o servidor não tem criptografia (TLS)");
+        this.set(await post("db/tls-off", { bank, env }));
+        return this.openWithCert(bank, env, repo, tries + 1);
+      }
       if (e instanceof ApiError && e.data?.code === "legacy-cbc" && tries < 2) {
         if (!(await this.askRc4())) throw new Error("Conexão cancelada: o servidor precisa da compatibilidade RC4 (ou de atualização)");
         this.set(await post("db/rc4", { bank, env, on: true }));

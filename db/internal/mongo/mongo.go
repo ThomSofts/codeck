@@ -116,6 +116,9 @@ func (Driver) Open(ctx context.Context, p engine.ConnParams) (docs.Conn, string,
 		if ce := engine.CertError(cap); ce != nil {
 			return nil, "", nil, ce
 		}
+		if ne := engine.NoTLSError(err, p.TLS); ne != nil {
+			return nil, "", nil, ne
+		}
 		if ctx.Err() != nil || strings.Contains(err.Error(), "server selection") {
 			return nil, "", nil, proto.Fail("timeout", "O servidor não respondeu (firewall, VPN desligada, IP não liberado no Atlas?) — %v", err)
 		}

@@ -136,6 +136,15 @@ try {
   await page.waitForTimeout(1500);
   await shot("03-importar");
   check(true, "a importação abre e lista o que achou");
+
+  // banco de servidor antigo como o import do DBeaver grava (legacy sem rc4): o cadastro tem de abrir
+  const { bank: old } = await api("db/bank", { name: "Legado jTDS", engine: "sqlserver", envs: [{ kind: "dev", host: "10.0.0.1", tls: { mode: "pin", legacy: true } }] });
+  await page.reload();   // fecha a importação e relê a lista
+  await page.locator(".brow", { hasText: "Legado jTDS" }).locator('button[title="Configurar"]').click();
+  await page.waitForSelector("text=Banco · Legado jTDS", { timeout: 5000 }).catch(() => {});
+  check(await page.locator("text=Compatibilidade RC4").count() === 1, "o cadastro de um servidor antigo (sem rc4 gravado) abre");
+  await page.keyboard.press("Escape");
+  await api("db/bank/delete", { id: old.id });
   check(errors.length === 0, `sem erros na página${errors.length ? ": " + errors.join(" | ") : ""}`);
 } catch (e) {
   check(false, `fluxo interrompido: ${e.message.split("\n")[0]}`);
