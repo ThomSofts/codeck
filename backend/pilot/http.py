@@ -15,7 +15,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import accounts, agents, aitools, analytics, azure, boards, cascade, catalogs, debug, dotnet, editor, engine, extensions, git, github, kanban, launch, library, lsp, power, prreview, rules, terminals, tracking, update, workspace, ws
+from . import accounts, agents, aitools, aiusage, analytics, azure, boards, cascade, catalogs, debug, dotnet, editor, engine, extensions, git, github, kanban, launch, library, lsp, power, prreview, rules, terminals, tracking, update, workspace, ws
 from .core import (APP_BUILD, APP_PLATFORM, APP_VERSION, ARCHIVE_FILE, CONFIG_FILE, DATA, DEFAULT_PORT, PRODUCT, RULES_FILE, OfflineError,
                    STATIC_DIR, TOKEN, ctx, load_json, lock, log_activity, log_build, log_deploy, notifications, notify_seq,
                    now_iso, pr_summary, read_activity, save_json, state, wake)
@@ -1413,6 +1413,19 @@ def post_ai_default(qs, body):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- consumo das IAs (modelo, effort, tokens)
+@route("GET", "/api/ai/consumption")
+def get_ai_consumption(qs, body):
+    aiusage.start()
+    return aiusage.report(int(q1(qs, "days") or 30))
+
+
+@route("POST", "/api/ai/consumption/scan")
+def post_ai_consumption_scan(qs, body):
+    n = aiusage.scan()
+    return {"ok": True, "files": n, "busy": n is None}
+
+
 # ---------------------------------------------------------------- skills e MCPs (projeto × contas)
 @route("GET", "/api/ai/tools")
 def get_ai_tools(qs, body):
@@ -1727,6 +1740,7 @@ def main():
     threading.Thread(target=agents.auto_limits_loop, daemon=True).start()   # limite das contas sem abrir sessão (opcional)
     threading.Thread(target=agents.limit_watch_loop, daemon=True).start()   # agente parado pelo limite → oferecer outra conta
     threading.Thread(target=update.update_loop, daemon=True).start()
+    aiusage.start()   # consumo das IAs: lê os registros das CLIs (o que é novo) a cada 10 min
     print(f"{PRODUCT} {APP_VERSION} ({APP_BUILD}, {APP_PLATFORM}) em http://127.0.0.1:{port} — Azure: {', '.join(ctx.orgs) or '-'}"
           f" — GitHub: {', '.join(a.login for a in ctx.gh.values()) or '-'} — dados em {DATA}{' — token ativo' if TOKEN else ''}", flush=True)
     server.serve_forever()

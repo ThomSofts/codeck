@@ -685,7 +685,9 @@ def _record(sid, s):
            "project": s.get("projectName"), "projectId": s.get("project"), "model": s.get("model"), "cost": s.get("cost"),
            "workMs": (s.get("workMs") or 0) + (int((time.time() - s["workSince"]) * 1000) if s.get("workSince") else 0),
            "lines": s.get("lines"), "limitUsed": dict(s.get("limitUsed") or {}),
-           "tokens": (s.get("context") or {}).get("tokens"), "tokensTotal": s.get("tokensTotal"), "updated": now_iso()}
+           "tokens": (s.get("context") or {}).get("tokens"), "tokensTotal": s.get("tokensTotal"), "updated": now_iso(),
+           # a conversa na CLI: liga linhas e limite gasto ao modelo/effort de cada resposta (aiusage.py)
+           "cliSession": s.get("claudeSession") or s.get("cliSession")}
     with _hist_lock:
         h = _history()
         prev = h.get(sid)

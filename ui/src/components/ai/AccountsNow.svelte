@@ -13,6 +13,19 @@
   import AccountEdit from "./AccountEdit.svelte";
   import Fuel from "./Fuel.svelte";
   import { accColor, ACC_STATE, binding, clock, effUsed, rank, winShort } from "./limits.svelte";
+  import { consumption, effortLabel, modelLabel, tok } from "../../lib/consumption.svelte";
+
+  // o que a conta está usando (aiusage.py): o modelo·effort mais usado na semana (ou o último), e a média por resposta
+  $effect(() => { consumption.load(); });
+  function using(id: string) {
+    const c = consumption.data?.accounts[id];
+    if (!c) return null;
+    const m = c.weekTop || c.last;
+    if (!m) return null;
+    const conf = c.configured?.model ? `padrão da conta: ${c.configured.model}${c.configured.effort ? " · " + c.configured.effort : ""}` : "";
+    return { text: `${modelLabel(m.model)} · ${effortLabel(m.effort)}`, avg: c.week?.n ? `${tok(c.week.outPerCall)} de saída/resposta` : "",
+      title: [c.week ? `7 dias: ${c.week.n} respostas, ${tok(c.week.tokens)} tokens (${c.week.cacheHit ?? "—"}% do cache)` : "", conf].filter(Boolean).join("\n") };
+  }
 
   const LS = "codeck.ai.group";
   let group = $state((() => { try { return localStorage.getItem(LS) || ""; } catch { return ""; } })());
@@ -95,6 +108,7 @@
           </div>
           <Fuel a={r.a} />
           <p class="why">{r.why}</p>
+          {#if using(r.a.id)}{@const u = using(r.a.id)!}<p class="mdl" title={u.title}><b>{u.text}</b>{u.avg ? ` · ${u.avg}` : ""}</p>{/if}
           <footer>
             {#if d}
               <button class="ses {d.status === 'needs-you' ? 'warn' : 'accent'}" disabled={!d.repoId} onclick={() => d.repoId && go("/work/" + d.repoId)}>
@@ -138,6 +152,8 @@
     transition: transform var(--t) var(--spring), border-color var(--t), box-shadow var(--t); }
   .acard:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--ac) 35%, var(--line)); box-shadow: var(--shadow-2); }
   .acard.blocked { opacity: 0.72; }
+  .mdl { margin: -4px 0 0; font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mdl b { color: var(--text-2); font-weight: 600; }
   .acard.ed { display: block; padding: 8px; animation: none; }
   /* a recomendada: contorno girando na cor da conta */
   .acard.best { border-color: transparent; }

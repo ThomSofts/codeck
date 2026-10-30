@@ -3,7 +3,8 @@
   // com o fôlego de cada uma e o consumo do período — tempo do agente, seu tempo com o projeto na tela, linhas,
   // custo informado pela CLI e quanto de cada limite (5 h / semanal) cada projeto gastou. "Skills e MCPs": quem tem
   // o quê em cada conta, numa matriz, com levar de uma para outra.
-  import { Activity, RefreshCw, WandSparkles } from "@lucide/svelte";
+  import { Activity, BarChart3, RefreshCw, WandSparkles } from "@lucide/svelte";
+  import Consumption from "../components/ai/Consumption.svelte";
   import AccountsNow from "../components/ai/AccountsNow.svelte";
   import AiTools from "../components/ai/AiTools.svelte";
   import Pulse from "../components/ai/Pulse.svelte";
@@ -80,11 +81,13 @@
 
 <Page title="IA" sub="Agentes ao vivo, contas, limites, consumo — e as skills e MCPs de cada conta">
   {#snippet actions()}
-    <Segmented size="sm" bind:value={tab} options={[{ value: "now", label: "Agora", icon: Activity }, { value: "tools", label: "Skills e MCPs", icon: WandSparkles }]} />
+    <Segmented size="sm" bind:value={tab} options={[{ value: "now", label: "Agora", icon: Activity }, { value: "usage", label: "Consumo", icon: BarChart3 }, { value: "tools", label: "Skills e MCPs", icon: WandSparkles }]} />
     <button class="btn sm ghost icon" title="Recarregar" aria-label="Recarregar" onclick={() => { load(); work.loadAi(); work.loadActivity(); }}><RefreshCw size={14} /></button>
   {/snippet}
   {#if tab === "tools"}
   <div class="scroll"><AiTools /></div>
+  {:else if tab === "usage"}
+  <div class="scroll"><Consumption /></div>
   {:else}
   <div class="scroll">
     {#if work.ai.length}<Pulse report={R} /><AccountsNow />{/if}
