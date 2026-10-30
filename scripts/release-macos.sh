@@ -189,7 +189,7 @@ if [ "$VERIFY" = true ]; then
 fi
 
 say "Build"
-bash scripts/build-macos.sh --no-install
+CODECK_REQUIRE_SIGNING=1 bash scripts/build-macos.sh --no-install   # release nunca sai ad-hoc: as permissões precisam atravessar a atualização
 rm -rf "$out"; mkdir -p "$out/stage"
 cp -R "$ROOT/dist/Codeck.app" "$out/stage/"
 ln -s /Applications "$out/stage/Aplicativos"

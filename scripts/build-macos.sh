@@ -42,7 +42,18 @@ if [ "${1:-}" != "--no-install" ]; then
   fi
 fi
 cp "$ROOT/macos/MenuIcon.png" "$ROOT/macos/MenuIcon@2x.png" "$ROOT/brand/splash.html" "$APP/Contents/Resources/"
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1   # assinatura ad-hoc (o app não é notarizado)
+# Sempre o mesmo certificado (scripts/macos-signing-cert.sh): o macOS prende as permissões (acesso a Documentos,
+# modificar apps…) à identidade do app; com ad-hoc ela é o hash do binário e cada atualização perguntaria tudo de novo.
+# Sem o certificado (build de outra pessoa), sai ad-hoc. O app não é notarizado de nenhum jeito.
+SIGN_ID="${CODECK_CODESIGN_IDENTITY:-Codeck Code Signing}"
+if security find-certificate -c "$SIGN_ID" >/dev/null 2>&1; then
+  codesign --force --deep --timestamp=none --sign "$SIGN_ID" "$APP"
+  echo "Assinado com \"$SIGN_ID\""
+else
+  [ "${CODECK_REQUIRE_SIGNING:-}" = 1 ] && { echo "Sem o certificado \"$SIGN_ID\" — rode scripts/macos-signing-cert.sh" >&2; exit 1; }
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1
+  echo "Assinatura ad-hoc (sem o certificado \"$SIGN_ID\"): o macOS pede as permissões de novo a cada build"
+fi
 codesign --verify --deep --strict "$APP"
 echo "Gerado: $APP"
 

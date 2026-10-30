@@ -353,6 +353,9 @@ O Codeck só existe como app de desktop (macOS e Windows) — não há versão w
 - `cd ui && npm run check` confere os tipos; `npm run build` gera `backend/static/`.
 - Não toca no app instalado nem nas suas contas reais.
 - **Instalar o app no meu Mac** (`scripts/build-macos.sh`) compila o app universal (Apple Silicon e Intel) e o instala em `/Applications`.
+- **Assinatura:** o build assina com o certificado "Codeck Code Signing" do Keychain (criado uma vez por
+  `scripts/macos-signing-cert.sh` — faça backup do .p12). Sempre o mesmo certificado mantém as permissões do macOS
+  (Documentos, modificar apps…) depois de cada atualização; sem ele o build sai ad-hoc, e a release se recusa a publicar.
 
 Requisitos:
 - **macOS:** Command Line Tools (`xcode-select --install`) e Node.js 20+.
