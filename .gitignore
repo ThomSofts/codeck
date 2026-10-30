@@ -16,3 +16,6 @@ windows/**/obj/
 # interface compilada (gerada por `npm run build` em ui/) e dependências
 backend/static/
 ui/node_modules/
+
+# plugins de banco compilados (db/)
+db/bin/

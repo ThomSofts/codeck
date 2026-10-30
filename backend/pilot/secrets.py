@@ -1,6 +1,7 @@
 """Cofre de credenciais: Keychain no macOS, DPAPI no Windows. O config.json guarda só a referência.
 
-Serviços: dev.prpilot.pat (PAT do Azure DevOps) e dev.prpilot.github (token do GitHub). A gravação no Keychain usa
+Serviços: dev.prpilot.pat (PAT do Azure DevOps), dev.prpilot.github (token do GitHub) e dev.codeck.db (senhas dos
+bancos de dados — texto livre, guardado em base64url para não passar caractere especial pelo `security -i`). A gravação no Keychain usa
 `security -i` com o comando no stdin, para o segredo não aparecer na lista de processos (ps).
 """
 import base64
@@ -15,7 +16,8 @@ import time
 # já gravada — trocar aqui deixaria de ler os PATs e tokens de quem atualizou. São internos; o usuário não os vê.
 AZURE = "dev.prpilot.pat"
 GITHUB = "dev.prpilot.github"
-_DPAPI_ENTROPY = {AZURE: b"PR Pilot / Azure DevOps PAT", GITHUB: b"PR Pilot / GitHub token"}
+DB = "dev.codeck.db"
+_DPAPI_ENTROPY = {AZURE: b"PR Pilot / Azure DevOps PAT", GITHUB: b"PR Pilot / GitHub token", DB: b"Codeck / banco de dados"}
 
 
 class _Blob(ctypes.Structure):
@@ -41,7 +43,7 @@ def _dpapi(data, protect, entropy):
 
 def put(account, value, service=AZURE):
     """Guarda o segredo cifrado e devolve a referência que vai para o config.json."""
-    if not re.fullmatch(r"[\w\-]{1,64}", account) or not re.fullmatch(r"[\w\-.]{8,400}", value):
+    if not re.fullmatch(r"[\w\-]{1,64}", account) or not re.fullmatch(r"[\w\-.]{8,400}" if service != DB else r"[\w\-]{1,8000}", value):
         raise ValueError("Credencial com formato inesperado")
     if sys.platform == "darwin":
         cmd = f'add-generic-password -U -s {service} -a {account} -l "Codeck — credencial" -w "{value}"\n'
@@ -83,3 +85,19 @@ def delete(account, ref):
     if (ref or {}).get("store") == "keychain":
         subprocess.run(["/usr/bin/security", "delete-generic-password", "-s", ref.get("service") or AZURE, "-a", account],
                        capture_output=True, timeout=20)
+
+
+def put_text(account, text, service=DB):
+    """Segredo de texto livre (senha de banco: aspas, espaços, acentos): vai cifrado em base64url."""
+    if not text:
+        raise ValueError("Senha vazia")
+    if len(text) > 5900:   # cabe o JSON de uma conta de serviço do Google
+        raise ValueError("Senha longa demais")
+    return put(account, base64.urlsafe_b64encode(text.encode()).decode().rstrip("=") or "-", service)
+
+
+def get_text(account, ref):
+    raw = get(account, ref)
+    if raw is None:
+        return None
+    return base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode()

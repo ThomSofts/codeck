@@ -29,9 +29,18 @@ done
 lipo -create "$tmp/Codeck-arm64" "$tmp/Codeck-x86_64" -output "$APP/Contents/MacOS/Codeck"
 rm -rf "$tmp"
 sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" "$ROOT/macos/Info.plist" > "$APP/Contents/Info.plist"
-cp "$ROOT/backend/server.py" "$APP/Contents/Resources/backend/"
+cp "$ROOT/backend/server.py" "$ROOT/backend/mcp_db.py" "$APP/Contents/Resources/backend/"
 rsync -a --exclude __pycache__ "$ROOT/backend/pilot" "$ROOT/backend/static" "$APP/Contents/Resources/backend/"
 cp "$ROOT/macos/AppIcon.icns" "$APP/Contents/Resources/"
+# build local (instala neste Mac): os plugins de banco vão junto do app. A release não embute — cada um instala pela
+# tela o plugin que usar (baixado e conferido pelo SHA-256 assinado no latest.json).
+if [ "${1:-}" != "--no-install" ]; then
+  if command -v go >/dev/null || [ -x /opt/homebrew/bin/go ]; then
+    bash "$ROOT/scripts/build-db-plugins.sh" macos "$APP/Contents/Resources/db-plugins" >/dev/null && echo "Plugins de banco embutidos"
+  else
+    echo "Sem o Go: o app sai sem os plugins de banco (instale pela tela ou: brew install go)"
+  fi
+fi
 cp "$ROOT/macos/MenuIcon.png" "$ROOT/macos/MenuIcon@2x.png" "$ROOT/brand/splash.html" "$APP/Contents/Resources/"
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1   # assinatura ad-hoc (o app não é notarizado)
 codesign --verify --deep --strict "$APP"

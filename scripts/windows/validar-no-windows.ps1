@@ -8,7 +8,9 @@
 #   1. Consumo das IAs: lê as conversas do Claude Code e do Codex e o banco do Cursor, nas pastas do Windows;
 #   2. as CLIs de IA: onde estão e como o Codeck as chama sem janela (a revisão automática de PR);
 #   3. janelas de console: toda chamada que a aba IA e a leitura do consumo fazem sai com a janela escondida;
-#   4. os projetos: cada conversa cai no projeto certo (caminhos do Windows, worktrees).
+#   4. os projetos: cada conversa cai no projeto certo (caminhos do Windows, worktrees);
+#   5. bancos de dados: senha no cofre (DPAPI) com caracteres especiais, plugin SQLite (se instalado) num banco de
+#      teste, imagem do resultado na área de transferência (troca o que está nela) e o ssh/adb que o Codeck usa.
 # No fim grava um relatório na Área de trabalho (codeck-validacao.txt) — mande para o Claude no Codeck.
 $ErrorActionPreference = 'Stop'
 $app = Join-Path $env:LOCALAPPDATA 'Programs\Codeck'
@@ -29,6 +31,8 @@ foreach ($f in 'ai-accounts.json', 'repos.json', 'ai-sessions.json', 'ai-resume.
   $src = Join-Path $data $f
   if (Test-Path $src) { Copy-Item $src $work }
 }
+# plugins de banco instalados (o roteiro testa o do SQLite)
+if (Test-Path (Join-Path $data 'plugins')) { Copy-Item -Recurse (Join-Path $data 'plugins') $work }
 
 $py = @'
 import json, os, subprocess, sys, time, traceback
@@ -108,6 +112,42 @@ try:
     check(not any(("\\" in k or "/" in k) for k in projs), "os projetos saem pelo nome, não pelo caminho")
 except Exception:
     check(False, "projetos — " + traceback.format_exc().splitlines()[-1])
+
+say(); say("== 5. Bancos de dados")
+try:
+    from pilot import secrets as sec, dbplugins, databases, dbtunnel, debug
+    pw = "Sênha 'com' \"aspas\" ;&|<>% çãõ"
+    ref = sec.put_text("validacao-db", pw)
+    check(sec.get_text("validacao-db", ref) == pw, "senha de banco no cofre (DPAPI) volta igual, com caracteres especiais")
+    path, origin = dbplugins.locate("sqlite")
+    if path:
+        import sqlite3, tempfile
+        f = os.path.join(tempfile.mkdtemp(), "teste.db")
+        con = sqlite3.connect(f); con.execute("create table t (id integer primary key, nome text)"); con.execute("insert into t values (1, 'Ana')"); con.commit(); con.close()
+        n0 = len(calls)
+        pl = dbplugins.get("sqlite")
+        s = pl.call("open", {"file": f}, timeout=30)["session"]
+        rows = pl.call("query", {"session": s, "sql": "select nome from t"}, timeout=30)["results"][0]["rows"]
+        pl.call("close", {"session": s}); dbplugins.stop_all()
+        check(rows == [["Ana"]], f"plugin SQLite ({origin}) abriu e consultou um banco de teste")
+        check(all(c[1] & 0x08000000 for c in calls[n0:]), "o plugin abre sem janela de console")
+    else:
+        say("  (plugin SQLite não instalado — instale em Dados → Ajustes para testar)")
+    import struct, zlib, base64
+    def chunk(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(b"\x00\x6f\x8c\xff")) + chunk(b"IEND", b"")
+    try:
+        databases.save_png(base64.b64encode(png).decode(), "validacao", copy=True, save=False)
+        check(True, "imagem do resultado vai para a área de transferência")
+    except Exception as e:
+        check(False, f"imagem na área de transferência — {e}")
+    try:
+        say(f"  ssh: {dbtunnel._ssh()}")
+    except Exception as e:
+        say(f"  ssh: {e} (só precisa para túnel SSH)")
+    say(f"  adb (banco do app Android): {debug._adb() or 'não encontrado'}")
+except Exception:
+    check(False, "bancos — " + traceback.format_exc().splitlines()[-1])
 
 say()
 say("RESULTADO: " + ("tudo certo" if ok_all else "há itens com ✗ — mande este relatório"))

@@ -3,7 +3,7 @@
   // esquerda com os arquivos; no centro, abas de agentes, terminais e arquivos; à direita, o agente e os limites.
   // ⌘/Ctrl+P abre arquivo · ⇧F busca no projeto · T novo terminal · W fecha a aba · 1…9 troca de projeto · ⇧I pede à IA.
   // As abas de projeto podem ficar em GRUPOS (como no navegador): nome, cor, recolher/expandir e quantos estão abertos.
-  import { Bot, GitPullRequest, PanelLeft, Layers, Play, RefreshCw, ChevronDown, Code2, FolderGit2, GitBranch, AppWindow, Columns2, GitCompareArrows, LayoutGrid, PanelRight, Settings2, Plus, Search, SquareTerminal, X, Sparkles, FolderPlus, FolderMinus, Palette, Pencil, FolderOpen, Trash2, ChevronRight, Files, Blocks, Boxes, Copy, Pin, ListX, TriangleAlert, Minus, Minimize2, ShieldOff, Bug, Gauge, Brush, WandSparkles } from "@lucide/svelte";
+  import { Bot, GitPullRequest, PanelLeft, Layers, Play, RefreshCw, ChevronDown, Code2, FolderGit2, GitBranch, AppWindow, Columns2, GitCompareArrows, LayoutGrid, PanelRight, Settings2, Plus, Search, SquareTerminal, X, Sparkles, FolderPlus, FolderMinus, Palette, Pencil, FolderOpen, Trash2, ChevronRight, Files, Blocks, Boxes, Copy, Pin, ListX, TriangleAlert, Minus, Minimize2, ShieldOff, Bug, Gauge, Brush, WandSparkles, Database } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { get, post } from "../lib/api";
   import { send } from "../lib/native";
@@ -53,6 +53,8 @@
   import RepoActivity from "../components/work/RepoActivity.svelte";
   import AskAi from "../components/work/AskAi.svelte";
   import AiTools from "../components/ai/AiTools.svelte";
+  import DbWorkbench from "../components/db/DbWorkbench.svelte";
+  import { db } from "../lib/db.svelte";
   import { kbd } from "../lib/keys";
   import { kb } from "../lib/keybindings.svelte";
   import type { Group } from "../lib/work.svelte";
@@ -61,7 +63,7 @@
   type FileTab = { k: "file" | "diff"; key: string; path: string; scope: string | null; line?: number; preview?: boolean; staged?: boolean };
   type LeftView = "files" | "search" | "scm" | "solution" | "debug" | "ext";
   type View = { scope: string | null; files: FileTab[]; order: string[]; active: string | null; left: LeftView; right: boolean; split?: string | null; lastRun?: string | null;
-    mode?: "code" | "git" | "prs" | "ai"; leftOpen?: boolean; recent?: string[]; panel?: boolean; panelTab?: "problems" | "debug";
+    mode?: "code" | "git" | "prs" | "ai" | "db"; leftOpen?: boolean; recent?: string[]; panel?: boolean; panelTab?: "problems" | "debug";
     /** terminais minimizados: continuam rodando, saem das abas e ficam no cantinho (doca) */
     hidden?: string[];
     /** a aba do DevTools do Flutter (uma por escopo) e a página em que abriu */
@@ -154,6 +156,7 @@
   });
   // modo do projeto: Código (arquivos, terminais, agentes em abas), Git (grafo, branches, commit) ou PRs (e builds)
   const mode = $derived(v?.mode || "code");
+  $effect(() => { const id = p?.id; if (id && !(id in db.project)) untrack(() => { db.loadProject(id); db.loadFlutter(id); }); });
   const leftOpen = $derived(v?.leftOpen !== false);
   const splitTab = $derived(v?.split && v.split !== activeTab?.key ? tabs.find(t => t.key === v!.split) || null : null);
   const activeTerm = $derived(activeTab?.kind === "term" ? activeTab.term! : (scopeTerms.find(t => t.kind === "agent") || null));
@@ -784,6 +787,7 @@
             <button role="tab" class:on={mode === "git"} aria-selected={mode === "git"} onclick={() => v && (v.mode = "git")}><GitBranch size={13} /> <span class="lbl l-mode">Git</span></button>
             <button role="tab" class:on={mode === "prs"} aria-selected={mode === "prs"} onclick={() => v && (v.mode = "prs")}><GitPullRequest size={13} /> <span class="lbl l-mode">PRs</span>{#if prCount}<span class="n">{prCount}</span>{/if}</button>
             <button role="tab" class:on={mode === "ai"} aria-selected={mode === "ai"} title="Skills e MCPs do projeto e das contas de IA" onclick={() => v && (v.mode = "ai")}><WandSparkles size={13} /> <span class="lbl l-mode">IA</span></button>
+            {#if (db.project[p.id] || []).length || db.flutter[p.id]?.openable?.length || mode === "db"}<button role="tab" class:on={mode === "db"} aria-selected={mode === "db"} title="Bancos de dados deste projeto" onclick={() => v && (v.mode = "db")}><Database size={13} /> <span class="lbl l-mode">Banco</span></button>{/if}
           </div>
           <span class="hgrow"></span>
           <div class="tact">
@@ -841,6 +845,8 @@
             <div class="pane">{#key p.id}<RepoActivity project={p} />{/key}</div>
           {:else if mode === "ai"}
             <div class="pane ai">{#key p.id}<AiTools repoId={p.id} />{/key}</div>
+          {:else if mode === "db"}
+            <div class="pane">{#key p.id}<DbWorkbench repo={p.id} onmanage={() => go("/data")} />{/key}</div>
           {:else}
           <div class="pane">{@render paneOf(activeTab)}</div>
           {#if splitTab}<div class="pane second">

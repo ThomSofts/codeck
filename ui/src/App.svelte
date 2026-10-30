@@ -38,11 +38,13 @@
   import Repositories from "./views/Repositories.svelte";
   import Settings from "./views/Settings.svelte";
   import Work from "./views/Work.svelte";
+  import Data from "./views/Data.svelte";
+  import { db } from "./lib/db.svelte";
 
   const views: Record<string, any> = {
     inbox: Inbox, prs: PullRequests, builds: Builds, deploys: Deploys, issues: Issues, sprints: Sprints, repos: Repositories,
     automation: Automation, analytics: Analytics, ai: AiUsage, history: History, settings: Settings, work: Work, solo: Work, repo: Work,
-    projects: Projects, board: Kanban,
+    projects: Projects, board: Kanban, data: Data,
   };
   const View = $derived(views[router.view] || Inbox);
 
@@ -87,6 +89,7 @@
   });
 
   onMount(() => {
+    db.watchAgents();   // pedidos dos agentes de IA aos bancos (MCP): a aprovação aparece em qualquer tela
     const stopWork = work.watch();   // projetos abertos e agentes: a barra lateral mostra o estado em qualquer tela
     const stopAlerts = watchAlerts();   // os sons dos avisos (PR nova, IA perguntando, release esperando…)
     store.start();
@@ -103,7 +106,7 @@
   $effect(() => {
     if (!store.s || routedOnce) return;
     routedOnce = true;
-    if (!store.s.configured && !["settings", "work", "solo", "projects", "board"].includes(router.view) && !work.projects.length) go("/settings/accounts");
+    if (!store.s.configured && !["settings", "work", "solo", "projects", "board", "data"].includes(router.view) && !work.projects.length) go("/settings/accounts");
   });
 </script>
 

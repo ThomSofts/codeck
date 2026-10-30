@@ -118,7 +118,8 @@ publish_json() {
   else
     echo '{}' > "$cur"   # primeira publicação
   fi
-  jq --arg url "$RELEASES/$TAG/$file" --arg mirror "$BASE_URL/$ch/$file" \
+  jq --argjson plugins "$PLUGINS_JSON" \
+     --arg url "$RELEASES/$TAG/$file" --arg mirror "$BASE_URL/$ch/$file" \
      --arg sha "$(shasum -a 256 "$dmg" | cut -d' ' -f1)" \
      --argjson size "$(stat -f %z "$dmg")" \
      --arg version "$VERSION" --argjson build "$BUILD" \
@@ -126,6 +127,7 @@ publish_json() {
      --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
      '.productId = $pid
       | .macos = {url: $url, mirrors: [$mirror], sha256: $sha, size: $size, version: $version, build: $build}
+      | (if $plugins == null then . else .dbPlugins.macos = $plugins end)
       | .notes = $notes | .publishedAt = $date
       | ([.windows, .macos] | map(select(. != null)) | max_by(.build)) as $n
       | .version = $n.version | .build = $n.build' "$cur" > "$next"
@@ -179,6 +181,7 @@ verify_channels() {
   return 0
 }
 
+PLUGINS_JSON=null   # o --verify republica sem mexer nos plugins
 if [ "$VERIFY" = true ]; then
   [ -f "$dmg" ] || fail "Não achei $dmg (o --verify usa o .dmg da última publicação deste build)."
   verify_channels
@@ -196,6 +199,17 @@ create-dmg --volname "Codeck" --volicon macos/AppIcon.icns \
   --no-internet-enable "$dmg" "$out/stage/" >/dev/null
 echo "✓ $dmg ($(du -h "$dmg" | cut -f1))"
 
+say "Plugins de banco"
+bash scripts/build-db-plugins.sh macos "$out/plugins" "macos-$VERSION-$BUILD"
+# {version, build, engines: {sqlserver: {url, mirrors, sha256, size}, …}} — vai assinado no latest.json
+PLUGINS_JSON="$(for f in "$out"/plugins/codeck-db-*; do
+  n="$(basename "$f")"; bin="${n#codeck-db-}"; bin="${bin%%-macos-*}"
+  case "$bin" in mssql) e=sqlserver ;; *) e="$bin" ;; esac
+  jq -n --arg e "$e" --arg url "$RELEASES/$TAG/$n" --arg mirror "$BASE_URL/$CHANNEL/plugins/$n" \
+    --arg sha "$(shasum -a 256 "$f" | cut -d' ' -f1)" --argjson size "$(stat -f %z "$f")" \
+    '{($e): {url: $url, mirrors: [$mirror], sha256: $sha, size: $size}}'
+done | jq -s --arg version "$VERSION" --argjson build "$BUILD" '{version: $version, build: $build, engines: add}')"
+
 if [ "$DRY_RUN" = true ]; then say "Ensaio: o .dmg está em $out — nada foi publicado."; exit 0; fi
 
 # O .dmg primeiro (GitHub Releases, com o nome de cada canal, e o site), o latest.json assinado por último — só a parte do
@@ -204,10 +218,11 @@ say "GitHub Releases ($TAG)"
 gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Codeck $VERSION (build $BUILD)" \
   --notes "$(git log -1 --format=%B)" --target "$(git rev-parse HEAD)"
 for pair in $LEGACY_CHANNELS; do cp "$dmg" "$out/$(channel_file "${pair%%:*}")"; done
-gh release upload "$TAG" "$out"/*-"$VERSION-$BUILD".dmg --clobber
+gh release upload "$TAG" "$out"/*-"$VERSION-$BUILD".dmg "$out"/plugins/codeck-db-* --clobber
 say "Publicando no site"
 name="$(basename "$dmg")"
 lftp_run "mkdir -p -f /$CHANNEL; cd /$CHANNEL; put $dmg;"
+lftp_run "mkdir -p -f /$CHANNEL/plugins; cd /$CHANNEL/plugins; mput $out/plugins/codeck-db-*;"
 publish_json "$CHANNEL" "$name" codeck "$(git log -1 --format=%s)"
 old="$(lftp_run "cd /$CHANNEL; cls -1" | sed -nE 's/^Codeck-[0-9.]+-([0-9]+)\.dmg$/\1/p' | sort -un | awk '{a[NR]=$0} END {for (i = 1; i <= NR - 2; i++) print a[i]}')"
 for b in $old; do lftp_run "cd /$CHANNEL; glob -a rm -f Codeck-*-$b.dmg;" || true; done

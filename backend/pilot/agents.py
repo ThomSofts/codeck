@@ -193,9 +193,10 @@ PROMPT_MAX = {"posix": 100_000, "nt": 24_000}   # acima disso o pedido vai num a
 PROMPT_DIR = os.path.join(DATA, "prompts")
 
 
-def agent_argv(prov, exe, prompt=None, mode=None, settings=None, extra_dirs=(), resume=None, bypass=False):
-    """argv do agente (sem shell) — puro, para dar para testar. `exe` = executável (ou só o nome)."""
-    args = [exe]
+def agent_argv(prov, exe, prompt=None, mode=None, settings=None, extra_dirs=(), resume=None, bypass=False, extra=()):
+    """argv do agente (sem shell) — puro, para dar para testar. `exe` = executável (ou só o nome). `extra` = opções a
+    mais (o MCP de banco do projeto), antes do pedido."""
+    args = [exe, *extra]
     if prov == "claude":
         if settings is not None:
             # dict vai como JSON; str é o caminho de um arquivo com ele (quando o cmd.exe estragaria as aspas e o &&)
@@ -325,7 +326,7 @@ def _prompt_to_file(sid, prompt):
     return path, f"Leia o pedido completo no arquivo {path} e siga-o."
 
 
-def launch_spec(aid, prompt=None, mode=None, sid=None, extra_dirs=None, resume=None, bypass=False):
+def launch_spec(aid, prompt=None, mode=None, sid=None, extra_dirs=None, resume=None, bypass=False, extra_args=()):
     """Comando + variáveis de ambiente para abrir o agente desta conta. `sid` = id da sessão (para a telemetria)."""
     a = get_account(aid)
     prov, spec = a["provider"], PROVIDERS[a["provider"]]
@@ -367,7 +368,7 @@ def launch_spec(aid, prompt=None, mode=None, sid=None, extra_dirs=None, resume=N
         with open(spath, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False)
         settings = spath
-    argv = agent_argv(prov, exe, prompt, mode, settings, dirs, resume, bypass)
+    argv = agent_argv(prov, exe, prompt, mode, settings, dirs, resume, bypass, extra_args)
     args = argv[:1] + pre + argv[1:]   # node + script.js do .cmd do npm, quando é o caso
     if not nt:
         command = " ".join(shlex.quote(x) for x in args)

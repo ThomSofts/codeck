@@ -77,7 +77,7 @@
   .warn { background: var(--bad-soft); color: var(--bad); }
   .lock { background: var(--warn-soft); color: var(--warn); }
   .msg { color: var(--text-2); margin: 12px 0 0; white-space: pre-line; }
-  .detail, .blocked { margin: 12px 0 0; padding-left: 18px; color: var(--text-2); display: grid; gap: 4px; }
+  .detail, .blocked { margin: 12px 0 0; padding-left: 18px; color: var(--text-2); display: grid; gap: 4px; overflow-wrap: anywhere; }
   .blocked li::marker { color: var(--warn); }
   .label { margin-top: 14px; }
   .check { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--text-2); font-size: 13px; cursor: pointer; }

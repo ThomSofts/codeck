@@ -17,7 +17,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import accounts, agents, aitools, aiusage, analytics, azure, boards, cascade, catalogs, debug, dotnet, editor, engine, extensions, git, github, kanban, launch, library, lsp, power, prreview, rules, terminals, tracking, trust, update, workspace, ws
+from . import accounts, agents, aitools, aiusage, analytics, azure, boards, cascade, catalogs, databases, dbimport, dbmcp, dbplugins, dbqueries, debug, flutterdb, dotnet, editor, engine, extensions, git, github, kanban, launch, library, lsp, power, prreview, rules, terminals, tracking, trust, update, workspace, ws
 from .core import (APP_BUILD, APP_PLATFORM, APP_VERSION, ARCHIVE_FILE, CONFIG_FILE, DATA, DEFAULT_PORT, PRODUCT, RULES_FILE, OfflineError,
                    STATIC_DIR, TOKEN, ctx, load_json, lock, log_activity, log_build, log_deploy, notifications, notify_seq,
                    now_iso, pr_summary, read_activity, save_json, state, wake)
@@ -1303,6 +1303,214 @@ def post_trust_all(qs, body):
     return trust.set_all(bool(body.get("all")))
 
 
+# ---------------------------------------------------------------- bancos de dados (cadastro, vínculos, conexões)
+@route("GET", "/api/db")
+def get_db(qs, body):
+    return databases.public()
+
+
+@route("POST", "/api/db/bank")
+def post_db_bank(qs, body):
+    return databases.save_bank(body)
+
+
+@route("POST", "/api/db/bank/delete")
+def post_db_bank_delete(qs, body):
+    return databases.delete_bank(body.get("id"))
+
+
+@route("POST", "/api/db/links")
+def post_db_links(qs, body):
+    return databases.set_links(body.get("bank"), body.get("add") or [], body.get("remove") or [])
+
+
+@route("POST", "/api/db/project-banks")
+def post_db_project_banks(qs, body):
+    return databases.set_project_banks(body.get("repoId"), body.get("banks") or [])
+
+
+@route("POST", "/api/db/link")
+def post_db_link(qs, body):
+    return databases.set_link(body.get("bank"), body.get("repoId"), body.get("alias"), body.get("env"), body.get("flags"))
+
+
+@route("GET", "/api/db/project")
+def get_db_project(qs, body):
+    return databases.for_project(q1(qs, "repoId"))
+
+
+@route("POST", "/api/db/pin")
+def post_db_pin(qs, body):
+    return databases.pin_certificate(body.get("bank"), body.get("env"), body.get("sha256"))
+
+
+@route("POST", "/api/db/test")
+def post_db_test(qs, body):
+    return databases.test(body)
+
+
+@route("POST", "/api/db/open")
+def post_db_open(qs, body):
+    return databases.open_session(body.get("bank"), body.get("env"), body.get("repoId"), body.get("database"))
+
+
+@route("POST", "/api/db/close")
+def post_db_close(qs, body):
+    return databases.close(body.get("session"))
+
+
+@route("POST", "/api/db/unlock")
+def post_db_unlock(qs, body):
+    return databases.set_unlocked(body.get("session"), body.get("unlocked", True))
+
+
+@route("POST", "/api/db/query")
+def post_db_query(qs, body):
+    return databases.query(body.get("session"), body.get("sql"), body.get("queryId"), body.get("maxRows"), bool(body.get("confirm")))
+
+
+@route("POST", "/api/db/analyze")
+def post_db_analyze(qs, body):
+    return databases.analyze(body.get("session"), body.get("sql"))
+
+
+@route("POST", "/api/db/cancel")
+def post_db_cancel(qs, body):
+    return databases.cancel(body.get("session"), body.get("queryId"))
+
+
+@route("POST", "/api/db/tx")
+def post_db_tx(qs, body):
+    return databases.finish_tx(body.get("session"), body.get("txId"), bool(body.get("commit")))
+
+
+@route("POST", "/api/db/catalog")
+def post_db_catalog(qs, body):
+    return databases.catalog(body.get("session"), body.get("what"), body.get("schema"), body.get("name"))
+
+
+@route("POST", "/api/db/apply")
+def post_db_apply(qs, body):
+    return databases.apply(body.get("session"), body.get("changes"), bool(body.get("dryRun")), bool(body.get("confirm")))
+
+
+@route("GET", "/api/db/history")
+def get_db_history(qs, body):
+    return databases.history(q1(qs, "bank"), q1(qs, "repoId"))
+
+
+@route("GET", "/api/db/queries")
+def get_db_queries(qs, body):
+    return dbqueries.list_for(q1(qs, "bank"), q1(qs, "repoId"))
+
+
+@route("POST", "/api/db/queries/save")
+def post_db_queries_save(qs, body):
+    return dbqueries.save(body.get("bank"), body.get("name"), body.get("sql"), body.get("scope") or "bank", body.get("repoId"), body.get("id"))
+
+
+@route("POST", "/api/db/queries/delete")
+def post_db_queries_delete(qs, body):
+    return dbqueries.delete(body.get("bank"), body.get("id"), body.get("repoId"))
+
+
+@route("POST", "/api/db/queries/where")
+def post_db_queries_where(qs, body):
+    return dbqueries.set_where(body.get("repoId"), body.get("where"))
+
+
+@route("GET", "/api/db/flutter/info")
+def get_db_flutter_info(qs, body):
+    return flutterdb.info(q1(qs, "repoId"))
+
+
+@route("GET", "/api/db/flutter/devices")
+def get_db_flutter_devices(qs, body):
+    return flutterdb.devices(q1(qs, "repoId"))
+
+
+@route("GET", "/api/db/flutter/files")
+def get_db_flutter_files(qs, body):
+    return flutterdb.files(q1(qs, "repoId"), q1(qs, "device"))
+
+
+@route("POST", "/api/db/flutter/open")
+def post_db_flutter_open(qs, body):
+    return flutterdb.open_app(body.get("repoId"), body.get("device"), body.get("path"))
+
+
+@route("POST", "/api/db/flutter/sync")
+def post_db_flutter_sync(qs, body):
+    return flutterdb.sync(body.get("session"))
+
+
+@route("POST", "/api/db/flutter/push")
+def post_db_flutter_push(qs, body):
+    return flutterdb.push(body.get("session"), body.get("relaunch", True))
+
+
+@route("POST", "/api/db/flutter/undo")
+def post_db_flutter_undo(qs, body):
+    return flutterdb.undo(body.get("session"), body.get("relaunch", True))
+
+
+@route("POST", "/api/db/flutter/restart")
+def post_db_flutter_restart(qs, body):
+    return flutterdb.hot_restart(body.get("session"))
+
+
+@route("GET", "/api/db/agent/pending")
+def get_db_agent_pending(qs, body):
+    return dbmcp.pending()
+
+
+@route("POST", "/api/db/agent/answer")
+def post_db_agent_answer(qs, body):
+    return dbmcp.answer(body.get("id"), bool(body.get("allow")), bool(body.get("remember")))
+
+
+@route("GET", "/api/db/import")
+def get_db_import(qs, body):
+    return dbimport.scan()
+
+
+@route("POST", "/api/db/import")
+def post_db_import(qs, body):
+    return dbimport.run(body.get("items") or [], bool(body.get("passwords")))
+
+
+@route("POST", "/api/db/png")
+def post_db_png(qs, body):
+    return databases.save_png(body.get("png"), body.get("name"), body.get("copy"), body.get("save"))
+
+
+@route("GET", "/api/db/plugins/published")
+def get_db_plugins_published(qs, body):
+    return dbplugins.published()
+
+
+@route("POST", "/api/db/plugins/install")
+def post_db_plugins_install(qs, body):
+    dbplugins.install(body.get("engine"))
+    return databases.public()
+
+
+@route("POST", "/api/db/plugins/uninstall")
+def post_db_plugins_uninstall(qs, body):
+    dbplugins.uninstall(body.get("engine"))
+    return databases.public()
+
+
+@route("GET", "/api/db/plugins/progress")
+def get_db_plugins_progress(qs, body):
+    return dict(dbplugins.installing)
+
+
+@route("POST", "/api/db/prefs")
+def post_db_prefs(qs, body):
+    return databases.save_prefs(body)
+
+
 # ---------------------------------------------------------------- extensões do VS Code (temas, ícones, snippets)
 @route("GET", "/api/ext/list")
 def get_ext_list(qs, body):
@@ -1605,6 +1813,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, res)
         except trust.TrustRequired as e:   # a tela pergunta se confia no projeto e repete o pedido
             return self.send(409, {"error": str(e), "trust": e.payload()})
+        except dbplugins.PluginError as e:   # banco: o código diz à tela o que fazer (confirmar, fixar certificado…)
+            return self.send(400, {"error": str(e), "code": e.code, "data": e.data})
         except LookupError as e:
             return self.send(404, {"error": str(e).strip("'")})
         except (ValueError, git.GitError) as e:
@@ -1705,6 +1915,24 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError):
             return self.send(400, {"error": "JSON inválido"})
 
+    def db_mcp(self, path):
+        """MCP de banco dos agentes: o token é do projeto e só vale aqui (não dá acesso à API)."""
+        parts = path.strip("/").split("/")
+        if len(parts) != 2:
+            return self.send(404, {"error": "rota não encontrada"})
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 <= length <= 1_000_000:
+                return self.send(413, {"error": "pedido grande demais"})
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(payload, dict):
+                raise ValueError("JSON inválido")
+            return self.send(200, dbmcp.handle(parts[1], payload))
+        except PermissionError:
+            return self.send(403, {"error": "forbidden"})
+        except (ValueError, json.JSONDecodeError):
+            return self.send(400, {"error": "JSON inválido"})
+
     def lsp_socket(self, lang):
         """WebSocket de um servidor de linguagem na pasta do projeto/tarefa (?repoId=…&taskId=…)."""
         proto = self.token_in_protocol()
@@ -1737,6 +1965,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, {"error": "forbidden"})
         if self.path.startswith("/hook/"):
             return self.agent_hook(urllib.parse.urlparse(self.path).path)
+        if self.path.startswith("/dbmcp/"):
+            return self.db_mcp(urllib.parse.urlparse(self.path).path)
         if self.headers.get("X-Codeck") != "1" or not self.authorized():
             return self.send(403, {"error": "forbidden"})
         try:

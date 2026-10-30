@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="flutter.usuario">ana</string>
+    <long name="flutter.ultimo_sync" value="1730000000000" />
+    <boolean name="flutter.tema_escuro" value="true" />
+    <set name="flutter.tags"><string>a</string><string>b</string></set>
+</map>

@@ -188,7 +188,7 @@ jobs:
           if ($got -ne $env:PYTHON_EMBED_SHA256) { throw "Python embutido com hash inesperado ($got)" }
           Expand-Archive python.zip -DestinationPath build/app/python
           New-Item -ItemType Directory -Force build/app/backend | Out-Null
-          Copy-Item backend/server.py build/app/backend/
+          Copy-Item backend/server.py, backend/mcp_db.py build/app/backend/
           Copy-Item -Recurse backend/pilot, backend/static build/app/backend/
           Get-ChildItem build/app/backend -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
           if (-not (Test-Path build/app/backend/static/index.html)) { throw 'interface não compilada' }
@@ -411,6 +411,15 @@ jobs:
           name: codeck-windows
           path: dist
 
+      # Plugins de banco (db/, Go puro): compilados daqui mesmo para Windows. Não vão no instalador — o app baixa só o
+      # que a pessoa usar, conferindo o SHA-256 que vai assinado no latest.json (dbPlugins.windows).
+      - name: Plugins de banco
+        run: |
+          set -euo pipefail
+          export GOTOOLCHAIN=auto
+          bash scripts/build-db-plugins.sh windows dist/plugins "windows-$BUILD_NAME-$BUILD_NUMBER"
+          ls -la dist/plugins
+
       - name: Credenciais do site configuradas?
         id: ftp
         env:
@@ -450,7 +459,7 @@ jobs:
             --notes "$(git log -1 --format=%B)" --target "$GITHUB_SHA"
           exe="Codeck-$BUILD_NAME-$BUILD_NUMBER-setup.exe"
           for prefix in Commitdeck PR-Pilot; do cp "dist/$exe" "dist/$prefix-$BUILD_NAME-$BUILD_NUMBER-setup.exe"; done
-          gh release upload "$tag" dist/*-"$BUILD_NAME-$BUILD_NUMBER"-setup.exe --clobber
+          gh release upload "$tag" dist/*-"$BUILD_NAME-$BUILD_NUMBER"-setup.exe dist/plugins/codeck-db-* --clobber
 
       # O instalador primeiro, o latest.json por último: o app nunca vê um canal apontando para um instalador que
       # ainda está subindo. A parte do Mac (e o `required`) vêm do publicado, lido pelo FTP.
@@ -498,6 +507,14 @@ jobs:
           # O .exe sobe ANTES de ler o latest.json: ler, ajustar e gravar ficam em sequência (segundos), e a parte do
           # Mac publicada pelo scripts/release-macos.sh nesse meio-tempo não é apagada.
           lftp_run "cd $remote; put dist/$exe;"
+          lftp_run "mkdir -p -f $remote/plugins; cd $remote/plugins; mput dist/plugins/codeck-db-*;"
+          plugins="$(for f in dist/plugins/codeck-db-*; do
+            n="$(basename "$f")"; bin="${n#codeck-db-}"; bin="${bin%%-windows-*}"
+            case "$bin" in mssql) e=sqlserver ;; *) e="$bin" ;; esac
+            jq -n --arg e "$e" --arg url "$RELEASES/v$BUILD_NAME-$BUILD_NUMBER/$n" --arg mirror "$DOWNLOADS_BASE_URL/$CHANNEL/plugins/$n" \
+              --arg sha "$(sha256sum "$f" | cut -d' ' -f1)" --argjson size "$(stat -c %s "$f")" \
+              '{($e): {url: $url, mirrors: [$mirror], sha256: $sha, size: $size}}'
+          done | jq -s --arg version "$BUILD_NAME" --argjson build "$BUILD_NUMBER" '{version: $version, build: $build, engines: add}')"
           if lftp_run "cd $remote; cls -1" | grep -qx 'latest.json'; then
             lftp_run "cd $remote; lcd $tmp; get latest.json -o current.json" \
               || { echo "::error::não li o latest.json publicado — nada foi enviado"; exit 1; }
@@ -506,7 +523,8 @@ jobs:
           else
             echo '{}' > "$tmp/current.json"   # primeira publicação
           fi
-          jq --arg url "$RELEASES/v$BUILD_NAME-$BUILD_NUMBER/$exe" --arg mirror "$DOWNLOADS_BASE_URL/$CHANNEL/$exe" \
+          jq --argjson plugins "$plugins" \
+             --arg url "$RELEASES/v$BUILD_NAME-$BUILD_NUMBER/$exe" --arg mirror "$DOWNLOADS_BASE_URL/$CHANNEL/$exe" \
              --arg sha "$(sha256sum "dist/$exe" | cut -d' ' -f1)" \
              --argjson size "$(stat -c %s "dist/$exe")" \
              --arg version "$BUILD_NAME" --argjson build "$BUILD_NUMBER" \
@@ -514,6 +532,7 @@ jobs:
              --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
              '.productId = "codeck"
               | .windows = {url: $url, mirrors: [$mirror], sha256: $sha, size: $size, version: $version, build: $build}
+              | .dbPlugins.windows = $plugins
               | .notes = $notes | .publishedAt = $date
               | ([.windows, .macos] | map(select(. != null)) | max_by(.build)) as $n
               | .version = $n.version | .build = $n.build' "$tmp/current.json" > dist/latest.json

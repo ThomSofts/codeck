@@ -1,0 +1,5 @@
+{"version":1,"sembast":1}
+{"key":1,"store":"pedidos","value":{"cliente":"ana","total":99.9,"itens":["a","b"]}}
+{"key":2,"store":"pedidos","value":{"cliente":"bruno","total":10}}
+{"key":2,"deleted":true,"store":"pedidos"}
+{"key":"config","value":"tema escuro"}

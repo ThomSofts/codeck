@@ -727,7 +727,9 @@ def start_agent(repo_id, task_id, account_id, prompt=None, mode=None, title=None
     d = _load()
     st = _proj(d, repo_id)["settings"]
     bypass = bool(st.get("bypass"))
-    command, env = agents.launch_spec(account_id, prompt, mode, sid, extra_dirs=extra, resume=resume, bypass=bypass)
+    from . import dbmcp   # bancos liberados para agentes neste projeto: o MCP de banco vai junto
+    command, env = agents.launch_spec(account_id, prompt, mode, sid, extra_dirs=extra, resume=resume, bypass=bypass,
+                                      extra_args=dbmcp.agent_launch(repo_id, a["provider"], sid))
     if st.get("account") != account_id:   # lembra a conta do projeto: a próxima vez já abre nela
         st["account"] = account_id
         _save(d)

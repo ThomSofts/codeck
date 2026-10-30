@@ -233,6 +233,37 @@ fixo, tenta reconectar a cada 10 s e atualiza tudo assim que a rede volta.
   sistema (⌘ no macOS, Ctrl no Windows); a lista completa fica em Configurações → Atalhos.
 - **Barra lateral recolhível** (⌘\ / Ctrl+\): só ícones, com os submenus em popover.
 
+**Dados — bancos de dados dos projetos**
+- **SQL Server** (inclusive 2008/2012 antigos, com TLS 1.0 e certificado fixado), **PostgreSQL**, **MySQL/MariaDB**,
+  **SQLite**, **libSQL/Turso**, **MongoDB**, **Firebase** (Firestore e Realtime Database) e **Redis**. Cada banco é um
+  **plugin** (em Go, `db/`) que você instala só se usar, em Dados → Ajustes: o download vem da ThomSoft e o SHA-256 de
+  cada plugin vai assinado no `latest.json`. O build local (`build-macos.sh`) já embute todos.
+- **Banco → ambientes → projetos**: cada banco tem dev/hml/prod (servidor, usuário, senha no cofre, TLS, túnel SSH) e a
+  lista de projetos que o usam — um banco pode servir 30 projetos e um projeto pode usar vários bancos. Duas visões em
+  Dados (Bancos | Projetos), com vínculo em lote. No projeto, a aba **Banco** aparece quando há banco vinculado.
+- **Editor** (Monaco) com autocompletar do catálogo: ⌘↩ roda o comando do cursor (ou a seleção), ⇧⌘↩ o script inteiro;
+  vários resultados, mensagens e "N linhas afetadas", como no SSMS. Mongo e Firebase no estilo do shell
+  (`db.clientes.find({…})`, `collection('x').where(…)`), Redis como no `redis-cli`.
+- **Grade como planilha**: seleção retangular, ⌘C no formato padrão e o menu com JSON, CSV, Markdown, INSERT, UPDATE e
+  lista para `IN (…)`; colar do Excel; soma e média da seleção; edição pendente (amarelo/verde/riscado) aplicada numa
+  transação só e conferida pela chave; ⌘-clique na chave estrangeira abre o registro.
+- **Imagem do resultado (PNG)**: o cartão com a marca e o ponto verde comentando; esconda colunas e **mascare** dados
+  pessoais (CPF, e-mail e telefone já vêm marcados). Copia, salva ou os dois (Dados → Ajustes).
+- **Produção travada**: abre somente leitura; destravar pede confirmação e cada alteração fica numa transação esperando
+  **Confirmar/Desfazer** (desfeita sozinha em 5 min). UPDATE/DELETE sem WHERE, DROP e TRUNCATE sempre perguntam.
+- **Consultas salvas** (do banco ou do projeto — neste computador ou no repositório em `.codeck-db/queries`) e
+  **histórico** local, com produção fora por padrão.
+- **Banco do app Flutter** (offline-first): o Codeck lê o `pubspec.yaml`, o id do app e o nome dos arquivos no código e
+  abre o banco no simulador iOS, no macOS/Windows (direto no arquivo), no Android (`adb run-as`, build de debug) e no
+  iPhone (`devicectl`, só leitura). sqflite/drift/floor em SQLite; **Hive** (com o nome dos campos lido do `@HiveField`),
+  sembast e shared_preferences convertidos para consultar. **Ao vivo**: relê quando o app grava e destaca o que mudou.
+  No Android, **Enviar ao aparelho** fecha o app, guarda backup, troca o banco e reabre (com Desfazer).
+- **Importar** do DBeaver (inclusive a senha), do Tabularis (senhas pelo Keychain, com a sua permissão) e do Beekeeper.
+- **Agentes de IA (MCP)**: libere um banco para os agentes de um projeto e o Claude/Codex aberto pelo Codeck ganha as
+  ferramentas `list_databases`, `list_tables`, `describe_table` e `query` — só os bancos daquele projeto, no ambiente
+  ativo. Leitura em produção e alterações pedem a sua aprovação na tela (em produção, sempre; sem resposta em 30 min,
+  é negado).
+
 **No sistema**
 - **Notificações nativas** (Central de Notificações no Mac, bandeja no Windows): clicar abre o item. Em
   Configurações → Notificações e sons, liga cada tipo separado (IA fazendo uma pergunta, IA em espera, conta no limite, PR
@@ -276,6 +307,14 @@ enviar por HTTPS; remotos SSH usam as suas chaves.
   do repositório e sem MCP do projeto; o diff vai pronto.
 - O PAT do git vai só para o host do provedor (`github.com`, `dev.azure.com/<org>`), nunca para outro remoto ou
   submódulo; o do Azure não segue redirecionamento.
+- **Bancos de dados**: senhas e chaves (inclusive o JSON da conta do Firebase) vão para o mesmo cofre; o
+  `databases.json` só tem a referência. TLS verificado por padrão; certificado próprio (SQL Server) só fixando a
+  impressão digital — se ela mudar, a conexão é recusada. TLS 1.0 só na conexão marcada como servidor antigo. Sem
+  criptografia só com o seu aceite, e num IP público com um segundo aceite. Produção abre somente leitura (o banco
+  desfaz qualquer escrita escondida; `COMMIT` no meio do script é barrado). Túnel SSH pelo `ssh` do sistema, só com
+  chave e com o servidor no `known_hosts`. Os plugins rodam em processos separados, falando só pelo stdin/stdout, e
+  são conferidos pelo SHA-256 assinado antes de cada execução. O MCP dos agentes usa um token por projeto que só vale
+  na rota dele.
 - O backend encerra junto com o app (watchdog do processo-pai; no Windows também um Job Object).
 - Dados por usuário, fora do repositório:
   - macOS: `~/Library/Application Support/Codeck`
@@ -284,14 +323,15 @@ enviar por HTTPS; remotos SSH usam as suas chaves.
 ## Como é feito
 
 ```
-backend/        server.py + pacote pilot/ (Python, só biblioteca padrão) — igual nas duas plataformas
+backend/        server.py + pacote pilot/ (Python, só biblioteca padrão) — igual nas duas plataformas; mcp_db.py (MCP de banco)
+db/             plugins de banco de dados em Go (um executável por banco; protocolo JSON no stdin/stdout)
   pilot/        http (rotas) · engine (leitura periódica) · azure · github · git · catalogs · rules · secrets · update
   static/       a interface compilada (gerada, não versionada)
 ui/             interface do app em Svelte 5 + TypeScript, compilada com Vite (npm run build → backend/static)
 brand/          make-logo.py gera logo.svg e icon.svg; make-icons.sh gera .icns e .ico
 macos/          Codeck.swift — janela nativa (AppKit + WebKit), Dock, barra de menus, notificações, troca do .app
 windows/        Codeck (C# .NET 8, WinForms + WebView2) — janela, bandeja, notificações, atualização pelo ThomSoft Setup
-scripts/        build-macos.sh · release-macos.sh · set-required.sh
+scripts/        build-macos.sh · release-macos.sh · set-required.sh · build-db-plugins.sh
 .github/        release-windows.yml — gera, testa e publica o instalador do Windows
 VERSION         x.y.z+N — a versão das duas plataformas
 ```
@@ -326,6 +366,18 @@ navegação, tema e barra de título, repositórios, favoritos/tags, terminal (d
 linguagem, tarefas em worktree, revisão, tela dividida, quadro, ajustes, janela própria e remoção. Com
 `AGENT_ACCOUNT=<conta> TRUSTED_DIR=<pasta>` inclui um agente Claude de verdade. No Windows, o mesmo roteiro roda no
 `Codeck.exe` dentro do build do GitHub Actions, e o build só publica se todas as etapas passarem.
+
+## Testar os bancos de dados
+
+`scripts/test-db.sh` sobe os bancos de verdade no Docker (Postgres com TLS, MySQL, MariaDB, SQL Server, MongoDB, Redis,
+libSQL e um bastion SSH), os emuladores do Firebase e do Android (com um app Flutter de teste — sqflite, Hive e
+shared_preferences), e roda `tests/db/run_tests.py` pela API do backend, `go test` dos plugins (inclusive um servidor
+que só fala TLS 1.0, como um SQL Server 2008 R2) e `tests/db/ui_test.mjs` na tela. `--rapido` roda só os testes sem
+servidor; `--sem-android` e `--sem-ui` pulam as partes lentas. O relatório fica em `dist/test-db-relatorio.txt`.
+
+No Windows: `scripts/windows/preparar-teste-windows.sh` (no Mac) gera `dist/codeck-teste-windows.zip` — o backend, o
+mesmo runner e os plugins `.exe`. Extraia no PC e rode `powershell -ExecutionPolicy Bypass -File testar-bancos.ps1`
+(com o Docker Desktop ligado, testa também Postgres, MySQL, MongoDB e Redis).
 
 ## Publicar uma versão
 

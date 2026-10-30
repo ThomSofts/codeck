@@ -3,7 +3,7 @@
   // Barra lateral. Expandida: menus com contadores, os projetos abertos (em grupos, compactos) e as coleções de
   // repositórios. Recolhida (⌘\ / Ctrl+\): só ícones — passar o mouse abre um popover com o submenu de cada item.
   import { BarChart3, Gauge, Code2, RefreshCw, CircleDot, FolderGit2, GitPullRequest, Hammer, History, Inbox, Pin, Rocket, Search, Settings, Zap,
-    KanbanSquare, PanelLeftClose, PanelLeftOpen, ChevronRight, LayoutGrid, Radio, Columns3 } from "@lucide/svelte";
+    KanbanSquare, PanelLeftClose, PanelLeftOpen, ChevronRight, LayoutGrid, Radio, Columns3, Database } from "@lucide/svelte";
   import { BRAND } from "../lib/brand";
   import { cascade } from "../lib/cascade.svelte";
   import CascadeTrack from "./cascade/CascadeTrack.svelte";
@@ -39,6 +39,7 @@
     { id: "sprints", label: "Sprints e projetos", icon: Columns3 },
     { group: "Código" },
     { id: "repos", label: "Repositórios", icon: FolderGit2, count: repos.local.filter(r => r.exists && !/[\\/]\.worktrees[\\/]/.test(r.path)).length || undefined, fly: "repos" },
+    { id: "data", label: "Dados", icon: Database },
     { group: "Configurar" },
     { id: "automation", label: "Automação", icon: Zap },
     { id: "analytics", label: "Análise", icon: BarChart3 },

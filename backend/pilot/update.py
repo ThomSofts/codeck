@@ -26,6 +26,22 @@ UPDATE_PUBKEY = ("04b41dd5fbc877cbd1ad626bf74de27d5c9f70ac3bb20cfdaaff2a7f1f91e2
 update_state = {"available": False, "checkedAt": None, "error": None, "downloading": False}
 
 
+def signed_manifest():
+    """O latest.json do canal, só se a assinatura da ThomSoft conferir (senão, erro). Também descreve os plugins de
+    banco (dbPlugins): o SHA-256 de cada um vem assinado junto."""
+    if not UPDATE_URL or not UPDATE_URL.startswith("https://"):
+        raise ValueError("Canal de atualização indisponível nesta instalação")
+    r = urllib.request.Request(f"{UPDATE_URL}?t={int(time.time())}", headers={"Cache-Control": "no-cache", "User-Agent": "Codeck"})
+    with _https_only.open(r, timeout=15) as resp:
+        raw = resp.read(200_000)
+    rs = urllib.request.Request(f"{UPDATE_URL}.sig?t={int(time.time())}", headers={"Cache-Control": "no-cache", "User-Agent": "Codeck"})
+    with _https_only.open(rs, timeout=15) as resp:
+        sig = base64.b64decode(resp.read(4_000).strip(), validate=True)
+    if not signature.verify(UPDATE_PUBKEY, raw, sig):
+        raise ValueError("latest.json sem a assinatura da ThomSoft — ignorado")
+    return json.loads(raw)
+
+
 def check_update():
     """Fail-open quanto ao uso (falha de rede/JSON só deixa "sem atualização"); fail-closed quanto à confiança: sem a
     assinatura da ThomSoft, nada é oferecido."""
@@ -36,15 +52,7 @@ def check_update():
         update_state.update(available=False, checkedAt=now_iso(), error="canal de atualização sem https", disabled=True)
         return update_state
     try:
-        r = urllib.request.Request(f"{UPDATE_URL}?t={int(time.time())}", headers={"Cache-Control": "no-cache", "User-Agent": "Codeck"})
-        with _https_only.open(r, timeout=15) as resp:
-            raw = resp.read(200_000)
-        rs = urllib.request.Request(f"{UPDATE_URL}.sig?t={int(time.time())}", headers={"Cache-Control": "no-cache", "User-Agent": "Codeck"})
-        with _https_only.open(rs, timeout=15) as resp:
-            sig = base64.b64decode(resp.read(4_000).strip(), validate=True)
-        if not signature.verify(UPDATE_PUBKEY, raw, sig):
-            raise ValueError("latest.json sem a assinatura da ThomSoft — atualização ignorada")
-        info = json.loads(raw)
+        info = signed_manifest()
         asset = info.get(APP_PLATFORM) or {}
         build = int(asset.get("build") or 0)
         required = int(info.get("required") or 0)
@@ -75,9 +83,10 @@ class _HttpsRedirects(urllib.request.HTTPRedirectHandler):
 _https_only = urllib.request.build_opener(_HttpsRedirects)
 
 
-def _fetch(url, part, size):
+def _fetch(url, part, size, progress=None):
     """Baixa `url` em `part`, retomando com Range quando a conexão cai no meio (o site da ThomSoft corta downloads
     rápidos por volta de 4 MB). Desiste depois de várias quedas seguidas sem avançar."""
+    progress = progress if progress is not None else update_state["progress"]
     done, stalls = 0, 0
     open(part, "wb").close()
     while True:
@@ -92,14 +101,14 @@ def _fetch(url, part, size):
                     open(part, "wb").close()
                 if not size:
                     size = int(resp.headers.get("Content-Length") or 0) + done
-                    update_state["progress"]["total"] = size
+                    progress["total"] = size
                 with open(part, "ab") as f:
                     while chunk := resp.read(1 << 16):
                         f.write(chunk)
                         done += len(chunk)
                         if done > MAX_INSTALLER:
                             raise ValueError("Instalador maior que o esperado")
-                        update_state["progress"]["done"] = done   # a tela mostra a barra de download
+                        progress["done"] = done   # a tela mostra a barra de download
             if done >= size:
                 return
         except urllib.error.HTTPError as e:
