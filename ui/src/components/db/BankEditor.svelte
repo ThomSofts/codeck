@@ -50,6 +50,9 @@
       e.test = { ok: true, text: `${r.server}${r.tls ? ` · ${r.tls.version}` : engine === "sqlite" || engine === "firebase" ? "" : " · sem criptografia"}${r.ssh ? " · pelo túnel SSH" : ""}` };
     } catch (err) {
       const code = err instanceof ApiError ? err.data?.code : null;
+      if (code === "legacy-cbc" && !e.tls.rc4) {
+        if (await db.askRc4()) { e.tls = { ...e.tls, legacy: true, rc4: true }; return test(e); }
+      }
       if (code && String(code).startsWith("cert-")) {
         const c = err instanceof ApiError ? err.data.data : null;
         const ok = await ui.ask({ title: "Certificado do servidor", message: "O servidor apresentou um certificado que o sistema não reconhece. Confira a impressão digital com quem administra o servidor e fixe — daqui em diante só ele é aceito.",
@@ -165,6 +168,9 @@
               <Switch bind:checked={e.tls.legacy} label="Servidor antigo" hint="Aceita TLS 1.0/1.1 — SQL Server 2008/2012 sem atualização" />
             {/if}
           </div>
+          {#if e.tls.mode !== "off" && e.tls.legacy}
+            <Switch bind:checked={e.tls.rc4} label="Compatibilidade RC4" hint="Só para SQL Server 2008/2008 R2 sem Service Pack, que derruba o TLS 1.0 com CBC. Cifra fraca, mas melhor que sem criptografia — o Codeck oferece sozinho quando detecta" />
+          {/if}
           {#if e.tls.mode === "pin"}
             <p class="tiny muted pin"><KeyRound size={12} /> {e.tls.pin ? `Fixado: ${e.tls.pin.slice(0, 16)}…${e.tls.pin.slice(-8)}` : "Ao testar ou conectar, o Codeck mostra a impressão digital para você conferir e fixar."}
               {#if e.tls.pin}<button class="link" onclick={() => (e.tls.pin = "")}>esquecer</button>{/if}</p>

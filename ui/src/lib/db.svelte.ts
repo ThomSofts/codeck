@@ -8,7 +8,7 @@ export type Engine = "sqlserver" | "postgres" | "mysql" | "sqlite" | "mongodb" |
 /** bancos de documentos: comandos no estilo do shell, sem transação (produção não tem Confirmar/Desfazer) */
 export const isDoc = (e: Engine | null | undefined) => e === "mongodb" || e === "firebase" || e === "redis";
 export type EnvKind = "dev" | "hml" | "prod";
-export interface DbTls { mode: "verify" | "pin" | "off"; pin: string; legacy: boolean; offAck?: boolean; offPublicAck?: boolean }
+export interface DbTls { mode: "verify" | "pin" | "off"; pin: string; legacy: boolean; rc4?: boolean; offAck?: boolean; offPublicAck?: boolean }
 export interface DbEnv { id: string; kind: EnvKind; label: string; host: string; port: number | null; database: string; user: string; file: string;
   tls: DbTls; readOnly: boolean; hasPassword: boolean; timeoutSec: number | null;
   ssh?: { host: string; port: number; user: string; key: string } | null }
@@ -181,10 +181,26 @@ class Db {
       this.refreshObjects(b);
     } catch (e: any) { b.problem = e?.message || String(e); } finally { b.connecting = false; }
   }
-  private async openWithCert(bank: string, env: string, repo: string | null): Promise<DbSession> {
+  /** SQL Server sem Service Pack derrubou o TLS 1.0 com CBC: explica e oferece a compatibilidade RC4 (só por escolha). */
+  async askRc4(): Promise<boolean> {
+    return !!(await ui.ask({
+      title: "Ligar a compatibilidade RC4 nesta conexão?",
+      message: "O servidor aceita TLS 1.0, mas derruba a conexão quando o cliente divide os registros (proteção que o TLS 1.0 com cifra CBC exige). " +
+        "É o SQL Server 2008/2008 R2 sem Service Pack. Com RC4 a conexão continua criptografada e com o certificado fixado — RC4 é uma cifra fraca, " +
+        "mas ainda muito melhor que a senha sem criptografia (que é o que ferramentas como o DBeaver/jTDS fazem com esse servidor).",
+      detail: ["O certo é atualizar o servidor: SQL Server 2008 R2 SP3 + a atualização de TLS 1.2 (aí não precisa de RC4)."],
+      confirm: "Ligar RC4 nesta conexão", danger: true,
+    }));
+  }
+  private async openWithCert(bank: string, env: string, repo: string | null, tries = 0): Promise<DbSession> {
     try {
       return await post("db/open", { bank, env, repoId: repo });
     } catch (e) {
+      if (e instanceof ApiError && e.data?.code === "legacy-cbc" && tries < 2) {
+        if (!(await this.askRc4())) throw new Error("Conexão cancelada: o servidor precisa da compatibilidade RC4 (ou de atualização)");
+        this.set(await post("db/rc4", { bank, env, on: true }));
+        return this.openWithCert(bank, env, repo, tries + 1);
+      }
       if (!(e instanceof ApiError) || !String(e.data?.code || "").startsWith("cert-")) throw e;
       const c: CertInfo = e.data.data;
       const changed = e.data.code === "cert-changed";
@@ -199,7 +215,7 @@ class Db {
       });
       if (!ok) throw new Error("Conexão cancelada: certificado não aceito");
       this.set(await post("db/pin", { bank, env, sha256: c.sha256 }));
-      return await post("db/open", { bank, env, repoId: repo });
+      return this.openWithCert(bank, env, repo, tries + 1);
     }
   }
   async disconnect(b: Bench) {

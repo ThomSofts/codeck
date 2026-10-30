@@ -112,7 +112,7 @@
               <span class="dot" style="background:{b.color}"></span>
               <div class="bn"><b class="ell">{b.name}</b><span class="tiny muted ell">{b.envs.map(e => e.host || e.file).filter(Boolean)[0] || ""}{b.envs[0]?.database ? " · " + b.envs[0].database : ""}</span></div>
               <span class="eng tiny">{ENGINE_SHORT[b.engine]}</span>
-              <span class="envs">{#each b.envs as e (e.id)}<span class="pill {e.kind === 'prod' ? 'bad' : e.kind === 'hml' ? 'warn' : 'good'}">{envName(e)}</span>{#if e.tls.mode === "off"}<span class="pill neutral" title="sem criptografia">sem TLS</span>{:else if e.tls.legacy}<span class="pill warn" title="aceita TLS 1.0/1.1 (servidor antigo)">legado</span>{/if}{/each}</span>
+              <span class="envs">{#each b.envs as e (e.id)}<span class="pill {e.kind === 'prod' ? 'bad' : e.kind === 'hml' ? 'warn' : 'good'}">{envName(e)}</span>{#if e.tls.mode === "off"}<span class="pill neutral" title="sem criptografia">sem TLS</span>{:else if e.tls.rc4}<span class="pill warn" title="servidor antigo: TLS 1.0 com RC4 (compatibilidade)">legado · RC4</span>{:else if e.tls.legacy}<span class="pill warn" title="aceita TLS 1.0/1.1 (servidor antigo)">legado</span>{/if}{/each}</span>
               <span class="np tiny muted" title={b.projects.map(p => repos.byId(p.repo)?.name || p.repo).join(", ")}><FolderGit2 size={12} /> {b.projects.length}</span>
               <button class="btn sm ghost icon" title="Configurar" onclick={(e) => { e.stopPropagation(); editing = b; }}><Settings2 size={14} /></button>
             </div>

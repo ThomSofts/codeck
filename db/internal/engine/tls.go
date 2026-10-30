@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,10 +19,14 @@ import (
 //   - "off":    sem criptografia. Só vale com AllowOff, que o backend liga depois de conferir as regras.
 //
 // Legacy aceita TLS 1.0/1.1 e as cifras antigas (SQL Server 2008 R2 sem atualização) — só na conexão que pedir.
+// RC4 (só com Legacy): o SQL Server 2008/2008 R2 sem Service Pack derruba a conexão quando o cliente divide os
+// registros TLS 1.0 com cifra CBC (a defesa contra o BEAST, que o Go sempre aplica); com RC4, uma cifra de fluxo, não
+// há divisão. RC4 é fraca — mas ainda melhor que a senha sem criptografia. Ligada só por escolha, em cada conexão.
 type TLSParams struct {
 	Mode     string `json:"mode"`
 	Pin      string `json:"pin"`
 	Legacy   bool   `json:"legacy"`
+	RC4      bool   `json:"rc4"`
 	AllowOff bool   `json:"allowOff"`
 }
 
@@ -64,7 +69,14 @@ func (p TLSParams) Off() (bool, error) {
 // recusado — sem isso, a tela não teria a impressão digital para você conferir e fixar.
 func (p TLSParams) Config(host string, cap *Capture) *tls.Config {
 	c := &tls.Config{ServerName: host, InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}
-	if p.Legacy {
+	if p.Legacy && p.RC4 {
+		c.MinVersion, c.MaxVersion = tls.VersionTLS10, tls.VersionTLS10
+		for _, s := range tls.InsecureCipherSuites() {
+			if strings.Contains(s.Name, "RC4") {
+				c.CipherSuites = append(c.CipherSuites, s.ID)
+			}
+		}
+	} else if p.Legacy {
 		c.MinVersion = tls.VersionTLS10
 		for _, s := range tls.CipherSuites() {
 			c.CipherSuites = append(c.CipherSuites, s.ID)
@@ -108,6 +120,21 @@ func (p TLSParams) Config(host string, cap *Capture) *tls.Config {
 		return nil
 	}
 	return c
+}
+
+// LegacyCBCError: o servidor aceitou TLS 1.0 com CBC e caiu logo depois — o SQL Server sem Service Pack que não
+// aguenta a divisão dos registros. A tela explica e oferece a compatibilidade RC4.
+func LegacyCBCError(cap *Capture, err error, p TLSParams) error {
+	info := cap.Get()
+	if err == nil || info == nil || info.Problem != "" || p.RC4 || info.Version != "TLS 1.0" || !strings.Contains(info.Cipher, "CBC") {
+		return nil
+	}
+	if m := strings.ToLower(err.Error()); !strings.Contains(m, "eof") && !strings.Contains(m, "reset") {
+		return nil
+	}
+	return &proto.Error{Code: "legacy-cbc", Data: info,
+		Message: "O servidor aceitou TLS 1.0 mas derrubou a conexão logo depois — é o SQL Server antigo sem Service Pack, que não aguenta a " +
+			"divisão de registros do TLS 1.0 com CBC. Ligue a compatibilidade RC4 nesta conexão (ou atualize o servidor para o SP3 com TLS 1.2)"}
 }
 
 // CertError: o motivo da recusa do certificado como erro para a tela (nil se não houve problema de certificado).

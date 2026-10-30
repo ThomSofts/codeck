@@ -93,6 +93,8 @@ def _clean_tls(t, prev=None):
     mode = t.get("mode") if t.get("mode") in TLS_MODES else prev.get("mode") or "verify"
     pin = re.sub(r"[^0-9a-f]", "", str(t.get("pin", prev.get("pin")) or "").lower())[:64]
     out = {"mode": mode, "pin": pin if len(pin) == 64 else "", "legacy": bool(t.get("legacy", prev.get("legacy")))}
+    if out["legacy"] and t.get("rc4", prev.get("rc4")):   # compatibilidade RC4: só junto do modo de servidor antigo
+        out["rc4"] = True
     if mode == "off":
         out["offAck"] = bool(t.get("offAck"))
         out["offPublicAck"] = bool(t.get("offPublicAck"))
@@ -243,6 +245,18 @@ def for_project(repo_id):
             env = next((e["id"] for e in b["envs"] if e["kind"] != "prod"), b["envs"][0]["id"])
         out.append({**_public_bank(b), "link": {**link, "env": env}})
     return {"banks": out}
+
+
+def set_rc4(bank_id, env_id, on=True):
+    """Compatibilidade RC4 (SQL Server 2008/2008 R2 sem Service Pack): só por escolha, e liga o modo de servidor antigo."""
+    with lock:
+        d = _load()
+        e = _env(_bank(d, bank_id), env_id)
+        e["tls"] = {**e.get("tls", {}), "legacy": True, "rc4": bool(on)}
+        if not on:
+            e["tls"].pop("rc4", None)
+        _save(d)
+    return public()
 
 
 def pin_certificate(bank_id, env_id, sha256):

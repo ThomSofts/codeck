@@ -1344,6 +1344,11 @@ def post_db_pin(qs, body):
     return databases.pin_certificate(body.get("bank"), body.get("env"), body.get("sha256"))
 
 
+@route("POST", "/api/db/rc4")
+def post_db_rc4(qs, body):
+    return databases.set_rc4(body.get("bank"), body.get("env"), body.get("on", True))
+
+
 @route("POST", "/api/db/test")
 def post_db_test(qs, body):
     return databases.test(body)
